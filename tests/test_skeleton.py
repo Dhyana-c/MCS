@@ -1,17 +1,15 @@
-"""Smoke tests for the project skeleton.
+"""Smoke tests for the project skeleton on the new unified workflow.
 
 Validates:
 
-(a) All ``mcs.*`` subpackages can be imported.
-(b) ABC interfaces with abstract methods raise ``TypeError`` on direct
-    instantiation; hook interfaces (no abstract methods) are instantiable.
+(a) All ``mcs.*`` subpackages and modules can be imported.
+(b) Interfaces with abstract methods raise ``TypeError`` on direct
+    instantiation.
 (c) ``Source`` dataclass lives in ``mcs.plugins.phase1.source_tracking``,
     NOT in ``mcs.core.graph``.
-(d) Five Phase 1 plugin classes have ``name`` class attribute matching
-    their file names.
-
-Plus a few structural sanity checks (state-machine sizes, Node fields,
-default config).
+(d) Phase 1 plugin classes' ``name`` class attributes match the design.
+(e) Structural sanity (Node fields, QueryContext / WriteContext fields,
+    default config plugins, ContextRenderer.get_summary fallback).
 """
 
 from __future__ import annotations
@@ -21,52 +19,68 @@ from dataclasses import fields
 
 import pytest
 
-# All subpackages and modules we expect to be importable.
+# Modules that MUST be importable on a clean checkout.
 ALL_MODULES = [
     "mcs",
+    # core
     "mcs.core",
-    "mcs.core.graph",
-    "mcs.core.token_budget",
-    "mcs.core.serializer",
-    "mcs.core.write_pipeline",
-    "mcs.core.query_engine",
     "mcs.core.config",
+    "mcs.core.context_renderer",
+    "mcs.core.decisions",
+    "mcs.core.errors",
+    "mcs.core.graph",
     "mcs.core.plugin_manager",
+    "mcs.core.query_engine",
+    "mcs.core.token_budget",
+    "mcs.core.write_pipeline",
+    # interfaces (5 new plugin chains + 6 carried over from skeleton)
     "mcs.interfaces",
-    "mcs.interfaces.storage",
+    "mcs.interfaces.arbitration_plugin",
+    "mcs.interfaces.compaction_plugin",
+    "mcs.interfaces.entry_plugin",
     "mcs.interfaces.index",
     "mcs.interfaces.llm",
-    "mcs.interfaces.node_extension",
-    "mcs.interfaces.pipeline_hook",
-    "mcs.interfaces.query_hook",
-    "mcs.interfaces.storage_schema_ext",
     "mcs.interfaces.maintenance",
+    "mcs.interfaces.node_extension",
+    "mcs.interfaces.postprocess_plugin",
+    "mcs.interfaces.storage",
+    "mcs.interfaces.storage_schema_ext",
+    "mcs.interfaces.trim_plugin",
+    # plugins
     "mcs.plugins",
     "mcs.plugins.base",
     "mcs.plugins.phase1",
     "mcs.plugins.phase1.alias_index",
-    "mcs.plugins.phase1.summary",
+    "mcs.plugins.phase1.deepseek_llm",
+    "mcs.plugins.phase1.fanout_reducer",
+    "mcs.plugins.phase1.hub_fallback",
+    "mcs.plugins.phase1.priority_trim",
     "mcs.plugins.phase1.source_tracking",
     "mcs.plugins.phase1.sqlite_storage",
-    "mcs.plugins.phase1.deepseek_llm",
+    "mcs.plugins.phase1.summary",
+    "mcs.plugins.phase1.summary_regen",
     "mcs.plugins.phase2",
-    "mcs.plugins.phase2.event_layer",
-    "mcs.plugins.phase2.versioning",
-    "mcs.plugins.phase2.confidence",
-    "mcs.plugins.phase2.timeseries_entry",
-    "mcs.plugins.phase2.gc",
     "mcs.plugins.phase2.arbitration",
+    "mcs.plugins.phase2.confidence",
+    "mcs.plugins.phase2.event_layer",
+    "mcs.plugins.phase2.gc",
+    "mcs.plugins.phase2.timeseries_entry",
+    "mcs.plugins.phase2.versioning",
+    # prompts (9 purposes + registry)
     "mcs.prompts",
-    "mcs.prompts.extract",
-    "mcs.prompts.place",
-    "mcs.prompts.merge",
-    "mcs.prompts.traverse",
+    "mcs.prompts.arbitrate",
+    "mcs.prompts.decide_directions",
+    "mcs.prompts.decide_hub",
+    "mcs.prompts.extract_concepts",
+    "mcs.prompts.gen_aliases",
+    "mcs.prompts.gen_summary",
+    "mcs.prompts.judge_relations",
+    "mcs.prompts.navigate_hub",
     "mcs.prompts.synthesize",
-    "mcs.prompts.aliases",
-    "mcs.prompts.summary",
+    # utils
     "mcs.utils",
-    "mcs.utils.tokenizer",
     "mcs.utils.text_utils",
+    "mcs.utils.tokenizer",
 ]
 
 
@@ -81,35 +95,35 @@ def test_module_importable(module_path: str) -> None:
 # === (b) ABC interfaces ===
 
 
-def test_abc_interfaces_with_abstract_methods_not_instantiable() -> None:
-    """Interfaces with abstractmethod cannot be instantiated directly."""
+def test_abc_interfaces_not_instantiable() -> None:
+    """Interfaces with abstract methods cannot be instantiated directly."""
+    from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
+    from mcs.interfaces.compaction_plugin import CompactionPluginInterface
+    from mcs.interfaces.entry_plugin import EntryPluginInterface
     from mcs.interfaces.index import IndexInterface
     from mcs.interfaces.llm import LLMInterface
     from mcs.interfaces.maintenance import MaintenanceInterface
     from mcs.interfaces.node_extension import NodeExtensionInterface
+    from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
     from mcs.interfaces.storage import StorageInterface
     from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
+    from mcs.interfaces.trim_plugin import TrimPluginInterface
 
     for interface_cls in [
-        StorageInterface,
+        ArbitrationPluginInterface,
+        CompactionPluginInterface,
+        EntryPluginInterface,
         IndexInterface,
         LLMInterface,
-        NodeExtensionInterface,
-        StorageSchemaExtensionInterface,
         MaintenanceInterface,
+        NodeExtensionInterface,
+        PostprocessPluginInterface,
+        StorageInterface,
+        StorageSchemaExtensionInterface,
+        TrimPluginInterface,
     ]:
         with pytest.raises(TypeError):
             interface_cls()  # type: ignore[abstract]
-
-
-def test_hook_interfaces_instantiable() -> None:
-    """Hook interfaces have no abstract methods → instantiable as no-op hooks."""
-    from mcs.interfaces.pipeline_hook import PipelineHookInterface
-    from mcs.interfaces.query_hook import QueryHookInterface
-
-    # Should not raise:
-    PipelineHookInterface()
-    QueryHookInterface()
 
 
 # === (c) Source location ===
@@ -128,36 +142,51 @@ def test_source_lives_in_plugin_not_core() -> None:
     )
 
 
-# === (d) Plugin name attributes match file names ===
+# === (d) Plugin name attributes ===
 
 
-def test_phase1_plugin_names_match_filenames() -> None:
-    from mcs.plugins.phase1.alias_index import AliasIndexPlugin
+def test_plugin_names_match_design() -> None:
+    """Each Phase 1 plugin class has the ``name`` class attribute the
+    default config and tests expect.
+    """
+    from mcs.plugins.phase1.alias_index import (
+        AliasEntryPlugin,
+        AliasIndexPlugin,
+    )
     from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
-    from mcs.plugins.phase1.source_tracking import SourceTrackingPlugin
+    from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
+    from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
+    from mcs.plugins.phase1.priority_trim import PriorityTrimPlugin
+    from mcs.plugins.phase1.source_tracking import (
+        IdempotencyCheckPlugin,
+        SourceTrackingPlugin,
+    )
     from mcs.plugins.phase1.sqlite_storage import SQLiteStoragePlugin
     from mcs.plugins.phase1.summary import SummaryPlugin
+    from mcs.plugins.phase1.summary_regen import SummaryRegenPlugin
 
     assert AliasIndexPlugin.name == "alias_index"
+    assert AliasEntryPlugin.name == "alias_entry"
+    assert HubFallbackEntryPlugin.name == "hub_fallback"
+    assert PriorityTrimPlugin.name == "priority_trim"
     assert SummaryPlugin.name == "summary"
     assert SourceTrackingPlugin.name == "source_tracking"
+    assert IdempotencyCheckPlugin.name == "idempotency_check"
+    assert FanoutReducerPlugin.name == "fanout_reducer"
+    assert SummaryRegenPlugin.name == "summary_regen"
     assert SQLiteStoragePlugin.name == "sqlite_storage"
     assert DeepSeekLLMPlugin.name == "deepseek_llm"
 
 
-# === Structural sanity ===
+def test_alias_entry_plugin_priority() -> None:
+    """AliasEntryPlugin must declare priority=100, exclusive=False."""
+    from mcs.plugins.phase1.alias_index import AliasEntryPlugin
+
+    assert AliasEntryPlugin.priority == 100
+    assert AliasEntryPlugin.exclusive is False
 
 
-def test_writepipeline_has_9_states() -> None:
-    from mcs.core.write_pipeline import WritePipelineState
-
-    assert len(list(WritePipelineState)) == 9
-
-
-def test_querypipeline_has_7_states() -> None:
-    from mcs.core.query_engine import QueryPipelineState
-
-    assert len(list(QueryPipelineState)) == 7
+# === (e) Structural sanity ===
 
 
 def test_node_has_only_minimal_core_fields() -> None:
@@ -170,26 +199,81 @@ def test_node_has_only_minimal_core_fields() -> None:
     )
 
 
-def test_default_phase1_config_has_5_plugins() -> None:
-    from mcs.core.config import MCSConfig
+def test_query_context_has_4_lifecycle_fields() -> None:
+    """QueryContext: system_prompt / user_input / intermediate / result_set + metadata."""
+    from mcs.core.query_engine import QueryContext
+
+    field_names = {f.name for f in fields(QueryContext)}
+    expected = {
+        "system_prompt",
+        "user_input",
+        "intermediate",
+        "result_set",
+        "metadata",
+    }
+    assert field_names == expected, (
+        f"QueryContext fields mismatch: {field_names ^ expected}"
+    )
+
+
+def test_write_context_has_7_lifecycle_fields() -> None:
+    """WriteContext: system_prompt, user_input, processed, related, concepts,
+    decisions, changed (+ metadata + skip control flag)."""
+    from mcs.core.write_pipeline import WriteContext
+
+    field_names = {f.name for f in fields(WriteContext)}
+    expected_core = {
+        "system_prompt",
+        "user_input",
+        "processed",
+        "related",
+        "concepts",
+        "decisions",
+        "changed",
+    }
+    assert expected_core.issubset(field_names), (
+        f"WriteContext missing core fields: {expected_core - field_names}"
+    )
+
+
+def test_decision_action_types() -> None:
+    """Decision dataclass must accept the four documented action types."""
+    from mcs.core.decisions import ConceptDraft, Decision
+
+    c = ConceptDraft(name="X", content="...")
+    Decision(action="merge", concept=c, target_id="n1")
+    Decision(action="create", concept=c, edges_to=["n2"])
+    Decision(action="attach_statement", target_id="n1", statement="...")
+    Decision(action="no_op", concept=c, reason="not relevant")
+
+
+def test_default_phase1_config_plugins() -> None:
+    """Default Phase 1 plugin list matches phase1-defaults spec."""
+    from mcs.core.config import PHASE1_DEFAULT_PLUGINS, MCSConfig
 
     config = MCSConfig.knowledge_graph()
-    assert config.plugins == [
-        "alias_index",
-        "summary",
-        "source_tracking",
-        "sqlite_storage",
-        "deepseek_llm",
-    ]
+    assert config.plugins == PHASE1_DEFAULT_PLUGINS
+    assert config.token_budget == 8000
+    assert config.max_rounds == 5
+    assert config.max_picked == 50
+
+    # Sanity: 11 plugins per spec
+    assert len(PHASE1_DEFAULT_PLUGINS) == 11
+    assert "alias_entry" in PHASE1_DEFAULT_PLUGINS
+    assert "hub_fallback" in PHASE1_DEFAULT_PLUGINS
+    assert "priority_trim" in PHASE1_DEFAULT_PLUGINS
+    assert "idempotency_check" in PHASE1_DEFAULT_PLUGINS
+    assert "fanout_reducer" in PHASE1_DEFAULT_PLUGINS
+    assert "summary_regen" in PHASE1_DEFAULT_PLUGINS
 
 
-def test_serializer_get_summary_fallback() -> None:
-    """Serializer.get_summary should fall back to content when summary slot absent."""
+def test_context_renderer_get_summary_fallback() -> None:
+    """ContextRenderer.get_summary: read extension; fall back to content[:200]."""
+    from mcs.core.context_renderer import ContextRenderer
     from mcs.core.graph import Node
-    from mcs.core.serializer import Serializer
 
     node = Node(id="n1", name="X", content="hello world", role="concept")
-    assert Serializer.get_summary(node) == "hello world"
+    assert ContextRenderer.get_summary(node) == "hello world"
 
     node_with_summary = Node(
         id="n2",
@@ -198,4 +282,90 @@ def test_serializer_get_summary_fallback() -> None:
         role="concept",
         extensions={"summary": {"text": "short summary"}},
     )
-    assert Serializer.get_summary(node_with_summary) == "short summary"
+    assert ContextRenderer.get_summary(node_with_summary) == "short summary"
+
+
+def test_default_prompts_has_9_purposes() -> None:
+    """DEFAULT_PROMPTS registers all 9 Phase 1 purposes."""
+    from mcs.prompts import DEFAULT_PROMPTS
+
+    expected_purposes = {
+        "extract_concepts",
+        "judge_relations",
+        "decide_directions",
+        "decide_hub",
+        "navigate_hub",
+        "arbitrate",
+        "synthesize",
+        "gen_aliases",
+        "gen_summary",
+    }
+    assert set(DEFAULT_PROMPTS.keys()) == expected_purposes
+
+
+def test_plugin_manager_arbitration_singleton() -> None:
+    """Registering a 2nd ArbitrationPlugin must raise ConfigurationError."""
+    from mcs.core.errors import ConfigurationError
+    from mcs.core.plugin_manager import PluginManager
+    from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
+    from mcs.plugins.base import Plugin
+
+    class FakeArb(Plugin, ArbitrationPluginInterface):
+        name = "fake_arb_1"
+        interfaces = [ArbitrationPluginInterface]
+
+        def initialize(self, context):
+            pass
+
+        def shutdown(self):
+            pass
+
+        def arbitrate(self, accumulated, query, ctx):
+            return accumulated
+
+    class FakeArb2(FakeArb):
+        name = "fake_arb_2"
+
+    pm = PluginManager()
+    pm.register(FakeArb())
+    with pytest.raises(ConfigurationError):
+        pm.register(FakeArb2())
+
+
+def test_plugin_manager_entry_plugin_priority_sort() -> None:
+    """get_all(EntryPluginInterface) returns priority-sorted list."""
+    from mcs.core.plugin_manager import PluginManager
+    from mcs.interfaces.entry_plugin import EntryPluginInterface
+    from mcs.plugins.base import Plugin
+
+    class FakeEntry(Plugin, EntryPluginInterface):
+        interfaces = [EntryPluginInterface]
+
+        def initialize(self, context):
+            pass
+
+        def shutdown(self):
+            pass
+
+        def locate(self, query, ctx):
+            return []
+
+    class High(FakeEntry):
+        name = "high"
+        priority = 100
+
+    class Low(FakeEntry):
+        name = "low"
+        priority = 0
+
+    class Mid(FakeEntry):
+        name = "mid"
+        priority = 50
+
+    pm = PluginManager()
+    pm.register(Low())
+    pm.register(High())
+    pm.register(Mid())
+
+    sorted_plugins = pm.get_all(EntryPluginInterface)
+    assert [p.name for p in sorted_plugins] == ["high", "mid", "low"]

@@ -1,23 +1,32 @@
-"""Node extension interface - plugins extend Node via the extensions dict."""
+"""Node extension interface - plugins extend Node via the extensions dict.
+
+Plugin classes use their ``name`` class attribute (inherited from
+``Plugin``) as the key into ``node.extensions[name]``. Implementations
+declare what fields they manage and how to serialize them.
+
+In addition to schema/default/serialize/deserialize, extensions MAY
+override ``render(node, purpose)`` to contribute a prompt fragment when
+``ContextRenderer`` serializes nodes for a specific LLM purpose.
+
+See openspec/specs/plugin-protocol/spec.md "NodeExtensionInterface supports
+按 purpose 贡献渲染片段".
+"""
+
+from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mcs.core.graph import Node
 
 
 class NodeExtensionInterface(ABC):
     """Abstract node data extension.
 
-    Plugin classes use their ``name`` class attribute (inherited from
-    ``Plugin``) as the key into ``node.extensions[name]``. Implementations
-    declare what fields they manage and how to serialize them.
-
-    See architecture.md §3.4.
-
-    NOTE: This interface does not declare ``name()`` as an abstract method
-    (although architecture.md §3.4 shows one). The ``name`` identifier is
-    instead provided by ``Plugin`` as a class attribute. This avoids a
-    multi-inheritance conflict where a class attribute and an abstract method
-    would share the same name.
+    NOTE: ``name`` is provided by the ``Plugin`` base class as a class
+    attribute and is the key into ``node.extensions``. It is intentionally
+    not an abstract method here to avoid multi-inheritance conflicts.
     """
 
     @abstractmethod
@@ -39,3 +48,18 @@ class NodeExtensionInterface(ABC):
     def deserialize(self, data: dict) -> Any:
         """Restore extension data from its serialized form."""
         pass
+
+    # === Optional: prompt rendering contribution ===
+
+    def render(self, node: Node, purpose: str) -> str | None:
+        """Contribute a prompt fragment when rendering ``node`` for ``purpose``.
+
+        Default returns None (no contribution). Extensions that want to add
+        information beyond the core ``name`` / ``content`` / ``summary``
+        fields (e.g., sources, versions, confidence) override this and
+        return a short string fragment.
+
+        Return ``None`` when this extension has nothing to contribute for
+        the given purpose. ``ContextRenderer`` skips None contributions.
+        """
+        return None

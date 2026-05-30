@@ -1,0 +1,52 @@
+"""Prompt bundle for purpose='extract_concepts'.
+
+Stage ③ of the write pipeline. Input: original text + already-related
+nodes (so the LLM can reuse existing names). Output: List[ConceptDraft].
+"""
+
+from __future__ import annotations
+
+import json
+
+from mcs.core.decisions import ConceptDraft
+from mcs.core.errors import LLMParseError
+from mcs.utils.text_utils import strip_json_fence
+
+SYSTEM_PROMPT = (
+    "你是知识图谱构建助手。从输入文本中识别独立的概念，"
+    "如果某概念已存在于「已知相关概念」中，请复用其名称。"
+    "概念之间的关系用自然语言短语写在 relation_hints 里，不要做谓词归一。"
+)
+
+USER_TEMPLATE = (
+    "已知相关概念（可复用其名称）:\n"
+    "{material}\n\n"
+    "输入文本:\n"
+    "{text}\n\n"
+    '请输出 JSON 数组，每项形如 {{"name": "...", "content": "...", "relation_hints": ["..."]}}。'
+    "只返回 JSON，不要其他解释。"
+)
+
+
+def parse(raw: str) -> list[ConceptDraft]:
+    """Parse the LLM response into a list of ConceptDraft."""
+    try:
+        data = json.loads(strip_json_fence(raw))
+    except json.JSONDecodeError as e:
+        raise LLMParseError("extract_concepts", raw, str(e)) from e
+    if not isinstance(data, list):
+        raise LLMParseError("extract_concepts", raw, "expected JSON array")
+    result: list[ConceptDraft] = []
+    for item in data:
+        if not isinstance(item, dict) or "name" not in item:
+            raise LLMParseError(
+                "extract_concepts", raw, f"invalid item: {item!r}"
+            )
+        result.append(
+            ConceptDraft(
+                name=item["name"],
+                content=item.get("content", ""),
+                relation_hints=item.get("relation_hints", []) or [],
+            )
+        )
+    return result

@@ -1,27 +1,30 @@
 """DeepSeekLLMPlugin - DeepSeek LLM backend (OpenAI-compatible).
 
-Implements ``LLMInterface``. Uses the OpenAI SDK with DeepSeek's base URL.
+Implements the unified ``LLMInterface``. The vendor-specific piece is
+just ``_raw_call(system, user) -> str``; everything else (rendering,
+prompt assembly, parsing) is handled by ``LLMInterface``'s base impl.
 
-See architecture.md §6.5.
+Configuration keys:
+  - ``api_key``  (required for actual calls)
+  - ``model``    (default: ``"deepseek-chat"``)
+  - ``base_url`` (default: ``"https://api.deepseek.com"``)
+  - ``timeout``  (default: 60 seconds)
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from mcs.core.errors import LLMCallError
 from mcs.interfaces.llm import LLMInterface
 from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
 
 
 class DeepSeekLLMPlugin(Plugin, LLMInterface):
-    """DeepSeek LLM backend via the OpenAI-compatible API.
-
-    Phase 1 implementation pending. See architecture.md §6.5.
-    """
+    """DeepSeek LLM backend via the OpenAI-compatible API."""
 
     name: ClassVar[str] = "deepseek_llm"
     version: ClassVar[str] = "0.1.0"
@@ -31,47 +34,50 @@ class DeepSeekLLMPlugin(Plugin, LLMInterface):
         super().__init__(config)
         self.api_key: str = self.config.get("api_key", "")
         self.model: str = self.config.get("model", "deepseek-chat")
-        self.base_url: str = self.config.get("base_url", "https://api.deepseek.com")
+        self.base_url: str = self.config.get(
+            "base_url", "https://api.deepseek.com"
+        )
+        self.timeout: float = float(self.config.get("timeout", 60.0))
         self.client: Any = None
 
     # === Plugin lifecycle ===
 
     def initialize(self, context: PluginContext) -> None:
-        raise NotImplementedError("Phase 1 implementation pending")
+        # Connect the framework's ContextRenderer so base ``call`` can use it.
+        self.attach_renderer(context.context_renderer)
+        # Lazy-import OpenAI so test environments without it can still load
+        # the plugin class (e.g. for tests that only check name/interfaces).
+        if self.api_key:
+            try:
+                from openai import OpenAI  # type: ignore[import]
+
+                self.client = OpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout=self.timeout,
+                )
+            except ImportError:
+                self.client = None
 
     def shutdown(self) -> None:
-        raise NotImplementedError("Phase 1 implementation pending")
+        self.client = None
 
     # === LLMInterface ===
 
-    def call(self, prompt: str, system: str | None = None) -> str:
-        raise NotImplementedError("Phase 1 implementation pending")
-
-    def extract_concepts(self, text: str) -> list[Any]:
-        raise NotImplementedError("Phase 1 implementation pending")
-
-    def check_exists(
-        self, concept: Any, subgraph: str
-    ) -> tuple[bool, Node | None]:
-        raise NotImplementedError("Phase 1 implementation pending")
-
-    def decide_hub(self, subgraph: str) -> Any:
-        raise NotImplementedError("Phase 1 implementation pending")
-
-    def decide_directions(
-        self,
-        query: str,
-        current_node: Node,
-        subgraph: str,
-        accumulated: list[Node],
-    ) -> list[str]:
-        raise NotImplementedError("Phase 1 implementation pending")
-
-    def synthesize(self, query: str, content: str) -> str:
-        raise NotImplementedError("Phase 1 implementation pending")
-
-    def generate_aliases(self, concept: Any) -> list[str]:
-        raise NotImplementedError("Phase 1 implementation pending")
-
-    def generate_summary(self, content: str, max_tokens: int = 100) -> str:
-        raise NotImplementedError("Phase 1 implementation pending")
+    def _raw_call(self, system: str, user: str) -> str:
+        if self.client is None:
+            raise LLMCallError(
+                "DeepSeek client not initialized; "
+                "set ``api_key`` in plugin config or attach a mock LLM."
+            )
+        try:
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": user})
+            resp = self.client.chat.completions.create(
+                model=self.model, messages=messages
+            )
+            return resp.choices[0].message.content or ""
+        except Exception as e:  # pragma: no cover - network errors
+            raise LLMCallError(f"DeepSeek call failed: {e}") from e

@@ -1,64 +1,70 @@
-"""SummaryPlugin - LLM-generated node summaries.
+"""SummaryPlugin - manage ``extensions['summary']`` slot.
 
-Implements two interfaces:
-
-- ``NodeExtensionInterface``: manages ``node.extensions["summary"]``
-- ``PipelineHookInterface``: generates summary on_created_or_merged
-
-See architecture.md §6.2.
+Generation is triggered by ``SummaryRegenPlugin`` (Compaction) in write
+stage ⑥. This plugin only owns the data slot schema.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from mcs.interfaces.node_extension import NodeExtensionInterface
-from mcs.interfaces.pipeline_hook import PipelineHookInterface
 from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
+    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
 
 
-class SummaryPlugin(Plugin, NodeExtensionInterface, PipelineHookInterface):
-    """LLM-generated node summary plugin.
-
-    Phase 1 implementation pending. See architecture.md §6.2.
-    """
+class SummaryPlugin(Plugin, NodeExtensionInterface):
+    """``extensions["summary"]`` = ``{"text": str, "generated_at": str|None}``."""
 
     name: ClassVar[str] = "summary"
     version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [
-        NodeExtensionInterface,
-        PipelineHookInterface,
-    ]
+    interfaces: ClassVar[list[type]] = [NodeExtensionInterface]
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
-        self.llm: Any = None
 
     # === Plugin lifecycle ===
 
     def initialize(self, context: PluginContext) -> None:
-        raise NotImplementedError("Phase 1 implementation pending")
+        return None
 
     def shutdown(self) -> None:
-        raise NotImplementedError("Phase 1 implementation pending")
+        return None
 
     # === NodeExtensionInterface ===
 
     def schema(self) -> dict:
-        raise NotImplementedError("Phase 1 implementation pending")
+        return {"text": "str", "generated_at": "iso8601 str | None"}
 
-    def default(self) -> Any:
-        raise NotImplementedError("Phase 1 implementation pending")
+    def default(self) -> dict:
+        return {"text": "", "generated_at": None}
 
     def serialize(self, data: Any) -> dict:
-        raise NotImplementedError("Phase 1 implementation pending")
+        if not data:
+            return self.default()
+        generated_at = data.get("generated_at")
+        if isinstance(generated_at, datetime):
+            generated_at = generated_at.isoformat()
+        return {
+            "text": data.get("text", ""),
+            "generated_at": generated_at,
+        }
 
-    def deserialize(self, data: dict) -> Any:
-        raise NotImplementedError("Phase 1 implementation pending")
+    def deserialize(self, data: dict) -> dict:
+        if not data:
+            return self.default()
+        return {
+            "text": data.get("text", ""),
+            "generated_at": data.get("generated_at"),
+        }
 
-    # === PipelineHookInterface ===
-    # Phase 1 override on_created_or_merged: call self.llm.generate_summary()
-    # and mount to node.extensions["summary"] = {"text": ..., "generated_at": ...}
+    def render(self, node: Node, purpose: str) -> str | None:
+        """SummaryPlugin contributes nothing — ContextRenderer reads
+        ``extensions["summary"]["text"]`` directly when downgrading
+        content to summary.
+        """
+        return None
