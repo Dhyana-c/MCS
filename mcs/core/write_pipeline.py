@@ -1,6 +1,6 @@
-"""写入管道 - 将文本导入 MCS 的 6 阶段管道。
+"""写入管道 - 将文本导入 MCS 的 7 阶段管道。
 
-6 个阶段按顺序执行，参见 openspec/specs/write-pipeline/spec.md：
+7 个阶段按顺序执行，参见 openspec/specs/write-pipeline/spec.md：
 
     ① 前置插件链         (PostprocessPlugin chain on text)
     ② 关联节点定位       (复用查询管道)
@@ -8,12 +8,14 @@
     ④ 关系判定           (LLM: judge_relations → DecisionList)
     ⑤ 图更新             (无 LLM；原子地应用 DecisionList)
     ⑥ 压缩判定插件链     (CompactionPlugin chain, 条件性)
+    ⑦ 自动落盘           (StorageInterface 增量持久化)
 
 阶段 ④ 产生一个 ``DecisionList``（纯数据）；阶段 ⑤ 应用它。
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -22,6 +24,7 @@ from mcs.core.decisions import ConceptDraft, Decision, DecisionList
 from mcs.core.errors import InvalidDecisionError, UnknownActionError
 
 if TYPE_CHECKING:
+    from mcs.core.config import MCSConfig
     from mcs.core.graph import GraphStore, Node
     from mcs.core.plugin_manager import PluginManager
     from mcs.core.query_engine import QueryEngine
@@ -29,11 +32,14 @@ if TYPE_CHECKING:
     from mcs.interfaces.llm import LLMInterface
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class WriteContext:
     """贯穿一次 ingest() 调用的状态。
 
-    规范中的 7 个生命周期字段，加上自由元数据：
+    规范中的 8 个生命周期字段，加上自由元数据：
 
     - ``system_prompt``: 不变量
     - ``user_input``: 原始文本，不变量
@@ -42,8 +48,9 @@ class WriteContext:
     - ``concepts``: 阶段 ③ 的输出
     - ``decisions``: 阶段 ④ 的输出
     - ``changed``: 阶段 ⑤ 的输出（新创建或合并的节点）
+    - ``persisted``: 阶段 ⑦ 的输出（落盘是否成功）
 
-    参见 openspec/specs/write-pipeline/spec.md "WriteContext 含七个状态字段"。
+    参见 openspec/specs/write-pipeline/spec.md "WriteContext 含八个状态字段"。
     """
 
     system_prompt: str = ""
@@ -53,6 +60,7 @@ class WriteContext:
     concepts: list[ConceptDraft] = field(default_factory=list)
     decisions: DecisionList = field(default_factory=list)
     changed: list[Node] = field(default_factory=list)
+    persisted: bool = False
     metadata: dict = field(default_factory=dict)
     skip: bool = False
 
@@ -74,6 +82,7 @@ class WritePipeline:
         query_engine: QueryEngine,
         plugin_manager: PluginManager,
         token_budget: TokenBudget,
+        config: MCSConfig | None = None,
         system_prompt: str = "",
     ):
         self.graph = graph
@@ -81,14 +90,15 @@ class WritePipeline:
         self.query_engine = query_engine
         self.plugin_manager = plugin_manager
         self.token_budget = token_budget
+        self.config = config
         self.system_prompt = system_prompt
 
     # === 公共 API ===
 
     def ingest(self, text: str, **metadata: Any) -> WriteContext:
-        """执行 6 阶段写入管道。返回最终的 WriteContext。
+        """执行 7 阶段写入管道。返回最终的 WriteContext。
 
-        概念提取为空时静默返回（跳过阶段 ④⑤⑥）；
+        概念提取为空时静默返回（跳过阶段 ④⑤⑥⑦）；
         通过 ``ctx.skip = True`` 的幂等跳过也会短路。
         """
         ctx = WriteContext(
@@ -125,6 +135,8 @@ class WritePipeline:
         ) or []
         # 重新附加完整的 ConceptDraft 对象（解析器只知道名称）
         _reattach_concepts(decisions, concepts)
+        # 丢弃结构上无法应用的坏决策（LLM 偶发 target_id=null），避免整次摄入失败
+        decisions = self._sanitize_decisions(decisions)
         ctx.decisions = decisions
 
         # 阶段 ⑤: 图更新
@@ -134,6 +146,9 @@ class WritePipeline:
 
         # 阶段 ⑥: 压缩判定插件链
         self._run_compaction(ctx.changed)
+
+        # 阶段 ⑦: 自动落盘
+        self._run_persist(ctx)
 
         return ctx
 
@@ -181,6 +196,24 @@ class WritePipeline:
             if ctx.skip:
                 return result if isinstance(result, str) else text
         return result if isinstance(result, str) else text
+
+    def _sanitize_decisions(self, decisions: DecisionList) -> DecisionList:
+        """丢弃结构上无法应用的 LLM 决策，避免单个坏决策使整次摄入失败。
+
+        merge / attach_statement 缺 target_id（LLM 偶尔返回 null）→ 丢弃并告警；
+        其余仍交由 ``_apply_decisions`` 严格处理，保持内部不变量与既有契约。
+        """
+        cleaned: DecisionList = []
+        for d in decisions:
+            if d.action in ("merge", "attach_statement") and not d.target_id:
+                logger.warning(
+                    "Dropping %s decision without target_id (concept=%r)",
+                    d.action,
+                    getattr(d.concept, "name", None),
+                )
+                continue
+            cleaned.append(d)
+        return cleaned
 
     def _apply_decisions(self, decisions: DecisionList) -> list[Node]:
         """阶段 ⑤：将每个 Decision 分派到原子 GraphStore 操作。
@@ -282,6 +315,52 @@ class WritePipeline:
         for plugin in plugins:
             if plugin.should_run(changed_nodes, self.graph):
                 plugin.run(changed_nodes, self.graph, self.llm.call)
+
+    def _run_persist(self, ctx: WriteContext) -> None:
+        """阶段 ⑦：将 ctx.changed 中的节点及关联边增量持久化到 StorageInterface。
+
+        检查 config.auto_persist 开关；无 StorageInterface 或 changed 为空时跳过。
+        存储异常被捕获并记录警告，不影响 ingest 返回。
+        """
+        from mcs.interfaces.storage import StorageInterface
+
+        if not ctx.changed:
+            return
+
+        auto_persist = getattr(self.config, "auto_persist", True) if self.config else True
+        if not auto_persist:
+            return
+
+        storage = self.plugin_manager.get(StorageInterface)
+        if storage is None:
+            return
+
+        try:
+            changed_ids = {n.id for n in ctx.changed}
+            persisted_edges: set[tuple[str, str]] = set()
+
+            for node in ctx.changed:
+                storage.save_node(node)
+
+            for node in ctx.changed:
+                for neighbor in self.graph.get_neighbors(node.id):
+                    edge = self.graph.get_edge(node.id, neighbor.id)
+                    if edge is None:
+                        continue
+                    key = (edge.source_id, edge.target_id)
+                    if key in persisted_edges:
+                        continue
+                    if neighbor.id in changed_ids or node.id in changed_ids:
+                        storage.save_edge(edge)
+                        persisted_edges.add(key)
+
+            ctx.persisted = True
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Auto-persist failed for %d changed nodes", len(ctx.changed),
+                exc_info=True,
+            )
 
 
 # === 辅助函数 ===

@@ -15,6 +15,7 @@ license = {text = "MIT"}
 dependencies = [
     "openai>=1.0,<2.0",
     "jieba>=0.42",
+    "ujson>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -26,6 +27,9 @@ dev = [
 claude = [
     "anthropic>=0.40,<1.0",
 ]
+
+[project.scripts]
+hotpot-eval = "mcs.bench.hotpot:main"
 
 [tool.setuptools.packages.find]
 include = ["mcs*"]

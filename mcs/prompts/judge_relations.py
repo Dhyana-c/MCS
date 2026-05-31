@@ -47,8 +47,12 @@ def parse(raw: str) -> list[Decision]:
         data = json.loads(strip_json_fence(raw))
     except json.JSONDecodeError as e:
         raise LLMParseError("judge_relations", raw, str(e)) from e
+    if isinstance(data, dict):
+        data = [data]  # 容忍 LLM 偶尔只返回单个决策对象
     if not isinstance(data, list):
-        raise LLMParseError("judge_relations", raw, "expected JSON array")
+        raise LLMParseError(
+            "judge_relations", raw, "expected JSON array or object"
+        )
     decisions: list[Decision] = []
     valid_actions = {"merge", "create", "attach_statement", "no_op"}
     for item in data:

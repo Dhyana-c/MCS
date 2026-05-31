@@ -37,6 +37,7 @@ class MCSConfig:
     token_budget: int = 8000
     max_rounds: int = 5
     max_picked: int = 50
+    auto_persist: bool = True
     plugins: list[str] = field(default_factory=list)
     plugin_configs: dict = field(default_factory=dict)
     prompt_overrides: dict[str, dict] = field(default_factory=dict)

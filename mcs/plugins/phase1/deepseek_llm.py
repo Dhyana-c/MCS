@@ -38,6 +38,7 @@ class DeepSeekLLMPlugin(Plugin, LLMInterface):
             "base_url", "https://api.deepseek.com"
         )
         self.timeout: float = float(self.config.get("timeout", 60.0))
+        self.max_tokens: int = int(self.config.get("max_tokens", 8192))
         self.client: Any = None
 
     # === 插件生命周期 ===
@@ -76,7 +77,7 @@ class DeepSeekLLMPlugin(Plugin, LLMInterface):
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": user})
             resp = self.client.chat.completions.create(
-                model=self.model, messages=messages
+                model=self.model, messages=messages, max_tokens=self.max_tokens
             )
             return resp.choices[0].message.content or ""
         except Exception as e:  # pragma: no cover - 网络错误

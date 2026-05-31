@@ -34,8 +34,12 @@ def parse(raw: str) -> list[ConceptDraft]:
         data = json.loads(strip_json_fence(raw))
     except json.JSONDecodeError as e:
         raise LLMParseError("extract_concepts", raw, str(e)) from e
+    if isinstance(data, dict):
+        data = [data]  # 容忍 LLM 偶尔只返回单个概念对象
     if not isinstance(data, list):
-        raise LLMParseError("extract_concepts", raw, "expected JSON array")
+        raise LLMParseError(
+            "extract_concepts", raw, "expected JSON array or object"
+        )
     result: list[ConceptDraft] = []
     for item in data:
         if not isinstance(item, dict) or "name" not in item:

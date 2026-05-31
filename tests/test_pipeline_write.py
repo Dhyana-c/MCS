@@ -1,9 +1,10 @@
-"""WritePipeline 测试：6 阶段管道行为。"""
+"""WritePipeline 测试：7 阶段管道行为。"""
 
 from __future__ import annotations
 
 from typing import ClassVar
 
+from mcs.core.config import MCSConfig
 from mcs.core.decisions import ConceptDraft, Decision
 from mcs.core.graph import GraphStore, Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
@@ -11,17 +12,18 @@ from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
+from mcs.interfaces.storage import StorageInterface
 from mcs.plugins.base import Plugin
 
 
-def _build_pipelines(graph: GraphStore, mock_llm, *extra_plugins):
+def _build_pipelines(graph: GraphStore, mock_llm, *extra_plugins, config=None):
     pm = PluginManager()
     pm.register(mock_llm)
     for p in extra_plugins:
         pm.register(p)
     ctx = PluginContext(
         graph=graph,
-        config=None,  # type: ignore[arg-type]
+        config=config or MCSConfig(),
         token_budget=TokenBudget(8000),
         context_renderer=None,  # type: ignore[arg-type]
         plugin_manager=pm,
@@ -41,6 +43,7 @@ def _build_pipelines(graph: GraphStore, mock_llm, *extra_plugins):
         query_engine=query_engine,
         plugin_manager=pm,
         token_budget=TokenBudget(8000),
+        config=config or MCSConfig(),
     )
     return write_pipeline, query_engine, pm
 
@@ -258,3 +261,231 @@ def test_write_context_fields_populated(empty_graph, mock_llm):
     assert len(ctx.decisions) == 1
     assert len(ctx.changed) == 1
     assert ctx.metadata == {"doc_id": "d1", "chunk_id": "c1"}
+
+
+# === 阶段 ⑦ 自动落盘测试 ===
+
+
+class _MockStorage(Plugin, StorageInterface):
+    """用于测试的 mock 存储插件。"""
+
+    name: ClassVar[str] = "mock_storage"
+    interfaces: ClassVar[list[type]] = [StorageInterface]
+
+    def __init__(self, config=None):
+        super().__init__(config)
+        self.saved_nodes: list[Node] = []
+        self.saved_edges: list = []
+        self._load_graph: GraphStore | None = None
+        self._load_raise: Exception | None = None
+
+    def initialize(self, context):
+        pass
+
+    def shutdown(self):
+        pass
+
+    def save(self, graph):
+        pass
+
+    def load(self):
+        if self._load_raise:
+            raise self._load_raise
+        return self._load_graph or GraphStore()
+
+    def save_node(self, node):
+        self.saved_nodes.append(node)
+
+    def save_edge(self, edge):
+        self.saved_edges.append(edge)
+
+
+def test_auto_persist_saves_changed_nodes(empty_graph, mock_llm):
+    """auto_persist=True 时，每次 ingest 后 changed 节点必须落盘。"""
+    storage = _MockStorage()
+    config = MCSConfig(auto_persist=True)
+    wp, _, pm = _build_pipelines(empty_graph, mock_llm, storage, config=config)
+
+    concept = ConceptDraft(name="x", content="content")
+    mock_llm.set_response("extract_concepts", [concept])
+    mock_llm.set_response(
+        "judge_relations",
+        [Decision(action="create", concept=concept, edges_to=[])],
+    )
+    ctx = wp.ingest("text")
+
+    assert ctx.persisted is True
+    assert len(storage.saved_nodes) == 1
+    assert storage.saved_nodes[0].name == "x"
+
+
+def test_auto_persist_false_skips_persist(empty_graph, mock_llm):
+    """auto_persist=False 时，阶段 ⑦ 必须跳过。"""
+    storage = _MockStorage()
+    config = MCSConfig(auto_persist=False)
+    wp, _, _ = _build_pipelines(empty_graph, mock_llm, storage, config=config)
+
+    concept = ConceptDraft(name="x", content="content")
+    mock_llm.set_response("extract_concepts", [concept])
+    mock_llm.set_response(
+        "judge_relations",
+        [Decision(action="create", concept=concept, edges_to=[])],
+    )
+    ctx = wp.ingest("text")
+
+    assert ctx.persisted is False
+    assert len(storage.saved_nodes) == 0
+
+
+def test_auto_persist_saves_edges(empty_graph, mock_llm):
+    """create 动作创建的边必须被持久化。"""
+    anchor = Node(id="anchor", name="Anchor", content="anchor content")
+    empty_graph.add_node(anchor)
+
+    storage = _MockStorage()
+    config = MCSConfig(auto_persist=True)
+    wp, _, _ = _build_pipelines(empty_graph, mock_llm, storage, config=config)
+
+    concept = ConceptDraft(name="new", content="new content")
+    mock_llm.set_response("extract_concepts", [concept])
+    mock_llm.set_response(
+        "judge_relations",
+        [Decision(action="create", concept=concept, edges_to=["anchor"])],
+    )
+    ctx = wp.ingest("text")
+
+    assert ctx.persisted is True
+    assert len(storage.saved_nodes) == 1
+    assert len(storage.saved_edges) == 1
+
+
+def test_auto_persist_storage_exception_handled(empty_graph, mock_llm):
+    """存储异常必须被捕获，不影响 ingest 返回。"""
+    storage = _MockStorage()
+
+    def raise_on_save(node):
+        raise RuntimeError("disk full")
+
+    storage.save_node = raise_on_save
+
+    config = MCSConfig(auto_persist=True)
+    wp, _, _ = _build_pipelines(empty_graph, mock_llm, storage, config=config)
+
+    concept = ConceptDraft(name="x", content="content")
+    mock_llm.set_response("extract_concepts", [concept])
+    mock_llm.set_response(
+        "judge_relations",
+        [Decision(action="create", concept=concept, edges_to=[])],
+    )
+    ctx = wp.ingest("text")
+
+    # ingest 必须正常返回，不抛异常
+    assert ctx is not None
+    assert ctx.changed  # 图更新成功
+    assert ctx.persisted is False  # 落盘失败
+
+
+def test_persisted_field_set_correctly(empty_graph, mock_llm):
+    """WriteContext.persisted 字段必须正确反映落盘状态。"""
+    storage = _MockStorage()
+    config = MCSConfig(auto_persist=True)
+    wp, _, _ = _build_pipelines(empty_graph, mock_llm, storage, config=config)
+
+    # 无 changed 时 persisted 应为 False
+    mock_llm.set_response("extract_concepts", [])
+    ctx = wp.ingest("text")
+    assert ctx.persisted is False
+
+    # 有 changed 且落盘成功时 persisted 应为 True
+    concept = ConceptDraft(name="x", content="content")
+    mock_llm.set_response("extract_concepts", [concept])
+    mock_llm.set_response(
+        "judge_relations",
+        [Decision(action="create", concept=concept, edges_to=[])],
+    )
+    ctx = wp.ingest("text")
+    assert ctx.persisted is True
+
+
+# === Load-on-startup 测试 ===
+
+
+def test_load_on_startup_restores_graph(tmp_path, mock_llm):
+    """MCS.initialize() 时，若图为空且 Storage 存在，必须从存储加载已有数据。"""
+    from mcs import MCS
+    from mcs.plugins.phase1.sqlite_storage import SQLiteStoragePlugin
+
+    # 先创建一个有数据的数据库
+    db_path = str(tmp_path / "test.db")
+    storage = SQLiteStoragePlugin({"path": db_path})
+    pre_graph = GraphStore()
+    node1 = Node(id="n1", name="已存在节点", content="来自数据库")
+    pre_graph.add_node(node1)
+
+    from mcs.core.plugin_manager import PluginManager
+    from mcs.core.plugin_manager import PluginContext
+    pm = PluginManager()
+    pm.register(storage)
+    pm.register(mock_llm)
+    ctx = PluginContext(
+        graph=pre_graph,
+        config=MCSConfig(),
+        token_budget=TokenBudget(8000),
+        context_renderer=None,
+        plugin_manager=pm,
+    )
+    pm.initialize_all(ctx)
+    storage.save(pre_graph)
+
+    # 创建新的 MCS 实例，图应为空
+    config = MCSConfig(
+        plugins=["sqlite_storage", "mock_llm"],
+        plugin_configs={"sqlite_storage": {"path": db_path}},
+    )
+    mcs = MCS(config)
+    mcs.register_plugin(mock_llm)
+    mcs.initialize()
+
+    # 图应该包含从数据库加载的节点
+    nodes = mcs.graph.get_all_nodes()
+    assert len(nodes) == 1
+    assert nodes[0].name == "已存在节点"
+
+
+def test_load_on_startup_skipped_when_graph_has_data(mock_llm):
+    """如果内存图已有数据，load-on-startup 不应覆盖。"""
+    from mcs import MCS
+
+    config = MCSConfig(plugins=["mock_llm"])
+    mcs = MCS(config)
+
+    # 手动预先添加节点
+    pre_node = Node(id="pre", name="预先存在", content="内存中的节点")
+    mcs.graph.add_node(pre_node)
+
+    mcs.register_plugin(mock_llm)
+    mcs.initialize()
+
+    # 预先存在的节点应该保留
+    nodes = mcs.graph.get_all_nodes()
+    assert len(nodes) == 1
+    assert nodes[0].name == "预先存在"
+
+
+def test_load_on_startup_handles_exception(tmp_path, mock_llm):
+    """storage.load() 异常不影响 initialize() 完成。"""
+    from mcs import MCS
+
+    # 使用损坏的数据库路径
+    db_path = str(tmp_path / "corrupt.db")
+
+    config = MCSConfig(
+        plugins=["sqlite_storage", "mock_llm"],
+        plugin_configs={"sqlite_storage": {"path": db_path}},
+    )
+    mcs = MCS(config)
+    mcs.register_plugin(mock_llm)
+
+    # initialize 应该正常完成，不抛异常
+    mcs.initialize()
+    assert mcs._initialized is True

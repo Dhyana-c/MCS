@@ -173,7 +173,11 @@ class MCS:
             query_engine=self.query_engine,
             plugin_manager=self.plugin_manager,
             token_budget=self.token_budget,
+            config=self.config,
         )
+
+        # Load-on-startup: 若图为空且 StorageInterface 可用，从存储加载已有数据
+        self._try_load_from_storage()
 
         self._initialized = True
 
@@ -208,6 +212,28 @@ class MCS:
         return self.plugin_manager.plugins.get(name)
 
     # === 内部方法 ===
+
+    def _try_load_from_storage(self) -> None:
+        """若图为空且 StorageInterface 已注册，从存储加载已有数据。"""
+        from mcs.interfaces.storage import StorageInterface
+
+        if self.graph.get_all_nodes():
+            return
+        storage = self.plugin_manager.get(StorageInterface)
+        if storage is None:
+            return
+        try:
+            loaded = storage.load()
+            for node in loaded.get_all_nodes():
+                if node.id not in self.graph._nodes:
+                    self.graph.add_node(node)
+            for edge in loaded.get_all_edges():
+                self.graph.add_edge(edge.source_id, edge.target_id, direction=edge.direction)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Load-on-startup failed", exc_info=True,
+            )
 
     def _require_init(self) -> None:
         if not self._initialized:

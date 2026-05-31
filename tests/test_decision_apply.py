@@ -146,6 +146,29 @@ def test_merge_without_target_id_raises(empty_graph, mock_llm):
         )
 
 
+def test_sanitize_drops_targetless_merge_and_attach(empty_graph, mock_llm):
+    """LLM 偶发的 target_id=null 的 merge/attach 应被清洗丢弃，
+
+    使整次摄入不再因单个坏决策崩溃；create 等正常决策保留。
+    """
+    wp = _make_pipeline(empty_graph, mock_llm)
+    decisions = [
+        Decision(action="attach_statement", target_id=None, statement="坏"),
+        Decision(
+            action="merge",
+            concept=ConceptDraft(name="X", content=""),
+            target_id=None,
+        ),
+        Decision(action="create", concept=ConceptDraft(name="好", content="")),
+    ]
+    cleaned = wp._sanitize_decisions(decisions)
+    assert [d.action for d in cleaned] == ["create"]
+    # 清洗后应用不再抛 InvalidDecisionError
+    changed = wp._apply_decisions(cleaned)
+    assert len(changed) == 1
+    assert changed[0].name == "好"
+
+
 def test_attach_statement_appends(empty_graph, mock_llm):
     attr_node = Node(id="attr1", name="X的爱好", content="", role="attribute")
     empty_graph.add_node(attr_node)
