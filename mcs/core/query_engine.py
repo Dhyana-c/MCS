@@ -1,16 +1,15 @@
-"""Query engine - 5-stage pipeline for reading from MCS.
+"""查询引擎 - 从 MCS 读取的 5 阶段管道。
 
-The 5 stages, in order, per openspec/specs/query-pipeline/spec.md:
+5 个阶段按顺序执行，参见 openspec/specs/query-pipeline/spec.md：
 
-    ① 前置插件链      (PostprocessPlugin chain, optional)
+    ① 前置插件链      (PostprocessPlugin chain, 可选)
     ② 种子定位        (EntryPlugin chain + TrimPlugin)
     ③ 语义理解 Loop   (BFS + visited + max_rounds + max_picked)
     ④ 仲裁            (ArbitrationPlugin, ≤1)
     ⑤ 后置处理链      (PostprocessPlugin chain)
 
-Default return value is ``List[Node]`` (the ``result_set`` field of
-``QueryContext``). Synthesis to a natural-language string is OPTIONAL,
-provided by a postprocess plugin in stage ⑤.
+默认返回值为 ``List[Node]``（``QueryContext`` 的 ``result_set`` 字段）。
+合成为自然语言字符串是可选的，由阶段 ⑤ 中的后处理插件提供。
 """
 
 from __future__ import annotations
@@ -27,16 +26,16 @@ if TYPE_CHECKING:
 
 @dataclass
 class QueryContext:
-    """State threaded through one query() call.
+    """贯穿一次 query() 调用的状态。
 
-    The 4 lifecycle fields per spec:
+    规范中的 4 个生命周期字段：
 
-    - ``system_prompt``: user-configured (domain + role), invariant
-    - ``user_input``: the original query string, invariant
-    - ``intermediate``: ``accumulated`` during stage ③ Loop
-    - ``result_set``: the final selected node set after stage ④
+    - ``system_prompt``: 用户配置的（领域 + 角色），不变量
+    - ``user_input``: 原始查询字符串，不变量
+    - ``intermediate``: 在阶段 ③ Loop 中 ``accumulated``
+    - ``result_set``: 阶段 ④ 后的最终选定节点集
 
-    See openspec/specs/query-pipeline/spec.md "QueryContext 含四个状态字段".
+    参见 openspec/specs/query-pipeline/spec.md "QueryContext 含四个状态字段"。
     """
 
     system_prompt: str = ""
@@ -47,11 +46,10 @@ class QueryContext:
 
 
 class QueryEngine:
-    """Read pipeline orchestrator.
+    """读取管道协调器。
 
-    Wires together: graph + llm + plugin chains + token budget. Plugin
-    chains are read out of ``plugin_manager`` at call time, so dynamic
-    plugin (un)registration is supported between calls.
+    组合：graph + llm + 插件链 + token 预算。插件链在调用时从 ``plugin_manager``
+    读取，因此支持在调用之间动态（取消）注册插件。
     """
 
     def __init__(
@@ -72,57 +70,51 @@ class QueryEngine:
         self.max_picked = max_picked
         self.system_prompt = system_prompt
 
-    # === Public API ===
+    # === 公共 API ===
 
     def query(
         self,
         text: str,
         existing_context: list[Node] | None = None,
     ) -> Any:
-        """Execute the 5-stage read pipeline.
+        """执行 5 阶段读取管道。
 
-        Returns the output of the last postprocess plugin, or the
-        ``result_set`` (List[Node]) if no postprocess plugin transforms
-        the type.
+        返回最后一个后处理插件的输出，如果没有后处理插件转换类型，
+        则返回 ``result_set`` (List[Node])。
         """
         ctx = QueryContext(
             system_prompt=self.system_prompt,
             user_input=text,
         )
 
-        # Stage ①: 前置插件链 (optional; applies to query text)
+        # 阶段 ①: 前置插件链（可选；应用于查询文本）
         processed_text = self._run_preprocess(text, ctx)
 
-        # Stage ②: 种子定位 (skipped if existing_context provided)
+        # 阶段 ②: 种子定位（如果提供了 existing_context 则跳过）
         if existing_context is not None:
             seeds = list(existing_context)
         else:
             seeds = self._locate_seeds(processed_text, ctx)
 
-        # Stage ③: 语义理解 Loop
+        # 阶段 ③: 语义理解 Loop
         ctx.intermediate = self._traverse(seeds, processed_text, ctx)
 
-        # Stage ④: 仲裁
+        # 阶段 ④: 仲裁
         ctx.result_set = self._arbitrate(ctx.intermediate, processed_text, ctx)
 
-        # Stage ⑤: 后置处理链
+        # 阶段 ⑤: 后置处理链
         return self._run_postprocess(ctx.result_set, ctx)
 
-    # === Stage helpers ===
+    # === 阶段辅助方法 ===
 
     def _run_preprocess(self, text: str, ctx: QueryContext) -> str:
-        """Stage ①: serial PostprocessPlugin chain treating text as input.
+        """阶段 ①：将文本作为输入的串行 PostprocessPlugin 链。
 
-        Note: read-pipeline preprocess plugins receive a string and return
-        a (possibly transformed) string. Plugins that don't modify the
-        text should return it unchanged.
+        注意：读取管道预处理插件接收字符串并返回（可能转换的）字符串。
+        不修改文本的插件应返回未更改的文本。
         """
-        from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
-
         plugins = self._read_chain_for_position("query_preprocess")
         if not plugins:
-            # No registered preprocess plugins; the query string passes through.
-            del PostprocessPluginInterface  # silence unused-import lint in TYPE_CHECKING-less paths
             return text
         result: Any = text
         for plugin in plugins:
@@ -130,7 +122,7 @@ class QueryEngine:
         return result if isinstance(result, str) else text
 
     def _locate_seeds(self, query: str, ctx: QueryContext) -> list[Node]:
-        """Stage ②: run all EntryPlugins (priority-sorted), merge, trim."""
+        """阶段 ②：运行所有 EntryPlugins（按优先级排序），合并，裁剪。"""
         from mcs.interfaces.entry_plugin import EntryPluginInterface
         from mcs.interfaces.trim_plugin import TrimPluginInterface
 
@@ -141,7 +133,7 @@ class QueryEngine:
 
         for plugin in entry_plugins:
             if exclusive_hit and not plugin.exclusive:
-                # A higher-priority exclusive plugin already won; skip lower-priority.
+                # 更高优先级的独占插件已获胜；跳过低优先级插件
                 continue
             candidates = plugin.locate(query, ctx) or []
             if not candidates:
@@ -153,13 +145,13 @@ class QueryEngine:
             if plugin.exclusive:
                 exclusive_hit = True
 
-        # Trim if over budget
+        # 如果超出预算则裁剪
         trim = self.plugin_manager.get(TrimPluginInterface)
         if trim is not None and accumulated:
             try:
                 accumulated = trim.trim(accumulated, self.token_budget.T)
             except NotImplementedError:
-                # Budget check not yet implemented; pass through unchanged.
+                # 预算检查尚未实现；原样传递
                 pass
         return accumulated
 
@@ -169,7 +161,7 @@ class QueryEngine:
         query: str,
         ctx: QueryContext,
     ) -> list[Node]:
-        """Stage ③: BFS with visited set + max_rounds + max_picked."""
+        """阶段 ③：BFS 遍历，带 visited 集合 + max_rounds + max_picked。"""
         if not seeds:
             return []
 
@@ -194,7 +186,7 @@ class QueryEngine:
                 if not neighbors:
                     continue
 
-                # LLM call: which neighbors lead toward the query target?
+                # LLM 调用：哪些邻居指向查询目标？
                 selected_ids = self.llm.call(
                     purpose="decide_directions",
                     nodes_in=[node, *neighbors],
@@ -222,7 +214,7 @@ class QueryEngine:
         query: str,
         ctx: QueryContext,
     ) -> list[Node]:
-        """Stage ④: ≤1 ArbitrationPlugin; default is pass-through."""
+        """阶段 ④：≤1 个 ArbitrationPlugin；默认为直通。"""
         from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
 
         plugin = self.plugin_manager.get(ArbitrationPluginInterface)
@@ -237,7 +229,7 @@ class QueryEngine:
         return result
 
     def _run_postprocess(self, selected: list[Node], ctx: QueryContext) -> Any:
-        """Stage ⑤: serial PostprocessPlugin chain for query position."""
+        """阶段 ⑤：针对查询位置的串行 PostprocessPlugin 链。"""
         plugins = self._read_chain_for_position("query_postprocess")
         if not plugins:
             return selected
@@ -247,12 +239,11 @@ class QueryEngine:
         return result
 
     def _read_chain_for_position(self, position: str) -> list:
-        """Resolve which PostprocessPlugins are mounted at ``position``.
+        """解析哪些 PostprocessPlugins 挂载在 ``position``。
 
-        Phase 1 convention: a plugin attribute ``position`` (str) selects
-        the mount point ("query_preprocess", "query_postprocess",
-        "write_preprocess"). Plugins without the attribute default to
-        "query_postprocess".
+        第一阶段约定：插件属性 ``position`` (str) 选择挂载点
+        ("query_preprocess", "query_postprocess", "write_preprocess")。
+        没有该属性的插件默认为 "query_postprocess"。
         """
         from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 
@@ -261,9 +252,8 @@ class QueryEngine:
 
 
 def _summarize_for_prompt(nodes: list[Node]) -> str:
-    """Compact one-line-per-node summary for accumulated context in
-    ``decide_directions`` calls. Avoids dragging full content through
-    repeated prompts.
+    """用于 ``decide_directions`` 调用中累积上下文的紧凑单行每节点摘要。
+    避免在重复提示中拖拽完整内容。
     """
     from mcs.core.context_renderer import ContextRenderer
 

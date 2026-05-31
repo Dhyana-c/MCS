@@ -1,8 +1,10 @@
-"""Prompt bundle for purpose='gen_aliases'.
+"""purpose='gen_aliases' 的 Prompt 包。
 
-Used when a new concept is created. Input: the concept (single node).
-Output: a list of alias strings (synonyms, abbreviations, common
-mis-spellings) that get registered in the alias index.
+输入：概念（单个节点）。输出：别名字符串列表（同义词、缩写、常见拼写错误），
+用于注册到别名索引。
+
+注意：Phase 1 默认流程并不自动调用 ``gen_aliases``——它作为开箱即用的默认
+prompt 保留，供用户在自定义压缩/后置插件中通过 ``llm_caller`` 触发，或整组覆盖。
 """
 
 from __future__ import annotations

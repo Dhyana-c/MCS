@@ -1,17 +1,21 @@
-"""basic_usage.py — minimal end-to-end demo of MCS.
+"""basic_usage.py — MCS 最小端到端演示。
 
-Runs in two modes:
+以两种模式运行：
 
-  - mock  (default): uses a scripted LLM with predetermined responses; no
-    network calls, no API key required. Useful for verifying the wiring
-    works on a clean checkout.
-  - real  (set ``MCS_LLM_MODE=real``): uses the DeepSeek LLM plugin with
-    ``DEEPSEEK_API_KEY`` from the environment.
+  - mock（默认）：使用预设响应的脚本化 LLM；无网络调用，
+    无需 API 密钥。适用于验证全新检出时的接线是否正常。
+  - real（设置 ``MCS_LLM_MODE=real``）：使用真实厂商 LLM 后端，由
+    ``MCS_LLM_PROVIDER`` 选择：
+      - deepseek（默认）：``DeepSeekLLMPlugin``，读 ``DEEPSEEK_API_KEY``
+      - claude          ：``ClaudeLLMPlugin``，读 ``ANTHROPIC_AUTH_TOKEN``
+                          （需 ``pip install -e ".[claude]"``）
 
-Usage:
+用法：
     python examples/basic_usage.py
-    # or, to use a real API:
+    # 或使用真实 API（DeepSeek）：
     MCS_LLM_MODE=real DEEPSEEK_API_KEY=sk-... python examples/basic_usage.py
+    # 或使用 Claude / Anthropic 兼容网关：
+    MCS_LLM_MODE=real MCS_LLM_PROVIDER=claude ANTHROPIC_AUTH_TOKEN=... python examples/basic_usage.py
 """
 
 from __future__ import annotations
@@ -20,17 +24,17 @@ import os
 import sys
 from pathlib import Path
 
-# Allow running this script directly without installing the package.
+# 允许直接运行此脚本而无需安装包。
 _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 
 def _load_dotenv() -> None:
-    """Pick up ``DEEPSEEK_API_KEY`` etc. from a project-root ``.env`` file.
+    """从项目根目录的 ``.env`` 文件加载 ``DEEPSEEK_API_KEY`` 等。
 
-    No-op if ``.env`` does not exist. Existing ``os.environ`` values win so
-    a shell-set variable always overrides ``.env``.
+    若 ``.env`` 不存在则无操作。已存在的 ``os.environ`` 值优先，
+    因此 shell 设置的变量总是覆盖 ``.env``。
     """
     env_path = _root / ".env"
     if not env_path.exists():
@@ -59,7 +63,7 @@ QUERY = "什么是深度学习？"
 
 
 def build_mock_mcs() -> MCS:
-    """Build an MCS using a scripted MockLLM (no network, no API key)."""
+    """使用脚本化 MockLLM 构建 MCS（无网络，无需 API 密钥）。"""
     from tests.conftest import MockLLM
 
     config = MCSConfig(
@@ -78,7 +82,7 @@ def build_mock_mcs() -> MCS:
     mcs = MCS(config)
     mock_llm = MockLLM()
 
-    # Script the mock so each ingest creates one new concept node.
+    # 脚本化 mock，使每次 ingest 创建一个新概念节点。
     counter = {"n": 0}
     concepts = [
         ConceptDraft(name="深度学习", content="使用多层神经网络的机器学习方法。"),
@@ -92,16 +96,15 @@ def build_mock_mcs() -> MCS:
         return [c]
 
     def _judge(_nodes_in, free_args):
-        # New nodes on first appearance; merge if seen before.
+        # 首次出现时创建新节点；若已见过则合并。
 
-        # The free_args["concepts"] is just the formatted string; rely on
-        # counter to pick the right concept.
+        # free_args["concepts"] 只是格式化字符串；依赖 counter 选取正确概念。
         idx = (counter["n"] - 1) % len(concepts)
         return [Decision(action="create", concept=concepts[idx], edges_to=[])]
 
     mock_llm.set_response("extract_concepts", _extract)
     mock_llm.set_response("judge_relations", _judge)
-    mock_llm.set_response("decide_directions", [])  # don't expand in this demo
+    mock_llm.set_response("decide_directions", [])  # 此演示不扩展
     mock_llm.set_response("synthesize", "（mock 模式，未合成自然语言答案）")
 
     mcs.register_plugin(mock_llm)
@@ -110,7 +113,15 @@ def build_mock_mcs() -> MCS:
 
 
 def build_real_mcs() -> MCS:
-    """Build an MCS using DeepSeek (requires ``DEEPSEEK_API_KEY``)."""
+    """按 ``MCS_LLM_PROVIDER`` 选择真实厂商后端构建 MCS。"""
+    provider = os.environ.get("MCS_LLM_PROVIDER", "deepseek").lower()
+    if provider == "claude":
+        return _build_claude_mcs()
+    return _build_deepseek_mcs()
+
+
+def _build_deepseek_mcs() -> MCS:
+    """使用 DeepSeek 构建 MCS（需要 ``DEEPSEEK_API_KEY``）。"""
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
         raise SystemExit("DEEPSEEK_API_KEY env var not set; cannot run real mode.")
@@ -121,6 +132,31 @@ def build_real_mcs() -> MCS:
     )
     config.plugin_configs.setdefault("sqlite_storage", {})["path"] = ":memory:"
     print(f"  (using DeepSeek model={model})")
+    mcs = MCS(config)
+    mcs.initialize()
+    return mcs
+
+
+def _build_claude_mcs() -> MCS:
+    """使用 Claude / Anthropic 兼容网关构建 MCS（需要 ``ANTHROPIC_AUTH_TOKEN``）。"""
+    token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
+    if not token:
+        raise SystemExit(
+            "ANTHROPIC_AUTH_TOKEN env var not set; cannot run claude provider."
+        )
+    model = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
+    base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+    config = MCSConfig.knowledge_graph(llm="claude")
+    cfg = config.plugin_configs.setdefault("claude_llm", {})
+    cfg.update({"auth_token": token, "model": model, "base_url": base_url})
+    timeout_ms = os.environ.get("API_TIMEOUT_MS", "")
+    if timeout_ms:
+        try:
+            cfg["timeout"] = float(timeout_ms) / 1000.0
+        except ValueError:
+            pass
+    config.plugin_configs.setdefault("sqlite_storage", {})["path"] = ":memory:"
+    print(f"  (using Claude model={model} via {base_url})")
     mcs = MCS(config)
     mcs.initialize()
     return mcs

@@ -1,7 +1,7 @@
-"""Prompt bundle for purpose='extract_concepts'.
+"""purpose='extract_concepts' 的 Prompt 包。
 
-Stage ③ of the write pipeline. Input: original text + already-related
-nodes (so the LLM can reuse existing names). Output: List[ConceptDraft].
+写入管线阶段 ③。输入：原始文本 + 已相关节点（以便 LLM 复用已有名称）。
+输出：List[ConceptDraft]。
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ USER_TEMPLATE = (
 
 
 def parse(raw: str) -> list[ConceptDraft]:
-    """Parse the LLM response into a list of ConceptDraft."""
+    """将 LLM 响应解析为 ConceptDraft 列表。"""
     try:
         data = json.loads(strip_json_fence(raw))
     except json.JSONDecodeError as e:

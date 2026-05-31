@@ -1,9 +1,8 @@
-"""SQLiteStoragePlugin - persistence with dynamic schema extensions.
+"""SQLiteStoragePlugin - 具有动态模式扩展的持久化。
 
-Implements ``StorageInterface``. On initialize, collects all
-``StorageSchemaExtensionInterface`` plugins via the plugin manager and
-dynamically builds the ``nodes`` table schema (base columns + extension
-columns) plus auxiliary tables.
+实现 ``StorageInterface``。初始化时，通过插件管理器收集所有
+``StorageSchemaExtensionInterface`` 插件，并动态构建 ``nodes``
+表模式（基础列 + 扩展列）以及辅助表。
 """
 
 from __future__ import annotations
@@ -21,11 +20,11 @@ if TYPE_CHECKING:
 
 
 class SQLiteStoragePlugin(Plugin, StorageInterface):
-    """SQLite persistence with dynamic schema extensions.
+    """具有动态模式扩展的 SQLite 持久化。
 
-    Note: Phase 1 graph operations are in-memory; this plugin persists
-    snapshots via explicit ``save()`` / ``load()`` calls. Auto-flushing
-    on every change is deferred to future work.
+    注意：Phase 1 的图操作是内存中的；此插件通过显式的
+    ``save()`` / ``load()`` 调用持久化快照。每次变更后自动
+    刷新留待未来实现。
     """
 
     name: ClassVar[str] = "sqlite_storage"
@@ -38,7 +37,7 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
         self.conn: sqlite3.Connection | None = None
         self._schema_extensions: list = []
 
-    # === Plugin / StorageInterface lifecycle ===
+    # === 插件 / StorageInterface 生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
         self.conn = sqlite3.connect(self.path)
@@ -78,7 +77,7 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
             "SELECT source_id, target_id, direction FROM edges"
         ):
             graph.add_edge(row[0], row[1], direction=row[2])
-            # Restore the direction on the stored edge if necessary.
+            # 如有必要，恢复存储边上的方向。
             edge = graph.get_edge(row[0], row[1])
             if edge is not None and row[2] in ("bidirectional", "out"):
                 edge.direction = row[2]
@@ -108,7 +107,7 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
             (edge.source_id, edge.target_id, edge.direction),
         )
 
-    # === Internal ===
+    # === 内部方法 ===
 
     def _create_tables(self, schema_extensions: list) -> None:
         if self.conn is None:
@@ -150,4 +149,4 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
         self.conn.commit()
 
 
-_ = Any  # silence unused-import lint
+_ = Any  # 消除未使用导入的 lint 警告

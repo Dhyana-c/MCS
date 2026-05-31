@@ -1,8 +1,7 @@
-"""Core graph data structures and operations.
+"""核心图数据结构和操作。
 
-Phase 1 ships an in-memory ``GraphStore``. Persistence is handled
-separately by ``SQLiteStoragePlugin`` (load/save against this in-memory
-graph).
+第一阶段提供内存中的 ``GraphStore``。持久化由 ``SQLiteStoragePlugin`` 单独处理
+（针对此内存图进行加载/保存）。
 """
 
 from __future__ import annotations
@@ -13,11 +12,10 @@ from typing import Any
 
 @dataclass
 class Node:
-    """Concept node (minimal core).
+    """概念节点（最小核心）。
 
-    All variable / scenario-specific fields (aliases, summary, sources,
-    versions, confidence, ...) are mounted via the ``extensions`` dict
-    by plugins.
+    所有变量/场景特定字段（别名、摘要、来源、版本、置信度等）通过 ``extensions`` 字典
+    由插件挂载。
     """
 
     id: str
@@ -29,9 +27,9 @@ class Node:
 
 @dataclass
 class Edge:
-    """Untyped adjacency edge.
+    """无类型邻接边。
 
-    Direction emerges from community merge; initial value is "bidirectional".
+    方向来源于社区合并；初始值为"bidirectional"。
     """
 
     source_id: str
@@ -41,7 +39,7 @@ class Edge:
 
 @dataclass
 class Subgraph:
-    """A subgraph rooted at a focus node, bounded by token budget."""
+    """以焦点节点为根的子图，受 token 预算限制。"""
 
     focus_id: str
     nodes: list[Node] = field(default_factory=list)
@@ -49,11 +47,10 @@ class Subgraph:
 
 
 class GraphStore:
-    """In-memory graph storage.
+    """内存图存储。
 
-    Adjacency is stored as a symmetric dict-of-sets keyed by node id. A
-    ``Subgraph`` is built greedily from a focus node by expanding through
-    neighbors until the token budget is exhausted.
+    邻接关系存储为以节点 id 为键的对称字典集合。``Subgraph`` 通过从焦点节点贪婪扩展邻居构建，
+    直到 token 预算耗尽。
     """
 
     def __init__(self) -> None:
@@ -61,7 +58,7 @@ class GraphStore:
         self._edges: dict[tuple[str, str], Edge] = {}
         self._adjacency: dict[str, set[str]] = {}
 
-    # === Node CRUD ===
+    # === 节点 CRUD ===
 
     def add_node(self, node: Node) -> str:
         self._nodes[node.id] = node
@@ -82,13 +79,13 @@ class GraphStore:
     def delete_node(self, node_id: str) -> None:
         if node_id not in self._nodes:
             return
-        # Drop all incident edges first.
+        # 先删除所有相关联的边
         for other in list(self._adjacency.get(node_id, set())):
             self.delete_edge(node_id, other)
         self._adjacency.pop(node_id, None)
         self._nodes.pop(node_id, None)
 
-    # === Edge CRUD ===
+    # === 边 CRUD ===
 
     def add_edge(
         self,
@@ -97,10 +94,10 @@ class GraphStore:
         direction: str = "bidirectional",
     ) -> None:
         if source_id == target_id:
-            return  # no self-loops
+            return  # 不允许自环
         if source_id not in self._nodes or target_id not in self._nodes:
             return
-        # Canonicalize undirected edges so (a,b) and (b,a) collide.
+        # 对无向边进行规范化，使 (a,b) 和 (b,a) 冲突
         key = self._edge_key(source_id, target_id, direction)
         if key in self._edges:
             return
@@ -122,19 +119,19 @@ class GraphStore:
         for direction in ("bidirectional", "out"):
             key = self._edge_key(source_id, target_id, direction)
             self._edges.pop(key, None)
-        # If no edge remains between these two, drop adjacency.
+        # 如果这两个节点之间不再有边，则删除邻接关系
         if self.get_edge(source_id, target_id) is None:
             self._adjacency.get(source_id, set()).discard(target_id)
             self._adjacency.get(target_id, set()).discard(source_id)
 
-    # === Queries ===
+    # === 查询 ===
 
     def get_neighbors(self, node_id: str) -> list[Node]:
         ids = self._adjacency.get(node_id, set())
         return [self._nodes[i] for i in ids if i in self._nodes]
 
     def get_subgraph(self, node_id: str, max_tokens: int) -> Subgraph:
-        """Greedy BFS expansion from focus, stopping when budget is hit."""
+        """从焦点节点进行贪婪 BFS 扩展，在预算耗尽时停止。"""
         sub = Subgraph(focus_id=node_id)
         focus = self._nodes.get(node_id)
         if focus is None:
@@ -171,16 +168,15 @@ class GraphStore:
     def get_all_edges(self) -> list[Edge]:
         return list(self._edges.values())
 
-    # === Internal ===
+    # === 内部方法 ===
 
     @staticmethod
     def _edge_key(
         source_id: str, target_id: str, direction: str
     ) -> tuple[str, str]:
-        """Canonical edge key.
+        """规范化边键。
 
-        Bidirectional edges are normalized so (a,b) and (b,a) collide;
-        directed edges keep their source-target ordering.
+        无向边被规范化，使 (a,b) 和 (b,a) 冲突；有向边保持其源-目标顺序。
         """
         if direction == "bidirectional":
             return (
@@ -192,8 +188,8 @@ class GraphStore:
 
 
 def _rough_estimate(text: str) -> int:
-    """Cheap per-token estimate used inside GraphStore for budget checks."""
+    """用于 GraphStore 内部预算检查的廉价 token 估算。"""
     if not text:
         return 0
-    # Rough heuristic: 2 chars per token (balances English + CJK).
+    # 粗略启发式：每 2 个字符约 1 个 token（平衡英文和 CJK）
     return max(1, len(text) // 2)

@@ -1,8 +1,7 @@
-"""Prompt bundle for purpose='arbitrate'.
+"""purpose='arbitrate' 的 Prompt 包。
 
-Optional stage ④ of the read pipeline (LLMArbitrationPlugin). Input:
-accumulated nodes that may include conflicting versions. Output: list of
-node ids forming a self-consistent subset for this query.
+查询管线阶段 ④ 的可选插件（LLMArbitrationPlugin）。输入：
+已累积节点（可能包含冲突版本）。输出：构成自洽子集的节点 id 列表。
 """
 
 from __future__ import annotations

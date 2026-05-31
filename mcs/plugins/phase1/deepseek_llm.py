@@ -1,14 +1,14 @@
-"""DeepSeekLLMPlugin - DeepSeek LLM backend (OpenAI-compatible).
+"""DeepSeekLLMPlugin - DeepSeek LLM 后端 (OpenAI 兼容)。
 
-Implements the unified ``LLMInterface``. The vendor-specific piece is
-just ``_raw_call(system, user) -> str``; everything else (rendering,
-prompt assembly, parsing) is handled by ``LLMInterface``'s base impl.
+实现统一的 ``LLMInterface``。厂商特定的部分仅是
+``_raw_call(system, user) -> str``；其余所有内容（渲染、
+提示词组装、解析）均由 ``LLMInterface`` 的基类实现处理。
 
-Configuration keys:
-  - ``api_key``  (required for actual calls)
-  - ``model``    (default: ``"deepseek-chat"``)
-  - ``base_url`` (default: ``"https://api.deepseek.com"``)
-  - ``timeout``  (default: 60 seconds)
+配置键：
+  - ``api_key``  (实际调用时必需)
+  - ``model``    (默认: ``"deepseek-chat"``)
+  - ``base_url`` (默认: ``"https://api.deepseek.com"``)
+  - ``timeout``  (默认: 60 秒)
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class DeepSeekLLMPlugin(Plugin, LLMInterface):
-    """DeepSeek LLM backend via the OpenAI-compatible API."""
+    """通过 OpenAI 兼容 API 的 DeepSeek LLM 后端。"""
 
     name: ClassVar[str] = "deepseek_llm"
     version: ClassVar[str] = "0.1.0"
@@ -40,13 +40,13 @@ class DeepSeekLLMPlugin(Plugin, LLMInterface):
         self.timeout: float = float(self.config.get("timeout", 60.0))
         self.client: Any = None
 
-    # === Plugin lifecycle ===
+    # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
-        # Connect the framework's ContextRenderer so base ``call`` can use it.
+        # 连接框架的 ContextRenderer，以便基类 ``call`` 可以使用它。
         self.attach_renderer(context.context_renderer)
-        # Lazy-import OpenAI so test environments without it can still load
-        # the plugin class (e.g. for tests that only check name/interfaces).
+        # 延迟导入 OpenAI，以便没有它的测试环境仍能加载
+        # 插件类（例如仅检查 name/interfaces 的测试）。
         if self.api_key:
             try:
                 from openai import OpenAI  # type: ignore[import]
@@ -67,8 +67,8 @@ class DeepSeekLLMPlugin(Plugin, LLMInterface):
     def _raw_call(self, system: str, user: str) -> str:
         if self.client is None:
             raise LLMCallError(
-                "DeepSeek client not initialized; "
-                "set ``api_key`` in plugin config or attach a mock LLM."
+                "DeepSeek 客户端未初始化；"
+                "请在插件配置中设置 ``api_key`` 或附加模拟 LLM。"
             )
         try:
             messages = []
@@ -79,5 +79,5 @@ class DeepSeekLLMPlugin(Plugin, LLMInterface):
                 model=self.model, messages=messages
             )
             return resp.choices[0].message.content or ""
-        except Exception as e:  # pragma: no cover - network errors
+        except Exception as e:  # pragma: no cover - 网络错误
             raise LLMCallError(f"DeepSeek call failed: {e}") from e

@@ -1,7 +1,7 @@
-"""SummaryPlugin - manage ``extensions['summary']`` slot.
+"""SummaryPlugin - 管理 ``extensions['summary']`` 槽位。
 
-Generation is triggered by ``SummaryRegenPlugin`` (Compaction) in write
-stage ⑥. This plugin only owns the data slot schema.
+生成由 ``SummaryRegenPlugin`` (压缩) 在写入阶段 ⑥ 触发。
+此插件仅拥有数据槽模式的定义。
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ class SummaryPlugin(Plugin, NodeExtensionInterface):
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
 
-    # === Plugin lifecycle ===
+    # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
         return None
@@ -63,8 +63,7 @@ class SummaryPlugin(Plugin, NodeExtensionInterface):
         }
 
     def render(self, node: Node, purpose: str) -> str | None:
-        """SummaryPlugin contributes nothing — ContextRenderer reads
-        ``extensions["summary"]["text"]`` directly when downgrading
-        content to summary.
+        """SummaryPlugin 不提供渲染——ContextRenderer 在降级
+        内容为摘要时直接读取 ``extensions["summary"]["text"]``。
         """
         return None

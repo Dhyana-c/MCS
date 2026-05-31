@@ -1,4 +1,4 @@
-"""Phase 2 plugins - memory system mode (reserved, not implemented in Phase 1).
+"""Phase 2 插件 - 记忆系统模式（预留，Phase 1 未实现）。
 
-See architecture.md §7.
+参见 architecture.md §7。
 """

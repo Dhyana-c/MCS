@@ -1,11 +1,11 @@
-"""Tests for WritePipeline._apply_decisions: 4 action types + error handling."""
+"""WritePipeline._apply_decisions 测试：4 种 action 类型 + 错误处理。"""
 
 from __future__ import annotations
 
 import pytest
 
 from mcs.core.decisions import ConceptDraft, Decision
-from mcs.core.errors import UnknownActionError
+from mcs.core.errors import InvalidDecisionError, UnknownActionError
 from mcs.core.graph import GraphStore, Node
 from mcs.core.plugin_manager import PluginManager
 from mcs.core.query_engine import QueryEngine
@@ -47,7 +47,7 @@ def test_create_adds_node_with_edges(empty_graph, mock_llm):
     assert len(changed) == 1
     new_node = changed[0]
     assert new_node.name == "新概念"
-    # Both anchors should be neighbors of the new node.
+    # 两个锚点都应该是新节点的邻居。
     neighbors = {n.id for n in empty_graph.get_neighbors(new_node.id)}
     assert neighbors == {"anchor1", "anchor2"}
 
@@ -87,9 +87,54 @@ def test_merge_does_not_add_node(empty_graph, mock_llm):
     assert len(empty_graph.get_all_nodes()) == before
 
 
+def test_merge_adds_aliases_to_target(empty_graph, mock_llm):
+    """merge 必须把 aliases_to_add 与 concept.name 真正并入目标别名槽。"""
+    target = Node(
+        id="t1", name="深度学习", content="", extensions={"alias_index": {"aliases": []}}
+    )
+    empty_graph.add_node(target)
+
+    wp = _make_pipeline(empty_graph, mock_llm)
+    wp._apply_decisions(
+        [
+            Decision(
+                action="merge",
+                concept=ConceptDraft(name="deep learning", content=""),
+                target_id="t1",
+                aliases_to_add=["DL"],
+            )
+        ]
+    )
+    aliases = empty_graph.get_node("t1").extensions["alias_index"]["aliases"]
+    assert "DL" in aliases
+    assert "deep learning" in aliases
+    # 不应把等于节点名本身的项当作别名重复写入
+    assert "深度学习" not in aliases
+
+
+def test_merge_appends_initial_statements(empty_graph, mock_llm):
+    """merge 的 initial_statements 必须追加到目标的 statements 槽。"""
+    target = Node(id="t1", name="目标", content="")
+    empty_graph.add_node(target)
+
+    wp = _make_pipeline(empty_graph, mock_llm)
+    wp._apply_decisions(
+        [
+            Decision(
+                action="merge",
+                concept=ConceptDraft(name="x", content=""),
+                target_id="t1",
+                initial_statements=["事实A", "事实B"],
+            )
+        ]
+    )
+    items = empty_graph.get_node("t1").extensions["statements"]["items"]
+    assert items == ["事实A", "事实B"]
+
+
 def test_merge_without_target_id_raises(empty_graph, mock_llm):
     wp = _make_pipeline(empty_graph, mock_llm)
-    with pytest.raises(UnknownActionError):
+    with pytest.raises(InvalidDecisionError):
         wp._apply_decisions(
             [
                 Decision(

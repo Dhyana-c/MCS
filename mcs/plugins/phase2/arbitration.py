@@ -1,4 +1,4 @@
-"""ArbitrationPlugin - Phase 2, not implemented in this phase.
+"""ArbitrationPlugin - Phase 2，本阶段未实现。
 
-See architecture.md §7.
+参见 architecture.md §7。
 """

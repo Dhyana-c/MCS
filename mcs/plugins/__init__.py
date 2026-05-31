@@ -1,7 +1,7 @@
-"""Plugin layer - concrete implementations of interfaces.
+"""插件层 - 接口的具体实现。
 
-- ``phase1/`` - knowledge graph mode plugins (5)
-- ``phase2/`` - memory system mode plugins (6, reserved for future)
+- ``phase1/`` - 知识图谱模式插件 (5)
+- ``phase2/`` - 记忆系统模式插件 (6, 预留给未来)
 
-See architecture.md §6-7.
+参见 architecture.md §6-7。
 """

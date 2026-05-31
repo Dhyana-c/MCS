@@ -1,6 +1,6 @@
-"""Compaction plugin interface - write stage ⑥ conditional cleanup.
+"""压缩插件接口 - 写入阶段 ⑥ 条件清理。
 
-See openspec/specs/plugin-protocol/spec.md "CompactionPluginInterface".
+参见 openspec/specs/plugin-protocol/spec.md "CompactionPluginInterface"。
 """
 
 from __future__ import annotations
@@ -14,19 +14,19 @@ if TYPE_CHECKING:
 
 
 class CompactionPluginInterface(ABC):
-    """Conditionally cleanup / restructure the graph after ingest.
+    """在摄取后有条件地清理/重构图。
 
-    Only plugins whose ``should_run`` returns True execute ``run``. Plugins
-    receive an ``llm_caller`` handle to issue LLM calls through the unified
-    interface when needed (e.g., FanoutReducer calls ``decide_hub``).
+    只有 ``should_run`` 返回 True 的插件才会执行 ``run``。插件
+    接收 ``llm_caller`` 句柄，在需要时通过统一接口发起 LLM 调用
+    （例如 FanoutReducer 调用 ``decide_hub``）。
 
-    Examples: FanoutReducer (collapse overflowing nodes into a hub),
-    CommunityMerger (merge dense regions), SummaryRegen (refresh summaries).
+    示例：FanoutReducer（将溢出节点折叠为枢纽）、
+    CommunityMerger（合并稠密区域）、SummaryRegen（刷新摘要）。
     """
 
     @abstractmethod
     def should_run(self, changed_nodes: list[Node], graph: GraphStore) -> bool:
-        """Return True if this compaction needs to run on the current state."""
+        """如果当前状态需要运行此压缩，则返回 True。"""
         pass
 
     @abstractmethod
@@ -36,9 +36,9 @@ class CompactionPluginInterface(ABC):
         graph: GraphStore,
         llm_caller: Callable,
     ) -> None:
-        """Apply the compaction. May modify the graph and issue LLM calls.
+        """应用压缩。可以修改图并发出 LLM 调用。
 
-        ``llm_caller`` has the signature
-        ``call(purpose: str, nodes_in: list[Node], free_args: dict) -> Any``.
+        ``llm_caller`` 的签名为
+        ``call(purpose: str, nodes_in: list[Node], free_args: dict) -> Any``。
         """
         pass

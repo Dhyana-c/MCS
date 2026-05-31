@@ -1,11 +1,10 @@
-"""SourceTrackingPlugin and IdempotencyCheckPlugin.
+"""SourceTrackingPlugin 和 IdempotencyCheckPlugin。
 
-- ``SourceTrackingPlugin``: manages ``extensions["source_tracking"]``;
-  contributes 出处 fragment when ``purpose == "synthesize"``; registers
-  the ``document_chunks`` storage table.
-- ``IdempotencyCheckPlugin``: mounted at write-stage ① preprocess to
-  short-circuit re-ingestion of the same ``(doc_id, chunk_id,
-  content_hash)`` tuple.
+- ``SourceTrackingPlugin``: 管理 ``extensions["source_tracking"]``；
+  当 ``purpose == "synthesize"`` 时提供出处片段；注册
+  ``document_chunks`` 存储表。
+- ``IdempotencyCheckPlugin``: 挂载于写入阶段 ① 预处理，用于
+  短路重复摄入相同的 ``(doc_id, chunk_id, content_hash)`` 元组。
 """
 
 from __future__ import annotations
@@ -27,10 +26,10 @@ if TYPE_CHECKING:
 
 @dataclass
 class Source:
-    """Concept source (document-chunk level).
+    """概念来源（文档-块级别）。
 
-    Phase 2 may extend this to reference ``fact_id`` when EventLayer is
-    added; the schema is forward-compatible.
+    Phase 2 可能会扩展此结构以引用 ``fact_id``（当 EventLayer
+    添加时）；该模式具有向前兼容性。
     """
 
     doc_id: str
@@ -44,10 +43,10 @@ class SourceTrackingPlugin(
     NodeExtensionInterface,
     StorageSchemaExtensionInterface,
 ):
-    """``extensions["source_tracking"]`` = ``{"sources": [Source, ...]}``.
+    """``extensions["source_tracking"]`` = ``{"sources": [Source, ...]}``。
 
-    Renders an 出处 fragment ONLY when ``purpose == "synthesize"`` so
-    consumers can attribute answers back to source chunks.
+    仅当 ``purpose == "synthesize"`` 时渲染出处片段，以便
+    消费者可以将答案归因于来源块。
     """
 
     name: ClassVar[str] = "source_tracking"
@@ -62,7 +61,7 @@ class SourceTrackingPlugin(
         self.storage: Any = None
         self.graph: GraphStore | None = None
 
-    # === Plugin lifecycle ===
+    # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
         from mcs.interfaces.storage import StorageInterface
@@ -105,7 +104,7 @@ class SourceTrackingPlugin(
         if not sources:
             return None
         refs = []
-        for s in sources[:3]:  # show up to 3 sources
+        for s in sources[:3]:  # 最多显示 3 个来源
             doc_id = s.doc_id if isinstance(s, Source) else s.get("doc_id", "?")
             chunk_id = (
                 s.chunk_id if isinstance(s, Source) else s.get("chunk_id", "?")
@@ -117,7 +116,7 @@ class SourceTrackingPlugin(
     # === StorageSchemaExtensionInterface ===
 
     def node_columns(self) -> dict[str, str]:
-        return {}  # sources travel in the extensions_json blob
+        return {}  # sources 存储在 extensions_json 字段中
 
     def auxiliary_tables(self) -> dict[str, str]:
         return {
@@ -132,7 +131,7 @@ class SourceTrackingPlugin(
             """
         }
 
-    # === Public API ===
+    # === 公共 API ===
 
     def update_document(
         self,
@@ -140,10 +139,10 @@ class SourceTrackingPlugin(
         new_chunks: list,
         pipeline: WritePipeline,
     ) -> None:
-        """Replace all chunks of a document with new content.
+        """用新内容替换文档的所有块。
 
-        ``new_chunks`` items can be dicts ``{id, text, section_title?}`` or
-        objects with the same attributes.
+        ``new_chunks`` 中的元素可以是字典 ``{id, text, section_title?}``
+        或具有相同属性的对象。
         """
         new_keys: set[tuple[str, str]] = set()
         for chunk in new_chunks:
@@ -158,7 +157,7 @@ class SourceTrackingPlugin(
             )
             new_keys.add((doc_id, chunk_id))
 
-        # Drop sources for chunks that no longer exist in the new revision.
+        # 删除新版本中不再存在的块的来源。
         if self.graph is None:
             return
         for node in self.graph.get_all_nodes():
@@ -170,15 +169,15 @@ class SourceTrackingPlugin(
             for s in sources:
                 s_doc = s.doc_id if isinstance(s, Source) else s.get("doc_id")
                 s_chunk = s.chunk_id if isinstance(s, Source) else s.get("chunk_id")
-                # Keep sources from other documents OR chunks still in the new revision.
+                # 保留来自其他文档的来源，或新版本中仍存在的块。
                 if s_doc != doc_id or (s_doc, s_chunk) in new_keys:
                     kept.append(s)
             slot["sources"] = kept
 
     def purge_orphans(self, graph: GraphStore) -> list[str]:
-        """Remove nodes whose sources slot is empty (no surviving evidence).
+        """移除来源槽位为空的节点（无存活的证据）。
 
-        Must be called explicitly after batch document updates.
+        必须在批量文档更新后显式调用。
         """
         orphans: list[str] = []
         for node in graph.get_all_nodes():
@@ -191,12 +190,12 @@ class SourceTrackingPlugin(
 
 
 class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
-    """Write-stage ① idempotency check.
+    """写入阶段 ① 的幂等性检查。
 
-    Computes a content hash and consults the storage's ``document_chunks``
-    table; if the chunk was already ingested, sets ``ctx.skip = True`` so
-    the rest of the write pipeline short-circuits. Otherwise records the
-    chunk and stages a ``Source`` on the context for later attachment.
+    计算内容哈希并查询存储的 ``document_chunks`` 表；如果该块
+    已被摄入，则设置 ``ctx.skip = True`` 以短路写入管道的
+    其余部分。否则记录该块并在上下文中暂存一个 ``Source``
+    以供后续附加。
     """
 
     name: ClassVar[str] = "idempotency_check"
@@ -213,7 +212,7 @@ class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
         from mcs.interfaces.storage import StorageInterface
 
         self.storage = context.plugin_manager.get(StorageInterface)
-        # Locate the SourceTracking plugin by interface
+        # 通过接口定位 SourceTracking 插件
         for p in context.plugin_manager.get_all(NodeExtensionInterface):
             if isinstance(p, SourceTrackingPlugin):
                 self.source_tracking = p
@@ -228,14 +227,14 @@ class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
         doc_id = metadata.get("doc_id")
         chunk_id = metadata.get("chunk_id")
         if not (doc_id and chunk_id):
-            return text  # no doc context → nothing to deduplicate
+            return text  # 无文档上下文 → 无需去重
 
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if self._already_ingested(doc_id, chunk_id, content_hash):
             ctx.skip = True
             return text
 
-        # Stage Source for downstream attachment (in ctx.metadata).
+        # 为下游附加暂存 Source（在 ctx.metadata 中）。
         section_title = metadata.get("section_title")
         metadata["_pending_source"] = Source(
             doc_id=doc_id,
@@ -246,7 +245,7 @@ class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
         self._record_chunk(doc_id, chunk_id, content_hash)
         return text
 
-    # === Internal storage helpers ===
+    # === 内部存储辅助方法 ===
 
     def _already_ingested(
         self, doc_id: str, chunk_id: str, content_hash: str
@@ -276,7 +275,7 @@ class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
 
 
 def _get(obj: Any, attr: str, default: Any = None) -> Any:
-    """Read ``attr`` from a dict or attribute access."""
+    """从字典或对象属性中读取 ``attr``。"""
     if isinstance(obj, dict):
         return obj.get(attr, default)
     return getattr(obj, attr, default)

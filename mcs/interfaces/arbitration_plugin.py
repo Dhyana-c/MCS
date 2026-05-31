@@ -1,6 +1,6 @@
-"""Arbitration plugin interface - query stage ④ result selection.
+"""仲裁插件接口 - 查询阶段 ④ 结果选择。
 
-See openspec/specs/plugin-protocol/spec.md "ArbitrationPluginInterface".
+参见 openspec/specs/plugin-protocol/spec.md "ArbitrationPluginInterface"。
 """
 
 from __future__ import annotations
@@ -13,13 +13,13 @@ if TYPE_CHECKING:
 
 
 class ArbitrationPluginInterface(ABC):
-    """Select the final result set from ``accumulated``.
+    """从 ``accumulated`` 中选择最终结果集。
 
-    Single-responsibility: ``List[Node] -> List[Node]``. At most one
-    ArbitrationPlugin can be registered per pipeline configuration.
+    单一职责：``List[Node] -> List[Node]``。每个流水线配置最多可注册
+    一个 ArbitrationPlugin。
 
-    Examples: PriorityArbitration (hard truncate by priority), LLMArbitration
-    (let an LLM resolve conflicts between versions).
+    示例：PriorityArbitration（按优先级硬截断）、LLMArbitration
+    （让 LLM 解决版本间的冲突）。
     """
 
     @abstractmethod
@@ -29,9 +29,9 @@ class ArbitrationPluginInterface(ABC):
         query: str,
         ctx: Any,
     ) -> list[Node]:
-        """Return the final result set from accumulated nodes.
+        """从累积节点中返回最终结果集。
 
-        Output MUST be ``List[Node]``; this stage MUST NOT change node
-        content or produce non-Node outputs.
+        输出必须是 ``List[Node]``；此阶段不得修改节点内容
+        或产生非 Node 输出。
         """
         pass

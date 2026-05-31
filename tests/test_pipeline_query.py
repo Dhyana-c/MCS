@@ -1,4 +1,4 @@
-"""Tests for QueryEngine: 5-stage pipeline behavior."""
+"""QueryEngine 测试：5 阶段管道行为。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from mcs.plugins.base import Plugin
 
 
 class _StaticEntry(Plugin, EntryPluginInterface):
-    """Entry plugin that returns a static list of nodes by id from the graph."""
+    """按 id 从图中返回静态节点列表的 entry 插件。"""
 
     name: ClassVar[str] = "static_entry"
     interfaces: ClassVar[list[type]] = [EntryPluginInterface]
@@ -65,13 +65,13 @@ def _build_engine(
 
 
 def test_default_returns_list_of_nodes(seeded_graph, mock_llm):
-    """No postprocess plugin → query returns the result_set (List[Node])."""
+    """无 postprocess 插件 → 查询返回 result_set (List[Node])。"""
     engine = _build_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
     )
-    mock_llm.set_response("decide_directions", [])  # don't expand
+    mock_llm.set_response("decide_directions", [])  # 不扩展
     result = engine.query("什么是深度学习？")
     assert isinstance(result, list)
     assert all(isinstance(n, Node) for n in result)
@@ -79,14 +79,14 @@ def test_default_returns_list_of_nodes(seeded_graph, mock_llm):
 
 
 def test_empty_seeds_returns_empty_list(seeded_graph, mock_llm):
-    """When no entry plugins yield anything, query returns []."""
+    """当没有 entry 插件产出任何内容时，查询返回 []。"""
     engine = _build_engine(seeded_graph, mock_llm)  # no entry plugins
     result = engine.query("nothing matches")
     assert result == []
 
 
 def test_bfs_visits_each_node_once_in_cycle():
-    """A cyclic graph must not loop forever; visited set guarantees this."""
+    """有环图不能无限循环；visited 集合保证这一点。"""
     g = GraphStore()
     a = Node(id="a", name="A", content="A")
     b = Node(id="b", name="B", content="B")
@@ -95,13 +95,13 @@ def test_bfs_visits_each_node_once_in_cycle():
         g.add_node(n)
     g.add_edge("a", "b")
     g.add_edge("b", "c")
-    g.add_edge("c", "a")  # cycle
+    g.add_edge("c", "a")  # 环
 
     from tests.conftest import MockLLM
 
     mock = MockLLM()
     engine = _build_engine(g, mock, _StaticEntry(["a"], g))
-    # Always expand every neighbor → would loop without visited.
+    # 总是扩展每个邻居 → 若无 visited 将无限循环。
     mock.set_response(
         "decide_directions",
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])[1:]],
@@ -112,8 +112,8 @@ def test_bfs_visits_each_node_once_in_cycle():
 
 
 def test_max_rounds_caps_bfs_depth(seeded_graph, mock_llm):
-    """A max_rounds=1 traversal only adds 1-hop neighbors of seeds."""
-    # Make decide_directions expand every neighbor.
+    """max_rounds=1 的遍历只添加种子的一跳邻居。"""
+    # 让 decide_directions 扩展每个邻居。
     mock_llm.set_response(
         "decide_directions",
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])[1:]],
@@ -127,7 +127,7 @@ def test_max_rounds_caps_bfs_depth(seeded_graph, mock_llm):
     )
     result = engine.query("test")
     ids = {n.id for n in result}
-    # After 1 round from "dl": dl + its neighbors (nn, ml). cnn is 2 hops away.
+    # 从 "dl" 出发 1 轮后：dl + 其邻居 (nn, ml)。cnn 距离 2 跳。
     assert "dl" in ids
     assert "nn" in ids
     assert "ml" in ids
@@ -151,7 +151,7 @@ def test_max_picked_caps_node_count(seeded_graph, mock_llm):
 
 
 def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
-    """When existing_context is provided, entry plugins are NOT called."""
+    """当提供 existing_context 时，entry 插件不会被调用。"""
 
     class _RaisingEntry(Plugin, EntryPluginInterface):
         name = "should_not_run"
@@ -165,7 +165,7 @@ def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
             pass
 
         def locate(self, query, ctx):
-            raise AssertionError("entry plugin must NOT run with existing_context")
+            raise AssertionError("entry 插件在有 existing_context 时不能运行")
 
     engine = _build_engine(seeded_graph, mock_llm, _RaisingEntry())
     mock_llm.set_response("decide_directions", [])
@@ -175,7 +175,7 @@ def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
 
 
 def test_postprocess_chain_transforms_output(seeded_graph, mock_llm):
-    """A postprocess plugin can replace List[Node] with any type."""
+    """postprocess 插件可以将 List[Node] 替换为任意类型。"""
 
     class _Stringify(Plugin, PostprocessPluginInterface):
         name = "stringify"
@@ -204,7 +204,7 @@ def test_postprocess_chain_transforms_output(seeded_graph, mock_llm):
 
 
 def test_query_context_lifecycle_fields_populated(seeded_graph, mock_llm):
-    """QueryContext intermediate / result_set get filled during execution."""
+    """QueryContext 的 intermediate / result_set 在执行过程中被填充。"""
 
     captured: dict[str, Any] = {}
 

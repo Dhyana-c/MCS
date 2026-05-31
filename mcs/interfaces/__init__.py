@@ -1,4 +1,4 @@
-"""Interface layer - abstract base classes implemented by plugins.
+"""接口层 - 由插件实现的抽象基类。
 
-See architecture.md §3.
+参见 architecture.md §3。
 """

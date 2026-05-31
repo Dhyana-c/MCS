@@ -1,15 +1,14 @@
-"""Smoke tests for the project skeleton on the new unified workflow.
+"""项目骨架在新的统一工作流上的冒烟测试。
 
-Validates:
+验证：
 
-(a) All ``mcs.*`` subpackages and modules can be imported.
-(b) Interfaces with abstract methods raise ``TypeError`` on direct
-    instantiation.
-(c) ``Source`` dataclass lives in ``mcs.plugins.phase1.source_tracking``,
-    NOT in ``mcs.core.graph``.
-(d) Phase 1 plugin classes' ``name`` class attributes match the design.
-(e) Structural sanity (Node fields, QueryContext / WriteContext fields,
-    default config plugins, ContextRenderer.get_summary fallback).
+(a) 所有 ``mcs.*`` 子包和模块可导入。
+(b) 带抽象方法的接口直接实例化时抛出 ``TypeError``。
+(c) ``Source`` 数据类位于 ``mcs.plugins.phase1.source_tracking``，
+    而非 ``mcs.core.graph``。
+(d) Phase 1 插件类的 ``name`` 类属性与设计一致。
+(e) 结构健全性（Node 字段、QueryContext / WriteContext 字段、
+    默认配置插件、ContextRenderer.get_summary 回退行为）。
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from dataclasses import fields
 
 import pytest
 
-# Modules that MUST be importable on a clean checkout.
+# 在全新检出时必须可导入的模块。
 ALL_MODULES = [
     "mcs",
     # core
@@ -51,6 +50,7 @@ ALL_MODULES = [
     "mcs.plugins.base",
     "mcs.plugins.phase1",
     "mcs.plugins.phase1.alias_index",
+    "mcs.plugins.phase1.claude_llm",
     "mcs.plugins.phase1.deepseek_llm",
     "mcs.plugins.phase1.fanout_reducer",
     "mcs.plugins.phase1.hub_fallback",
@@ -84,7 +84,7 @@ ALL_MODULES = [
 ]
 
 
-# === (a) All subpackages importable ===
+# === (a) 所有子包可导入 ===
 
 
 @pytest.mark.parametrize("module_path", ALL_MODULES)
@@ -92,11 +92,11 @@ def test_module_importable(module_path: str) -> None:
     importlib.import_module(module_path)
 
 
-# === (b) ABC interfaces ===
+# === (b) ABC 接口 ===
 
 
 def test_abc_interfaces_not_instantiable() -> None:
-    """Interfaces with abstract methods cannot be instantiated directly."""
+    """带抽象方法的接口不能直接实例化。"""
     from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
     from mcs.interfaces.compaction_plugin import CompactionPluginInterface
     from mcs.interfaces.entry_plugin import EntryPluginInterface
@@ -126,7 +126,7 @@ def test_abc_interfaces_not_instantiable() -> None:
             interface_cls()  # type: ignore[abstract]
 
 
-# === (c) Source location ===
+# === (c) Source 位置 ===
 
 
 def test_source_lives_in_plugin_not_core() -> None:
@@ -137,22 +137,21 @@ def test_source_lives_in_plugin_not_core() -> None:
     import mcs.core.graph as core_graph
 
     assert not hasattr(core_graph, "Source"), (
-        "Source must NOT be exported from mcs.core.graph "
-        "(it belongs to SourceTrackingPlugin)."
+        "Source 不能从 mcs.core.graph 导出"
+        "（它属于 SourceTrackingPlugin）。"
     )
 
 
-# === (d) Plugin name attributes ===
+# === (d) 插件 name 属性 ===
 
 
 def test_plugin_names_match_design() -> None:
-    """Each Phase 1 plugin class has the ``name`` class attribute the
-    default config and tests expect.
-    """
+    """每个 Phase 1 插件类都有默认配置和测试所期望的 ``name`` 类属性。"""
     from mcs.plugins.phase1.alias_index import (
         AliasEntryPlugin,
         AliasIndexPlugin,
     )
+    from mcs.plugins.phase1.claude_llm import ClaudeLLMPlugin
     from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
     from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
     from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
@@ -176,17 +175,18 @@ def test_plugin_names_match_design() -> None:
     assert SummaryRegenPlugin.name == "summary_regen"
     assert SQLiteStoragePlugin.name == "sqlite_storage"
     assert DeepSeekLLMPlugin.name == "deepseek_llm"
+    assert ClaudeLLMPlugin.name == "claude_llm"
 
 
 def test_alias_entry_plugin_priority() -> None:
-    """AliasEntryPlugin must declare priority=100, exclusive=False."""
+    """AliasEntryPlugin 必须声明 priority=100, exclusive=False。"""
     from mcs.plugins.phase1.alias_index import AliasEntryPlugin
 
     assert AliasEntryPlugin.priority == 100
     assert AliasEntryPlugin.exclusive is False
 
 
-# === (e) Structural sanity ===
+# === (e) 结构健全性 ===
 
 
 def test_node_has_only_minimal_core_fields() -> None:
@@ -200,7 +200,7 @@ def test_node_has_only_minimal_core_fields() -> None:
 
 
 def test_query_context_has_4_lifecycle_fields() -> None:
-    """QueryContext: system_prompt / user_input / intermediate / result_set + metadata."""
+    """QueryContext：system_prompt / user_input / intermediate / result_set + metadata。"""
     from mcs.core.query_engine import QueryContext
 
     field_names = {f.name for f in fields(QueryContext)}
@@ -217,8 +217,8 @@ def test_query_context_has_4_lifecycle_fields() -> None:
 
 
 def test_write_context_has_7_lifecycle_fields() -> None:
-    """WriteContext: system_prompt, user_input, processed, related, concepts,
-    decisions, changed (+ metadata + skip control flag)."""
+    """WriteContext：system_prompt, user_input, processed, related, concepts,
+    decisions, changed（+ metadata + skip 控制标志）。"""
     from mcs.core.write_pipeline import WriteContext
 
     field_names = {f.name for f in fields(WriteContext)}
@@ -237,7 +237,7 @@ def test_write_context_has_7_lifecycle_fields() -> None:
 
 
 def test_decision_action_types() -> None:
-    """Decision dataclass must accept the four documented action types."""
+    """Decision 数据类必须接受四种文档化的 action 类型。"""
     from mcs.core.decisions import ConceptDraft, Decision
 
     c = ConceptDraft(name="X", content="...")
@@ -248,7 +248,7 @@ def test_decision_action_types() -> None:
 
 
 def test_default_phase1_config_plugins() -> None:
-    """Default Phase 1 plugin list matches phase1-defaults spec."""
+    """默认 Phase 1 插件列表符合 phase1-defaults 规范。"""
     from mcs.core.config import PHASE1_DEFAULT_PLUGINS, MCSConfig
 
     config = MCSConfig.knowledge_graph()
@@ -257,7 +257,7 @@ def test_default_phase1_config_plugins() -> None:
     assert config.max_rounds == 5
     assert config.max_picked == 50
 
-    # Sanity: 11 plugins per spec
+    # 健全性检查：按规范应有 11 个插件
     assert len(PHASE1_DEFAULT_PLUGINS) == 11
     assert "alias_entry" in PHASE1_DEFAULT_PLUGINS
     assert "hub_fallback" in PHASE1_DEFAULT_PLUGINS
@@ -268,7 +268,7 @@ def test_default_phase1_config_plugins() -> None:
 
 
 def test_context_renderer_get_summary_fallback() -> None:
-    """ContextRenderer.get_summary: read extension; fall back to content[:200]."""
+    """ContextRenderer.get_summary：读取 extension；回退到 content[:200]。"""
     from mcs.core.context_renderer import ContextRenderer
     from mcs.core.graph import Node
 
@@ -286,7 +286,7 @@ def test_context_renderer_get_summary_fallback() -> None:
 
 
 def test_default_prompts_has_9_purposes() -> None:
-    """DEFAULT_PROMPTS registers all 9 Phase 1 purposes."""
+    """DEFAULT_PROMPTS 注册了全部 9 个 Phase 1 目的。"""
     from mcs.prompts import DEFAULT_PROMPTS
 
     expected_purposes = {
@@ -304,7 +304,7 @@ def test_default_prompts_has_9_purposes() -> None:
 
 
 def test_plugin_manager_arbitration_singleton() -> None:
-    """Registering a 2nd ArbitrationPlugin must raise ConfigurationError."""
+    """注册第二个 ArbitrationPlugin 必须抛出 ConfigurationError。"""
     from mcs.core.errors import ConfigurationError
     from mcs.core.plugin_manager import PluginManager
     from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
@@ -333,7 +333,7 @@ def test_plugin_manager_arbitration_singleton() -> None:
 
 
 def test_plugin_manager_entry_plugin_priority_sort() -> None:
-    """get_all(EntryPluginInterface) returns priority-sorted list."""
+    """get_all(EntryPluginInterface) 返回按优先级排序的列表。"""
     from mcs.core.plugin_manager import PluginManager
     from mcs.interfaces.entry_plugin import EntryPluginInterface
     from mcs.plugins.base import Plugin

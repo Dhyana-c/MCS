@@ -1,10 +1,10 @@
-"""wiki_example.py — demonstrate multi-turn query with existing_context.
+"""wiki_example.py — 演示使用 existing_context 的多轮查询。
 
-Shows how a calling layer (e.g. a RAG/agent) can preserve cross-turn
-context by passing the previous turn's result back as ``existing_context``
-so the second query doesn't re-pay the cost of seed location.
+展示调用层（如 RAG/agent）如何通过将上一轮结果作为
+``existing_context`` 传回来保留跨轮上下文，使第二轮查询
+不必再支付种子定位的开销。
 
-Runs in mock mode by default; set ``MCS_LLM_MODE=real`` to use DeepSeek.
+默认以 mock 模式运行；设置 ``MCS_LLM_MODE=real`` 使用 DeepSeek。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ if str(_root) not in sys.path:
 
 
 def _load_dotenv() -> None:
-    """Pick up ``DEEPSEEK_API_KEY`` etc. from a project-root ``.env`` file."""
+    """从项目根目录的 ``.env`` 文件加载 ``DEEPSEEK_API_KEY`` 等。"""
     env_path = _root / ".env"
     if not env_path.exists():
         return
@@ -139,14 +139,14 @@ def main() -> None:
         names = [n.name for n in ctx.changed]
         print(f"  {chunk['chunk_id']}: {names}")
 
-    # Turn 1
+    # 第一轮
     print("\n-- Turn 1: '什么是机器学习？' --")
     turn1 = mcs.query("什么是机器学习？")
     print(f"  → {len(turn1)} nodes")
     for n in turn1:
         print(f"    - {n.name}")
 
-    # Turn 2: pass turn1's result as existing_context to continue the thread.
+    # 第二轮：将 turn1 的结果作为 existing_context 传入以延续对话线程。
     print("\n-- Turn 2 (continuation): '它和深度学习什么关系？' --")
     turn2 = mcs.query("它和深度学习什么关系？", existing_context=turn1)
     print(f"  → {len(turn2)} nodes")

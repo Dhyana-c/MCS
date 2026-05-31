@@ -1,4 +1,4 @@
-"""Tests for plugin chain composition rules."""
+"""插件链组合规则测试。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 from mcs.plugins.base import Plugin
 
-# === EntryPlugin priority ordering ===
+# === EntryPlugin 优先级排序 ===
 
 
 class _Entry(Plugin, EntryPluginInterface):
@@ -73,7 +73,7 @@ def test_entry_plugin_exclusive_attribute():
     assert p.exclusive is True
 
 
-# === ArbitrationPlugin singleton ===
+# === ArbitrationPlugin 单例 ===
 
 
 class _Arb(Plugin, ArbitrationPluginInterface):
@@ -101,11 +101,11 @@ def test_registering_second_arbitration_plugin_raises():
         pm.register(type("_Arb2", (_Arb,), {"name": "arb2"})())
 
 
-# === Postprocess output type freedom ===
+# === Postprocess 输出类型自由 ===
 
 
 def test_postprocess_can_return_arbitrary_type():
-    """A Postprocess plugin can return any type — framework doesn't constrain."""
+    """Postprocess 插件可以返回任意类型——框架不做约束。"""
 
     class _ToInt(Plugin, PostprocessPluginInterface):
         name = "to_int"

@@ -1,9 +1,8 @@
-"""Prompt registry - bundles ``system / template / parse`` per purpose.
+"""Prompt 注册表 - 按 purpose 组织 system / template / parse 三元组。
 
-The framework's ``LLMInterface.get_prompt(purpose)`` falls back here when
-no user override is registered. Phase 1 ships 9 default purposes; users
-can override any of them via ``LLMInterface.register_prompt`` or via
-``MCSConfig.prompt_overrides``.
+框架的 ``LLMInterface.get_prompt(purpose)`` 在没有用户覆盖时回退到这里。
+第一期提供 9 个默认 purpose；用户可通过 ``LLMInterface.register_prompt``
+或 ``MCSConfig.prompt_overrides`` 覆盖任意一个。
 """
 
 from __future__ import annotations

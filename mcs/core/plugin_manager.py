@@ -1,16 +1,15 @@
-"""Plugin manager - register, lookup, and lifecycle-manage plugins.
+"""插件管理器 - 注册、查找和生命周期管理插件。
 
-Supports the 5 new plugin interfaces defined in
-openspec/specs/plugin-protocol/spec.md:
+支持 openspec/specs/plugin-protocol/spec.md 中定义的 5 个新插件接口：
 
-  - EntryPluginInterface       (priority-sorted on get_all)
+  - EntryPluginInterface       （按优先级排序的 get_all）
   - TrimPluginInterface
-  - ArbitrationPluginInterface (singleton-enforced)
+  - ArbitrationPluginInterface （单例强制）
   - PostprocessPluginInterface
   - CompactionPluginInterface
 
-Plus the existing interfaces (Storage / Index / LLM / NodeExtension /
-StorageSchemaExtension / Maintenance).
+以及现有接口（Storage / Index / LLM / NodeExtension /
+StorageSchemaExtension / Maintenance）。
 """
 
 from __future__ import annotations
@@ -32,9 +31,9 @@ if TYPE_CHECKING:
 
 @dataclass
 class PluginContext:
-    """Runtime context injected into ``Plugin.initialize()``.
+    """注入到 ``Plugin.initialize()`` 中的运行时上下文。
 
-    Plugins use this to access core engine objects and discover peers.
+    插件使用此上下文访问核心引擎对象并发现其他插件。
     """
 
     graph: GraphStore
@@ -45,17 +44,17 @@ class PluginContext:
 
 
 class PluginManager:
-    """Register, lookup, and lifecycle-manage plugins."""
+    """注册、查找和生命周期管理插件。"""
 
     def __init__(self) -> None:
         self.plugins: dict[str, Plugin] = {}
         self.interfaces: dict[type, list[Plugin]] = {}
 
     def register(self, plugin: Plugin) -> None:
-        """Register a plugin and index it by all interfaces it implements.
+        """注册插件并按其实现的所有接口进行索引。
 
-        Raises ``ConfigurationError`` if registering this plugin would
-        violate a singleton constraint (e.g. a second ArbitrationPlugin).
+        如果注册此插件会违反单例约束（例如第二个 ArbitrationPlugin），
+        则抛出 ``ConfigurationError``。
         """
         from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
 
@@ -73,16 +72,15 @@ class PluginManager:
             self.interfaces.setdefault(iface, []).append(plugin)
 
     def get(self, interface: type) -> Plugin | None:
-        """Return the first plugin implementing the interface, or None."""
+        """返回实现该接口的第一个插件，如果没有则返回 None。"""
         plugins = self.get_all(interface)
         return plugins[0] if plugins else None
 
     def get_all(self, interface: type) -> list[Plugin]:
-        """Return all plugins implementing the interface.
+        """返回实现该接口的所有插件。
 
-        For ``EntryPluginInterface``, the returned list is sorted by
-        ``priority`` descending (highest first). Ties keep registration
-        order (Python's sorted is stable).
+        对于 ``EntryPluginInterface``，返回的列表按 ``priority`` 降序排序（最高优先）。
+        同优先级保持注册顺序（Python 的 sorted 是稳定的）。
         """
         from mcs.interfaces.entry_plugin import EntryPluginInterface
 
@@ -92,7 +90,7 @@ class PluginManager:
         return plugins
 
     def collect_schema_extensions(self) -> list[StorageSchemaExtensionInterface]:
-        """All ``StorageSchemaExtensionInterface`` plugins."""
+        """所有 ``StorageSchemaExtensionInterface`` 插件。"""
         from mcs.interfaces.storage_schema_ext import (
             StorageSchemaExtensionInterface,
         )
@@ -100,17 +98,17 @@ class PluginManager:
         return self.get_all(StorageSchemaExtensionInterface)  # type: ignore[return-value]
 
     def collect_node_extensions(self) -> list[NodeExtensionInterface]:
-        """All ``NodeExtensionInterface`` plugins (used by ContextRenderer)."""
+        """所有 ``NodeExtensionInterface`` 插件（由 ContextRenderer 使用）。"""
         from mcs.interfaces.node_extension import NodeExtensionInterface
 
         return self.get_all(NodeExtensionInterface)  # type: ignore[return-value]
 
     def initialize_all(self, context: PluginContext) -> None:
-        """Call ``initialize()`` on every registered plugin."""
+        """对所有已注册插件调用 ``initialize()``。"""
         for plugin in self.plugins.values():
             plugin.initialize(context)
 
     def shutdown_all(self) -> None:
-        """Call ``shutdown()`` on every registered plugin."""
+        """对所有已注册插件调用 ``shutdown()``。"""
         for plugin in self.plugins.values():
             plugin.shutdown()

@@ -1,9 +1,8 @@
-"""Prompt bundle for purpose='decide_hub'.
+"""purpose='decide_hub' 的 Prompt 包。
 
-Write stage ⑥ FanoutReducer compaction. Input: focus node + all its
-neighbors (overflowing the budget). Output: HubDecision —
-either promote an existing neighbor (``hub_id`` set) or synthesize a new
-hub (``hub_id=None``, ``synthetic_hub_summary`` filled).
+写入阶段 ⑥ FanoutReducer 压缩插件。输入：焦点节点 + 所有邻居（超出预算）。
+输出：HubDecision —— 要么提拔一个现有邻居（hub_id 有值），
+要么合成一个新枢纽（hub_id=None，synthetic_hub_summary 有值）。
 """
 
 from __future__ import annotations

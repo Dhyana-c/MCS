@@ -1,4 +1,4 @@
-"""Index interface - lexical lookup for seed location."""
+"""索引接口 - 用于种子定位的词法查找。"""
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
@@ -8,33 +8,33 @@ if TYPE_CHECKING:
 
 
 class IndexInterface(ABC):
-    """Abstract index backend.
+    """抽象索引后端。
 
-    Provides query-string -> node-id lookups for seed location.
-    See architecture.md §3.2.
+    为种子定位提供查询字符串到节点ID的查找功能。
+    参见 architecture.md §3.2。
     """
 
     @abstractmethod
     def build(self, graph: "GraphStore") -> None:
-        """Build the index from an existing graph."""
+        """从现有图构建索引。"""
         pass
 
     @abstractmethod
     def lookup(self, query: str) -> list[str]:
-        """Return matching node IDs for the query string."""
+        """返回与查询字符串匹配的节点ID列表。"""
         pass
 
     @abstractmethod
     def add_entry(self, node: "Node") -> None:
-        """Add a node to the index."""
+        """将节点添加到索引。"""
         pass
 
     @abstractmethod
     def remove_entry(self, node_id: str) -> None:
-        """Remove a node from the index."""
+        """从索引中移除节点。"""
         pass
 
     @abstractmethod
     def update_entry(self, node: "Node") -> None:
-        """Update a node's index entry."""
+        """更新节点的索引条目。"""
         pass

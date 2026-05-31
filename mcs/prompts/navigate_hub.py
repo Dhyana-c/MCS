@@ -1,9 +1,8 @@
-"""Prompt bundle for purpose='navigate_hub'.
+"""purpose='navigate_hub' 的 Prompt 包。
 
-Used by ``HubFallbackEntryPlugin`` (when alias/timeseries entries return
-empty) to navigate top-down from root hubs. Also used by write pipeline ②
-when there are no anchors at all. Output: subset of children ids to drill
-into (empty list = stop, this is the target region).
+用于 ``HubFallbackEntryPlugin``（当别名/时序入口返回空时）
+从根枢纽自顶向下导航。也用于写入管线阶段 ②（完全没有锚点时）。
+输出：要下钻的子节点 id 子集（空列表表示停止，当前位置就是目标区域）。
 """
 
 from __future__ import annotations

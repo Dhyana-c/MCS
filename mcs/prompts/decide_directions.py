@@ -1,11 +1,10 @@
-"""Prompt bundle for purpose='decide_directions'.
+"""purpose='decide_directions' 的 Prompt 包。
 
-Stage ③ of the read pipeline (semantic loop). Input: focus node +
-neighbors + accumulated. Output: List[node_id] to expand toward (may be
-empty if no direction looks promising).
+查询管线阶段 ③（语义循环）。输入：焦点节点 + 邻域 + 已累积节点。
+输出：List[node_id] 要扩展的方向（如果没有合适方向可返回空列表）。
 
-Key principle: "判方向，不判局部相关"——the LLM picks neighbors that
-LEAD toward the query, not neighbors that are themselves directly relevant.
+核心原则："判方向，不判局部相关"——LLM 选的是通向答案的邻居，
+不是本身直接相关的邻居。
 """
 
 from __future__ import annotations

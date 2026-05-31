@@ -1,12 +1,12 @@
-"""Shared pytest fixtures for MCS tests.
+"""MCS 测试的共享 pytest fixtures。
 
-Provides:
+提供：
 
-- ``mock_llm``: a programmable LLMInterface implementation
-- ``empty_graph``: an empty GraphStore
-- ``seeded_graph``: a GraphStore with a small pre-populated topology
-- ``default_config``: MCSConfig.knowledge_graph() with mock_llm swapped in
-- ``mcs_with_mock_llm``: a fully-initialized MCS instance using mock LLM
+- ``mock_llm``：可编程的 LLMInterface 实现
+- ``empty_graph``：空的 GraphStore
+- ``seeded_graph``：预填充小型拓扑的 GraphStore
+- ``default_config``：MCSConfig.knowledge_graph() 并替换为 mock_llm
+- ``mcs_with_mock_llm``：使用 mock LLM 的完全初始化的 MCS 实例
 """
 
 from __future__ import annotations
@@ -24,23 +24,21 @@ from mcs.plugins.base import Plugin
 
 
 def _default_for_purpose(purpose: str) -> Any:
-    """Sensible empty/default value for each purpose so unrecognized
-    purposes return a safe value rather than raising.
-    """
+    """为每个目的返回合理的空/默认值，以便未识别的目的返回安全值而非抛出异常。"""
     if purpose == "decide_hub":
         return HubDecision(hub_id=None)
     if purpose in {"synthesize", "gen_summary"}:
         return ""
     # extract_concepts, judge_relations, decide_directions, navigate_hub,
-    # arbitrate, gen_aliases all default to empty list.
+    # arbitrate, gen_aliases 均默认为空列表。
     return []
 
 
 class MockLLM(Plugin, LLMInterface):
-    """Programmable LLM stub for tests.
+    """可编程的 LLM 桩，用于测试。
 
-    Override ``call`` directly (bypassing prompt assembly) so tests can
-    inject typed return values. Calls are logged in ``call_log``.
+    直接覆写 ``call``（绕过提示词组装），以便测试可以注入类型化的返回值。
+    调用记录保存在 ``call_log`` 中。
     """
 
     name: ClassVar[str] = "mock_llm"
@@ -86,9 +84,7 @@ class MockLLM(Plugin, LLMInterface):
         purpose: str,
         value: Any | Callable[[list[Node] | None, dict | None], Any],
     ) -> None:
-        """Set the typed response for ``purpose``. Value may be a static
-        value or a callable ``(nodes_in, free_args) -> value``.
-        """
+        """设置 ``purpose`` 的类型化响应。值可以是静态值或可调用对象 ``(nodes_in, free_args) -> value``。"""
         self._typed[purpose] = value
 
 
@@ -104,14 +100,14 @@ def empty_graph() -> GraphStore:
 
 @pytest.fixture
 def seeded_graph() -> GraphStore:
-    """A small graph:
+    """一个小型图：
 
-        deep_learning (concept)
-            ├─ neural_network (concept)
-            │     └─ cnn (concept)
-            └─ machine_learning (concept)
+        deep_learning (概念)
+            ├─ neural_network (概念)
+            │     └─ cnn (概念)
+            └─ machine_learning (概念)
 
-    Suitable for traversal tests.
+    适合遍历测试。
     """
     g = GraphStore()
     nodes = [
@@ -130,10 +126,9 @@ def seeded_graph() -> GraphStore:
 
 @pytest.fixture
 def default_config() -> MCSConfig:
-    """A config with only the lightweight plugins needed for test wiring.
+    """仅包含测试所需轻量插件的配置。
 
-    Excludes plugins that need external resources (sqlite, real LLM) so
-    tests can run quickly and hermetically.
+    排除需要外部资源的插件（sqlite、真实 LLM），以便测试能快速、隔离地运行。
     """
     return MCSConfig(
         mode="test",
@@ -153,7 +148,7 @@ def default_config() -> MCSConfig:
 
 @pytest.fixture
 def mcs_with_mock_llm(default_config: MCSConfig, mock_llm: MockLLM):
-    """Initialized MCS instance using the mock LLM (no real API key needed)."""
+    """使用 mock LLM 的已初始化 MCS 实例（无需真实 API 密钥）。"""
     from mcs import MCS
 
     mcs = MCS(default_config)

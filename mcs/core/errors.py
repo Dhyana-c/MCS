@@ -1,27 +1,26 @@
-"""MCS-specific exceptions raised by the pipelines and plugins.
+"""MCS 管道和插件抛出的 MCS 特定异常。
 
-See openspec/specs/phase1-defaults/spec.md "Phase 1 错误处理基线".
+参见 openspec/specs/phase1-defaults/spec.md "Phase 1 错误处理基线"。
 """
 
 from __future__ import annotations
 
 
 class MCSError(Exception):
-    """Base class for all MCS exceptions."""
+    """所有 MCS 异常的基类。"""
 
 
 class LLMCallError(MCSError):
-    """Raised when a vendor-level LLM call fails (timeout, non-200, etc.).
+    """当供应商级别的 LLM 调用失败时抛出（超时、非 200 状态码等）。
 
-    Phase 1 does not retry — the pipeline aborts on the first call failure.
+    第一阶段不重试 — 管道在第一次调用失败时中止。
     """
 
 
 class LLMParseError(MCSError):
-    """Raised when a parser cannot decode the LLM's raw response.
+    """当解析器无法解码 LLM 的原始响应时抛出。
 
-    Message includes the ``purpose`` and the first 500 characters of the
-    raw response for diagnostics.
+    消息包含 ``purpose`` 和原始响应的前 500 个字符用于诊断。
     """
 
     def __init__(self, purpose: str, raw: str, cause: str = "") -> None:
@@ -37,7 +36,7 @@ class LLMParseError(MCSError):
 
 
 class UnknownActionError(MCSError):
-    """Raised by ``WritePipeline._apply_decisions`` for an unknown action type."""
+    """由 ``WritePipeline._apply_decisions`` 对未知动作类型抛出。"""
 
     def __init__(self, action: str) -> None:
         super().__init__(
@@ -47,6 +46,14 @@ class UnknownActionError(MCSError):
         self.action = action
 
 
+class InvalidDecisionError(MCSError):
+    """当 Decision 的必填字段缺失时抛出。
+
+    与 ``UnknownActionError``（action 字符串本身未知）区分开：此异常表示
+    action 合法但其载荷不完整，例如 merge / attach_statement 缺 ``target_id``、
+    create 缺 ``concept``。
+    """
+
+
 class ConfigurationError(MCSError):
-    """Raised when the plugin manager finds an invalid configuration
-    (e.g. more than one ArbitrationPlugin registered)."""
+    """当插件管理器发现无效配置时抛出（例如注册了多个 ArbitrationPlugin）。"""

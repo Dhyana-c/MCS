@@ -1,8 +1,7 @@
-"""Prompt bundle for purpose='gen_summary'.
+"""purpose='gen_summary' 的 Prompt 包。
 
-Used by SummaryRegen compaction plugin. Input: a single node's content.
-Output: a compact summary string capped by ``max_tokens`` (passed via
-free_args).
+用于 SummaryRegen 压缩插件。输入：单个节点的内容。
+输出：紧凑摘要字符串，受 ``max_tokens`` 限制（通过 free_args 传入）。
 """
 
 from __future__ import annotations

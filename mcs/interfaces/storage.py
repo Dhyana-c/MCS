@@ -1,4 +1,4 @@
-"""Storage interface - abstract base for graph persistence backends."""
+"""存储接口 - 图持久化后端的抽象基类。"""
 
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
@@ -9,44 +9,44 @@ if TYPE_CHECKING:
 
 
 class StorageInterface(ABC):
-    """Abstract storage backend.
+    """抽象存储后端。
 
-    Implementations persist nodes and edges to durable storage.
-    See architecture.md §3.1.
+    实现类将节点和边持久化到持久存储中。
+    参见 architecture.md §3.1。
     """
 
     @abstractmethod
     def initialize(self, context: "PluginContext") -> None:
-        """Initialize storage.
+        """初始化存储。
 
-        Implementations should call
-        ``context.plugin_manager.collect_schema_extensions()`` to dynamically
-        build their schema (columns + auxiliary tables).
+        实现类应调用
+        ``context.plugin_manager.collect_schema_extensions()`` 来动态
+        构建其模式（列 + 辅助表）。
 
-        NOTE: This shares its signature with ``Plugin.initialize()`` so that
-        multi-inheritance subclasses (Plugin + StorageInterface) define a
-        single concrete ``initialize`` method that satisfies both. This
-        slightly deviates from architecture.md §3.1 which shows the old
-        signature ``initialize(schema_extensions)``.
+        注意：此方法与 ``Plugin.initialize()`` 共享签名，以便
+        多重继承子类（Plugin + StorageInterface）只需定义
+        一个具体的 ``initialize`` 方法即可同时满足两者。这与
+        architecture.md §3.1 中所示的旧签名
+        ``initialize(schema_extensions)`` 略有偏差。
         """
         pass
 
     @abstractmethod
     def save(self, graph: "GraphStore") -> None:
-        """Persist the whole graph (cold snapshot)."""
+        """持久化整个图（冷快照）。"""
         pass
 
     @abstractmethod
     def load(self) -> "GraphStore":
-        """Load the graph from storage."""
+        """从存储中加载图。"""
         pass
 
     @abstractmethod
     def save_node(self, node: "Node") -> None:
-        """Persist a single node."""
+        """持久化单个节点。"""
         pass
 
     @abstractmethod
     def save_edge(self, edge: "Edge") -> None:
-        """Persist a single edge."""
+        """持久化单条边。"""
         pass

@@ -1,7 +1,6 @@
-"""MCS - Maximum-Context Subgraph: an extensible memory system.
+"""MCS - Maximum-Context Subgraph：可扩展的知识图谱与检索引擎。
 
-The top-level ``MCS`` class wires together graph storage, the LLM
-backend, the plugin chains, and the read/write pipelines. Typical use:
+顶层 ``MCS`` 类将图存储、LLM 后端、插件链、读写管线组装在一起。典型用法：
 
     from mcs import MCS, MCSConfig
 
@@ -13,7 +12,7 @@ backend, the plugin chains, and the read/write pipelines. Typical use:
     mcs.ingest("深度学习是机器学习的一个子领域...")
     nodes = mcs.query("什么是深度学习？")
 
-See ``openspec/specs/`` for per-capability contracts.
+参见 ``openspec/specs/`` 获取各能力的契约定义。
 """
 
 from __future__ import annotations
@@ -38,16 +37,17 @@ if TYPE_CHECKING:
 __all__ = ["MCS", "MCSConfig"]
 
 
-# Map a plugin "name" (as it appears in ``MCSConfig.plugins``) to its class.
+# 将插件"名称"（出现在 MCSConfig.plugins 中）映射到其类。
 def _default_plugin_registry() -> dict[str, type[Plugin]]:
-    """Return the canonical name -> plugin class registry for Phase 1.
+    """返回第一期规范的名称 -> 插件类注册表。
 
-    Loaded lazily so import time stays cheap.
+    延迟加载以保持导入时间低开销。
     """
     from mcs.plugins.phase1.alias_index import (
         AliasEntryPlugin,
         AliasIndexPlugin,
     )
+    from mcs.plugins.phase1.claude_llm import ClaudeLLMPlugin
     from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
     from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
     from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
@@ -72,14 +72,15 @@ def _default_plugin_registry() -> dict[str, type[Plugin]]:
         "summary_regen": SummaryRegenPlugin,
         "sqlite_storage": SQLiteStoragePlugin,
         "deepseek_llm": DeepSeekLLMPlugin,
+        "claude_llm": ClaudeLLMPlugin,
     }
 
 
 class MCS:
-    """Top-level orchestrator.
+    """顶层编排器。
 
-    Construction is cheap; call ``initialize()`` once to wire plugins
-    and build pipelines. After that, use ``ingest()`` and ``query()``.
+    构造很轻量；调用一次 ``initialize()`` 来组装插件和构建管线。
+    之后使用 ``ingest()`` 和 ``query()``。
     """
 
     def __init__(
@@ -103,22 +104,22 @@ class MCS:
 
         self._initialized = False
 
-    # === Lifecycle ===
+    # === 生命周期 ===
 
     def register_plugin(self, plugin: Plugin) -> None:
-        """Add a plugin instance directly (bypassing the config-name registry)."""
+        """直接添加插件实例（绕过配置名称注册表）。"""
         self.plugin_manager.register(plugin)
 
     def initialize(self) -> None:
-        """Instantiate plugins from config, wire pipelines, run initialize()."""
+        """从配置实例化插件、组装管线、运行 initialize()。"""
         if self._initialized:
             return
 
-        # Instantiate plugins from config names.
+        # 从配置名称实例化插件
         for plugin_name in self.config.plugins:
             cls = self._plugin_registry.get(plugin_name)
             if cls is None:
-                continue  # ignore unknown names so partial configs still work
+                continue  # 忽略未知名称，让部分配置仍能工作
             plugin_config = self.config.plugin_configs.get(plugin_name, {})
             try:
                 instance = cls(plugin_config)
@@ -127,18 +128,18 @@ class MCS:
             if plugin_name not in self.plugin_manager.plugins:
                 self.plugin_manager.register(instance)
 
-        # Resolve the LLM plugin (first one implementing LLMInterface).
+        # 解析 LLM 插件（第一个实现 LLMInterface 的）
         from mcs.interfaces.llm import LLMInterface
 
         llm = self.plugin_manager.get(LLMInterface)
         if llm is None:
             raise RuntimeError(
-                "No LLM plugin registered. Phase 1 expects ``deepseek_llm`` "
-                "or another LLMInterface implementation in the config."
+                "未注册 LLM 插件。第一期期望配置中有 ``deepseek_llm`` "
+                "或其他 LLMInterface 实现。"
             )
         self.llm = llm  # type: ignore[assignment]
 
-        # Initialize plugins with PluginContext.
+        # 用 PluginContext 初始化插件
         ctx = PluginContext(
             graph=self.graph,
             config=self.config,
@@ -148,7 +149,7 @@ class MCS:
         )
         self.plugin_manager.initialize_all(ctx)
 
-        # Apply user prompt overrides onto the LLM.
+        # 将用户 prompt 覆盖应用到 LLM
         for purpose, overrides in (self.config.prompt_overrides or {}).items():
             self.llm.register_prompt(
                 purpose,
@@ -157,7 +158,7 @@ class MCS:
                 parser=overrides.get("parser"),
             )
 
-        # Build pipelines (now that plugins are live).
+        # 构建管线（插件已激活）
         self.query_engine = QueryEngine(
             graph=self.graph,
             llm=self.llm,
@@ -182,10 +183,10 @@ class MCS:
         self.plugin_manager.shutdown_all()
         self._initialized = False
 
-    # === Public API ===
+    # === 公共 API ===
 
     def ingest(self, text: str, **metadata: Any) -> Any:
-        """Run the write pipeline. Returns the final WriteContext."""
+        """执行写入管线。返回最终的 WriteContext。"""
         self._require_init()
         assert self.write_pipeline is not None
         return self.write_pipeline.ingest(text, **metadata)
@@ -195,21 +196,21 @@ class MCS:
         text: str,
         existing_context: list | None = None,
     ) -> Any:
-        """Run the read pipeline. Returns ``List[Node]`` by default
-        (or whatever the configured postprocess chain produces).
+        """执行查询管线。默认返回 ``List[Node]``
+        （或配置的后处理链产生的任何类型）。
         """
         self._require_init()
         assert self.query_engine is not None
         return self.query_engine.query(text, existing_context=existing_context)
 
     def get_plugin(self, name: str) -> Plugin | None:
-        """Look up a plugin instance by name."""
+        """按名称查找插件实例。"""
         return self.plugin_manager.plugins.get(name)
 
-    # === Internal ===
+    # === 内部方法 ===
 
     def _require_init(self) -> None:
         if not self._initialized:
             raise RuntimeError(
-                "MCS not initialized; call ``mcs.initialize()`` first."
+                "MCS 未初始化；请先调用 ``mcs.initialize()``。"
             )

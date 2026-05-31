@@ -1,13 +1,10 @@
-"""HubFallbackEntryPlugin - lowest-priority entry plugin.
+"""HubFallbackEntryPlugin - 最低优先级的条目插件。
 
-Used when higher-priority entry plugins (e.g. AliasEntry) return empty
-results. Returns hub-role nodes as initial seeds so the semantic loop
-can drill down from there.
+当更高优先级的条目插件（如 AliasEntry）返回空结果时使用。从顶层 hub 节点
+出发，按 ``navigate_hub`` purpose 做自顶向下的 LLM 导航，逐层下钻定位种子。
 
-The full top-down LLM navigation described in MCS技术方案.md §5.1 (using
-``navigate_hub`` purpose) is the natural extension; Phase 1 ships the
-simpler hub-collection behavior and leaves LLM navigation for future
-refinement.
+参见 openspec/specs/phase1-defaults/spec.md「全空时 HubFallback 启动 LLM 导航」。
+若未配置 LLM 或显式关闭 ``use_llm_navigation``，则优雅降级为直接返回 hub 集合。
 """
 
 from __future__ import annotations
@@ -23,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class HubFallbackEntryPlugin(Plugin, EntryPluginInterface):
-    """Return hub-role nodes (or empty if there are none)."""
+    """从顶层 hub 自顶向下做 LLM 导航；无 hub 时返回空。"""
 
     name: ClassVar[str] = "hub_fallback"
     version: ClassVar[str] = "0.1.0"
@@ -33,14 +30,22 @@ class HubFallbackEntryPlugin(Plugin, EntryPluginInterface):
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
+        cfg = config or {}
         self.graph: GraphStore | None = None
-        self.max_seeds: int = (config or {}).get("max_seeds", 10)
+        self.llm: Any = None
+        self.max_seeds: int = cfg.get("max_seeds", 10)
+        self.max_depth: int = cfg.get("max_depth", 3)
+        self.use_llm_navigation: bool = cfg.get("use_llm_navigation", True)
 
     def initialize(self, context: PluginContext) -> None:
+        from mcs.interfaces.llm import LLMInterface
+
         self.graph = context.graph
+        self.llm = context.plugin_manager.get(LLMInterface)
 
     def shutdown(self) -> None:
         self.graph = None
+        self.llm = None
 
     def locate(self, query: str, ctx: Any) -> list[Node]:
         if self.graph is None:
@@ -48,4 +53,55 @@ class HubFallbackEntryPlugin(Plugin, EntryPluginInterface):
         hubs = [n for n in self.graph.get_all_nodes() if n.role == "hub"]
         if not hubs:
             return []
-        return hubs[: self.max_seeds]
+        if self.llm is None or not self.use_llm_navigation:
+            # 优雅降级：无 LLM 或关闭导航时，直接把 hub 当种子。
+            return hubs[: self.max_seeds]
+        return self._navigate(query, hubs)
+
+    def _navigate(self, query: str, roots: list[Node]) -> list[Node]:
+        """从 root hubs 自顶向下逐层 ``navigate_hub`` 下钻。
+
+        每层一次 LLM 调用（输入 = 当前层节点 + 其未访问下属），按返回的下属 id
+        继续下钻；``visited`` 防环，``max_depth`` 封顶。返回最终落地节点（若一路
+        未下钻成功则回退为 roots）。
+        """
+        assert self.graph is not None
+        visited: set[str] = {n.id for n in roots}
+        frontier: list[Node] = list(roots)
+        landing: list[Node] = []
+
+        for _depth in range(self.max_depth):
+            if not frontier:
+                break
+            candidates: list[Node] = []
+            seen: set[str] = set()
+            for node in frontier:
+                for neighbor in self.graph.get_neighbors(node.id):
+                    if neighbor.id not in visited and neighbor.id not in seen:
+                        seen.add(neighbor.id)
+                        candidates.append(neighbor)
+            if not candidates:
+                break
+
+            drill_ids = (
+                self.llm.call(
+                    purpose="navigate_hub",
+                    nodes_in=[*frontier, *candidates],
+                    free_args={"target": query},
+                )
+                or []
+            )
+
+            next_frontier: list[Node] = []
+            for cid in drill_ids:
+                node = self.graph.get_node(cid)
+                if node is not None and cid not in visited:
+                    visited.add(cid)
+                    landing.append(node)
+                    next_frontier.append(node)
+            if not next_frontier:
+                break
+            frontier = next_frontier
+
+        seeds = landing or list(roots)
+        return seeds[: self.max_seeds]

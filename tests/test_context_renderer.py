@@ -1,4 +1,4 @@
-"""Tests for ContextRenderer: purpose-driven rendering + extension contributions."""
+"""ContextRenderer 测试：目的驱动的渲染 + extension 贡献。"""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from mcs.plugins.base import Plugin
 
 
 class FakeSourceExt(Plugin, NodeExtensionInterface):
-    """Minimal NodeExt that contributes only when purpose='synthesize'."""
+    """最小的 NodeExt，仅在 purpose='synthesize' 时贡献内容。"""
 
     name: ClassVar[str] = "fake_source"
     interfaces: ClassVar[list[type]] = [NodeExtensionInterface]
@@ -79,8 +79,8 @@ def test_decide_directions_uses_summary_for_neighbors():
     )
     r = ContextRenderer()
     out = r.render([focus, neighbor], "decide_directions")
-    assert "focus content" in out  # focus is full
-    assert "neighbor short" in out  # neighbor downgraded
+    assert "focus content" in out  # focus 使用完整内容
+    assert "neighbor short" in out  # neighbor 降级为摘要
     assert "neighbor content full" not in out
 
 
@@ -139,5 +139,5 @@ def test_get_summary_prefers_extension():
     assert ContextRenderer.get_summary(n) == "short"
 
 
-# Reduce ruff "unused import" complaint when pytest is auto-discovering.
+# 减少 pytest 自动发现时 ruff 对 "unused import" 的警告。
 _ = pytest

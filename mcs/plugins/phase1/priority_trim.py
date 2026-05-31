@@ -1,8 +1,7 @@
-"""PriorityTrimPlugin - default trim implementation.
+"""PriorityTrimPlugin - 默认的裁剪实现。
 
-Iterates nodes in input order (which represents priority), accumulates
-token estimates, and stops at the first node that would exceed the
-budget.
+按输入顺序（代表优先级）遍历节点，累积 token 估算值，
+并在第一个会超出预算的节点处停止。
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ if TYPE_CHECKING:
 
 
 class PriorityTrimPlugin(Plugin, TrimPluginInterface):
-    """Keep nodes in priority order, drop the tail that overflows budget."""
+    """按优先级顺序保留节点，丢弃超出预算的尾部。"""
 
     name: ClassVar[str] = "priority_trim"
     version: ClassVar[str] = "0.1.0"
@@ -51,6 +50,6 @@ class PriorityTrimPlugin(Plugin, TrimPluginInterface):
     def _estimate(self, node: Node) -> int:
         if self.token_budget is not None:
             return self.token_budget.estimate(node.content or node.name)
-        # Fallback if not initialized.
+        # 未初始化时的回退。
         text = node.content or node.name or ""
         return max(1, len(text) // 2)

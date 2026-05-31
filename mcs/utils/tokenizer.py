@@ -1,16 +1,15 @@
-"""Tokenizer utilities.
+"""分词器工具。
 
-Uses ``jieba`` for Chinese segmentation when available; falls back to a
-whitespace + punctuation splitter otherwise so tests can run without
-the jieba data dictionary loaded.
+使用 jieba 进行中文分词（如果可用）；否则退化为空白+标点分割，
+这样测试可以在不加载 jieba 数据字典的情况下运行。
 """
 
 from __future__ import annotations
 
 import re
 
-# Optional jieba import. Tests run without it; production loads it.
-try:  # pragma: no cover - import guard
+# 可选的 jieba 导入。测试运行时可能没有它；生产环境加载它。
+try:  # pragma: no cover - 导入保护
     import jieba  # type: ignore[import]
 
     _HAVE_JIEBA = True
@@ -24,13 +23,12 @@ _CJK = re.compile(r"[一-鿿]+")
 
 
 class ChineseTokenizer:
-    """Chinese-aware tokenizer.
+    """中文分词器。
 
-    Strategy:
-      - If jieba is importable: ``jieba.lcut`` on the whole input.
-      - Otherwise: split on whitespace + punctuation. CJK runs are further
-        split into individual characters so single-character queries still
-        match alias entries.
+    策略：
+      - 如果 jieba 可导入：对整个输入使用 jieba.lcut
+      - 否则：按空白+标点分割。CJK 连续字串进一步拆成单字，
+        以便单字查询仍能命中别名词条。
     """
 
     def __init__(self) -> None:
@@ -41,13 +39,13 @@ class ChineseTokenizer:
             return []
         if self._jieba is not None:
             return [t for t in self._jieba.lcut(text) if t and not t.isspace()]
-        # Fallback: split on punctuation/whitespace, then break CJK runs into chars.
+        # 后备方案：按标点/空白分割，然后把 CJK 连续字串拆成单字
         rough = [t for t in _FALLBACK_SPLIT.split(text) if t]
         tokens: list[str] = []
         for piece in rough:
             if _CJK.fullmatch(piece):
                 tokens.extend(list(piece))
-                tokens.append(piece)  # keep whole CJK run as a candidate too
+                tokens.append(piece)  # 保留完整 CJK 字串作为候选
             else:
                 tokens.append(piece)
         return tokens

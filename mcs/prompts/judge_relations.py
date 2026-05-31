@@ -1,7 +1,7 @@
-"""Prompt bundle for purpose='judge_relations'.
+"""purpose='judge_relations' 的 Prompt 包。
 
-Stage ④ of the write pipeline. Input: ConceptDrafts + related nodes.
-Output: DecisionList (list of action records, NOT graph mutations).
+写入管线阶段 ④。输入：ConceptDraft 列表 + 已相关节点。
+输出：DecisionList（操作记录列表，不是图变更）。
 """
 
 from __future__ import annotations
@@ -38,12 +38,11 @@ USER_TEMPLATE = (
 
 
 def parse(raw: str) -> list[Decision]:
-    """Parse the LLM response into a DecisionList.
+    """将 LLM 响应解析为 DecisionList。
 
-    The LLM returns ``concept_name`` referring to the input ConceptDraft by
-    name; the caller (write pipeline ④) is responsible for reattaching the
-    matching ConceptDraft object onto each Decision before applying.
-    """
+    LLM 返回的 ``concept_name`` 指向输入 ConceptDraft 的名称；
+    调用方（写入管线 ④）负责将匹配的 ConceptDraft 对象重新挂回每个 Decision。
+"""
     try:
         data = json.loads(strip_json_fence(raw))
     except json.JSONDecodeError as e:

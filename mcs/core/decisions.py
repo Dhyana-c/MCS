@@ -1,7 +1,7 @@
-"""Decision-list data structures shared by write pipeline ④⑤ and prompts.
+"""写入管道 ④⑤ 和提示共享的 DecisionList 数据结构。
 
-See openspec/specs/write-pipeline/spec.md "DecisionList 至少支持四种 action"
-and openspec/specs/phase1-defaults/spec.md "DecisionList 派发四种 action".
+参见 openspec/specs/write-pipeline/spec.md "DecisionList 至少支持四种 action"
+和 openspec/specs/phase1-defaults/spec.md "DecisionList 派发四种 action"。
 """
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ ActionType = Literal["merge", "create", "attach_statement", "no_op"]
 
 @dataclass
 class ConceptDraft:
-    """One concept extracted from text (write stage ③ output).
+    """从文本中提取的一个概念（写入阶段 ③ 输出）。
 
-    ``relation_hints`` is a list of natural-language relation phrases the
-    LLM identified during extraction (e.g. "属于机器学习", "由小明发明")
-    that stage ④ turns into ``attach_statement`` decisions.
+    ``relation_hints`` 是 LLM 在提取过程中识别的自然语言关系短语列表
+    （例如"属于机器学习"、"由小明发明"），阶段 ④ 将其转换为
+    ``attach_statement`` 决策。
     """
 
     name: str
@@ -28,12 +28,12 @@ class ConceptDraft:
 
 @dataclass
 class Decision:
-    """One action in the DecisionList (write stage ④ output, ⑤ input).
+    """DecisionList 中的一个动作（写入阶段 ④ 输出，⑤ 输入）。
 
-    Field validity depends on ``action``:
+    字段有效性取决于 ``action``：
       - merge:             concept, target_id, [aliases_to_add]
       - create:            concept, [edges_to], [initial_statements]
-      - attach_statement:  target_id (the attribute node), statement
+      - attach_statement:  target_id（属性节点）, statement
       - no_op:             concept, reason
     """
 
@@ -52,10 +52,10 @@ DecisionList = list[Decision]
 
 @dataclass
 class HubDecision:
-    """Output of the ``decide_hub`` LLM purpose.
+    """``decide_hub`` LLM 目的的输出。
 
-    ``hub_id`` is None when the LLM judges that no existing node is
-    suitable and a synthetic hub should be created instead.
+    当 LLM 判定没有现有节点适合作为 hub 时，``hub_id`` 为 None，
+    应创建一个合成 hub 节点。
     """
 
     hub_id: str | None

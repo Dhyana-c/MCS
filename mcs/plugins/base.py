@@ -1,6 +1,6 @@
-"""Plugin base class.
+"""插件基类。
 
-See architecture.md §4.1.
+参见 architecture.md §4.1。
 """
 
 from __future__ import annotations
@@ -13,17 +13,17 @@ if TYPE_CHECKING:
 
 
 class Plugin(ABC):
-    """Base class for all MCS plugins.
+    """所有 MCS 插件的基类。
 
-    Subclasses set these class attributes:
+    子类需设置以下类属性：
 
-    - ``name`` (str): plugin identifier; also the key into
-      ``node.extensions[name]`` for NodeExtension plugins.
-    - ``version`` (str): semver string.
-    - ``interfaces`` (list[type]): which interfaces this plugin implements
-      (used by ``PluginManager.register`` to index the plugin).
+    - ``name`` (str): 插件标识符；对于 NodeExtension 插件，也是
+      ``node.extensions[name]`` 的键名。
+    - ``version`` (str): 语义版本字符串。
+    - ``interfaces`` (list[type]): 此插件实现的接口列表
+      (由 ``PluginManager.register`` 用于索引插件)。
 
-    See architecture.md §4.1.
+    参见 architecture.md §4.1。
     """
 
     name: ClassVar[str] = ""
@@ -35,10 +35,10 @@ class Plugin(ABC):
 
     @abstractmethod
     def initialize(self, context: PluginContext) -> None:
-        """Initialize the plugin (called by PluginManager after register)."""
+        """初始化插件 (由 PluginManager 在注册后调用)。"""
         pass
 
     @abstractmethod
     def shutdown(self) -> None:
-        """Clean up plugin resources."""
+        """清理插件资源。"""
         pass

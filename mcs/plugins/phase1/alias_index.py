@@ -1,12 +1,11 @@
-"""AliasIndexPlugin and AliasEntryPlugin - alias dictionary + entry plugin.
+"""AliasIndexPlugin 和 AliasEntryPlugin - 别名字典 + 条目插件。
 
-Phase 1 splits the old "all-in-one" AliasIndex into two cleanly-separated
-plugins:
+Phase 1 将旧的"一体化" AliasIndex 拆分为两个清晰分离的插件：
 
-- ``AliasIndexPlugin``: implements ``IndexInterface`` + ``NodeExtensionInterface``,
-  manages the alias dictionary and ``node.extensions["alias_index"]["aliases"]``.
-- ``AliasEntryPlugin``: implements ``EntryPluginInterface``, uses the
-  AliasIndex to locate seed nodes at query stage ②.
+- ``AliasIndexPlugin``: 实现 ``IndexInterface`` + ``NodeExtensionInterface``，
+  管理别名字典和 ``node.extensions["alias_index"]["aliases"]``。
+- ``AliasEntryPlugin``: 实现 ``EntryPluginInterface``，在查询阶段 ②
+  使用 AliasIndex 定位种子节点。
 """
 
 from __future__ import annotations
@@ -25,10 +24,10 @@ if TYPE_CHECKING:
 
 
 class AliasIndexPlugin(Plugin, IndexInterface, NodeExtensionInterface):
-    """Alias dictionary index + node-extension manager.
+    """别名字典索引 + 节点扩展管理器。
 
-    Storage: ``self.index`` maps ``term -> set[node_id]`` where ``term``
-    is one of the node's name + alias tokens.
+    存储: ``self.index`` 映射 ``term -> set[node_id]``，其中 ``term``
+    是节点的名称 + 别名词条之一。
     """
 
     name: ClassVar[str] = "alias_index"
@@ -44,7 +43,7 @@ class AliasIndexPlugin(Plugin, IndexInterface, NodeExtensionInterface):
         self.tokenizer: ChineseTokenizer | None = None
         self.graph: GraphStore | None = None
 
-    # === Plugin lifecycle ===
+    # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
         self.tokenizer = ChineseTokenizer()
@@ -94,11 +93,11 @@ class AliasIndexPlugin(Plugin, IndexInterface, NodeExtensionInterface):
         for term in [node.name, *aliases]:
             if not term:
                 continue
-            # Index the full term verbatim.
+            # 原样索引完整词条。
             self.index.setdefault(term, set()).add(node.id)
-            # Also index its tokens so partial-match queries hit. This is what
-            # makes "什么是深度学习" find a node named "深度学习" — jieba
-            # produces "深度学习" plus its sub-tokens.
+            # 同时索引其分词，以便部分匹配查询命中。这就是
+            # 让"什么是深度学习"能找到名为"深度学习"的节点的原因——jieba
+            # 会产生"深度学习"及其子词。
             if self.tokenizer is not None:
                 for tok in self.tokenizer.tokenize(term):
                     if tok and tok != term:
@@ -119,11 +118,10 @@ class AliasIndexPlugin(Plugin, IndexInterface, NodeExtensionInterface):
 
 
 class AliasEntryPlugin(Plugin, EntryPluginInterface):
-    """Entry plugin: use AliasIndexPlugin's dictionary to locate seed nodes.
+    """条目插件：使用 AliasIndexPlugin 的字典来定位种子节点。
 
-    Priority 100 (highest among Phase 1 defaults). Non-exclusive — the
-    chain still falls through to ``HubFallbackEntryPlugin`` (priority 0)
-    when this returns empty.
+    优先级 100 (Phase 1 默认中最高)。非排他性——当此插件返回
+    空结果时，链仍会回退到 ``HubFallbackEntryPlugin`` (优先级 0)。
     """
 
     name: ClassVar[str] = "alias_entry"

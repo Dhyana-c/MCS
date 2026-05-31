@@ -1,8 +1,8 @@
-"""SummaryRegenPlugin - regenerate a node's summary on content change.
+"""SummaryRegenPlugin - 在内容变更时重新生成节点的摘要。
 
-Mounted as a CompactionPlugin in write stage ⑥. For each changed node
-whose ``extensions["summary"]["text"]`` is missing or stale, calls the
-LLM with ``gen_summary`` purpose and updates the slot.
+作为 CompactionPlugin 挂载于写入阶段 ⑥。对于每个变更节点，
+如果其 ``extensions["summary"]["text"]`` 缺失或过期，则调用
+LLM（``gen_summary`` 目的）并更新该槽位。
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class SummaryRegenPlugin(Plugin, CompactionPluginInterface):
-    """Refresh ``extensions["summary"]`` for nodes that need it."""
+    """为需要摘要的节点刷新 ``extensions["summary"]``。"""
 
     name: ClassVar[str] = "summary_regen"
     version: ClassVar[str] = "0.1.0"

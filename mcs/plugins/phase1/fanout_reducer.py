@@ -1,10 +1,9 @@
-"""FanoutReducerPlugin - compact a node whose neighborhood exceeds budget.
+"""FanoutReducerPlugin - 压缩邻域超过预算的节点。
 
-For each changed node whose 1-hop neighbor count exceeds a threshold,
-asks the LLM (``decide_hub`` purpose) which neighbor should become an
-intermediate hub. Phase 1 records the chosen hub by promoting the
-neighbor's ``role`` to ``"hub"``; full graph surgery (redirecting edges
-to form a star) is left for future refinement.
+对于每个一跳邻居数超过阈值的变更节点，询问 LLM
+（``decide_hub`` 目的）哪个邻居应该成为中间枢纽。
+Phase 1 通过将邻居的 ``role`` 提升为 ``"hub"`` 来记录选定的枢纽；
+完整的图手术（重定向边以形成星型）留待未来完善。
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ if TYPE_CHECKING:
 
 
 class FanoutReducerPlugin(Plugin, CompactionPluginInterface):
-    """Promote a hub when a node's neighborhood overflows."""
+    """当节点的邻域溢出时提升枢纽。"""
 
     name: ClassVar[str] = "fanout_reducer"
     version: ClassVar[str] = "0.1.0"
@@ -71,7 +70,7 @@ class FanoutReducerPlugin(Plugin, CompactionPluginInterface):
             if hub_id and graph.get_node(hub_id) is not None:
                 graph.update_node(hub_id, {"role": "hub"})
             elif getattr(decision, "synthetic_hub_summary", None):
-                # Phase 1 records the synthetic-hub intent on the focus node.
+                # Phase 1 在焦点节点上记录合成枢纽意图。
                 reason = getattr(decision, "synthetic_hub_summary", "") or ""
                 node.extensions.setdefault("_compaction", {})[
                     "synthetic_hub_summary"
@@ -79,4 +78,4 @@ class FanoutReducerPlugin(Plugin, CompactionPluginInterface):
                 graph.update_node(node.id, {"extensions": node.extensions})
 
 
-_ = Any  # silence unused-import lint when the optional ``Any`` is dropped
+_ = Any  # 当可选的 ``Any`` 被移除时，消除未使用导入的 lint 警告

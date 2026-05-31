@@ -1,8 +1,7 @@
-"""Prompt bundle for purpose='synthesize'.
+"""purpose='synthesize' 的 Prompt 包。
 
-Read pipeline ⑤ postprocess (when a SynthesizePlugin is configured).
-Input: final selected nodes + original query. Output: natural-language
-answer string.
+查询管线阶段 ⑤ 后处理（当配置了 SynthesizePlugin 时）。
+输入：最终选中的节点 + 原始查询。输出：自然语言答案字符串。
 """
 
 from __future__ import annotations
