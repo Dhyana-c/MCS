@@ -251,6 +251,31 @@ def test_extract_supporting_facts_empty():
     assert result == []
 
 
+def test_extract_supporting_facts_top_n_prunes():
+    """5.7：按 node rank 取 top-N，超出的来源 title 被剪掉。"""
+    nodes = []
+    for t in ["A", "B", "C", "D"]:
+        n = MagicMock()
+        n.extensions = {"source_tracking": {"sources": [MagicMock(section_title=t)]}}
+        nodes.append(n)
+    assert extract_supporting_facts(nodes, top_n=2) == [["A", 0], ["B", 0]]
+    # top_n=None 保留旧行为：吐出全部去重 title
+    assert len(extract_supporting_facts(nodes, top_n=None)) == 4
+
+
+def test_extract_prediction_respects_sp_top_n():
+    """5.7：extract_prediction 把 sp_top_n 透传给 supporting-facts 剪枝。"""
+    nodes = []
+    for t in ["A", "B", "C"]:
+        n = MagicMock()
+        n.name = "ans"
+        n.content = ""
+        n.extensions = {"source_tracking": {"sources": [MagicMock(section_title=t)]}}
+        nodes.append(n)
+    pred = extract_prediction(nodes, "id1", "What is it?", sp_top_n=1)
+    assert pred["sp"] == [["A", 0]]
+
+
 def test_extract_prediction():
     """测试整合预测提取。"""
     mock_node = MagicMock()

@@ -69,9 +69,18 @@ class MCSConfig:
                 "model": "claude-3-5-sonnet-latest",
                 "base_url": "https://api.anthropic.com",
             }
+        elif llm == "ollama":
+            plugins = [
+                "ollama_llm" if p == "deepseek_llm" else p for p in plugins
+            ]
+            plugin_configs.pop("deepseek_llm", None)
+            plugin_configs["ollama_llm"] = {
+                "model": "",
+                "base_url": "http://localhost:11434/v1",
+            }
         elif llm != "deepseek":
             raise ValueError(
-                f"unknown llm={llm!r}; expected 'deepseek' or 'claude'"
+                f"unknown llm={llm!r}; expected 'deepseek', 'claude', or 'ollama'"
             )
         return cls(
             mode="knowledge_graph",

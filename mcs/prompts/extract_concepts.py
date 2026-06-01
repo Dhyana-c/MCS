@@ -29,28 +29,46 @@ USER_TEMPLATE = (
 
 
 def parse(raw: str) -> list[ConceptDraft]:
-    """将 LLM 响应解析为 ConceptDraft 列表。"""
+    """将 LLM 响应解析为 ConceptDraft 列表（宽容模式）。"""
+    from mcs.utils.text_utils import extract_json
+
+    json_str = extract_json(raw)
+    if not json_str:
+        raise LLMParseError("extract_concepts", raw, "no JSON found in response")
+
     try:
-        data = json.loads(strip_json_fence(raw))
+        data = json.loads(json_str)
     except json.JSONDecodeError as e:
         raise LLMParseError("extract_concepts", raw, str(e)) from e
+
     if isinstance(data, dict):
-        data = [data]  # 容忍 LLM 偶尔只返回单个概念对象
+        # 容忍单个概念对象或 {"concepts": [...]} 包装
+        # 先检查常见的包装字段
+        for key in ("concepts", "items", "results", "data"):
+            if key in data and isinstance(data[key], list):
+                data = data[key]
+                break
+        else:
+            # 单个概念对象（不管字段名是什么）
+            data = [data]
+
     if not isinstance(data, list):
         raise LLMParseError(
             "extract_concepts", raw, "expected JSON array or object"
         )
+
     result: list[ConceptDraft] = []
     for item in data:
-        if not isinstance(item, dict) or "name" not in item:
-            raise LLMParseError(
-                "extract_concepts", raw, f"invalid item: {item!r}"
-            )
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or item.get("concept") or item.get("term") or item.get("entity")
+        if not name:
+            continue
         result.append(
             ConceptDraft(
-                name=item["name"],
-                content=item.get("content", ""),
-                relation_hints=item.get("relation_hints", []) or [],
+                name=str(name),
+                content=item.get("content", "") or item.get("description", "") or "",
+                relation_hints=item.get("relation_hints", []) or item.get("relations", []) or [],
             )
         )
     return result

@@ -18,6 +18,15 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# 实测 token 模型（来自真账单反推，与 multihop 口径一致）：约 9K token/段
+# （7.5K input + 1.5K output），每条 HotpotQA ~10 段 ingest + 1 次 query ≈ 90K token/条。
+# 替换旧的 ~7900/条估算。
+_TOKENS_IN_PER_CHUNK = 7500
+_TOKENS_OUT_PER_CHUNK = 1500
+_CHUNKS_PER_ITEM = 10
+_QUERY_TOKENS_IN = 800
+_QUERY_TOKENS_OUT = 100
+
 
 def _ensure_utf8_stdout() -> None:
     """让 stdout 以 UTF-8 + errors='replace' 输出。
@@ -148,6 +157,13 @@ def ingest_hotpot_item(item: HotpotItem, llm: str = "deepseek") -> Any:
 
         auth_token = os.environ.get("ANTHROPIC_API_KEY", "")
         config.plugin_configs["claude_llm"]["auth_token"] = auth_token
+    elif llm == "ollama":
+        import os
+
+        config.plugin_configs["ollama_llm"].update({
+            "base_url": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+            "model": os.environ.get("OLLAMA_MODEL", ""),
+        })
 
     mcs = MCS(config)
     mcs.initialize()
@@ -216,11 +232,15 @@ def extract_answer(nodes: list[Any], question: str = "") -> str:
     return nodes[0].name
 
 
-def extract_supporting_facts(nodes: list[Any]) -> list[list[str]]:
-    """从返回节点提取 supporting facts。
+def extract_supporting_facts(
+    nodes: list[Any], top_n: int | None = 2
+) -> list[list[str]]:
+    """从返回节点提取 supporting facts，按 node rank 取 **top-N** 去重 title。
 
     从 source_tracking 的 section_title 取 title，sent_idx 统一取 0（D8 下界）。
-    title 去重。
+    HotpotQA gold sp 通常恰为 2 篇支撑文档，而 MCS 易把所有来源 title 全吐出
+    （过度预测，拉低 sp 精确率/sp_em）。按 rank 取 top-N 剪枝缓解之；
+    ``top_n=None`` 表示不剪枝（保留旧行为：吐出全部去重 title）。
     """
     titles: list[str] = []
     seen: set[str] = set()
@@ -235,16 +255,21 @@ def extract_supporting_facts(nodes: list[Any]) -> list[list[str]]:
             if title and title not in seen:
                 seen.add(title)
                 titles.append(title)
-    # sent_idx 必须是 int 0（与 HotpotQA gold 的 int 下标一致，否则元组永不匹配）
+                if top_n is not None and len(titles) >= top_n:
+                    # sent_idx 必须是 int 0（与 gold 的 int 下标一致，否则元组永不匹配）
+                    return [[t, 0] for t in titles]
     return [[t, 0] for t in titles]
 
 
 def extract_prediction(
-    nodes: list[Any], item_id: str, question: str = ""
+    nodes: list[Any],
+    item_id: str,
+    question: str = "",
+    sp_top_n: int | None = 2,
 ) -> dict:
     """整合 answer + supporting_facts 提取，返回预测字典。"""
     answer = extract_answer(nodes, question)
-    sp = extract_supporting_facts(nodes)
+    sp = extract_supporting_facts(nodes, top_n=sp_top_n)
     return {"_id": item_id, "answer": answer, "sp": sp}
 
 
@@ -264,6 +289,7 @@ class HotpotEvalConfig:
     dry_run: bool = False
     resume: bool = True
     seed: int = 42
+    sp_top_n: int | None = 2  # supporting-facts 按 rank 取 top-N 剪枝；None=不剪枝
 
 
 class HotpotEvalRunner:
@@ -337,7 +363,9 @@ class HotpotEvalRunner:
                     mcs.shutdown()
 
             # extract prediction
-            pred = extract_prediction(nodes, item._id, item.question)
+            pred = extract_prediction(
+                nodes, item._id, item.question, sp_top_n=cfg.sp_top_n
+            )
             predictions_answer[item._id] = pred["answer"]
             predictions_sp[item._id] = pred["sp"]
             done_ids.add(item._id)
@@ -510,13 +538,10 @@ class HotpotEvalRunner:
         items = loader.load()
         n = len(items)
 
-        # 粗略估算：每条 10 个段落 ingest + 1 次 query
-        # ingest 每次 ~500 tokens (input) + ~200 tokens (output)
-        # query 每次 ~800 tokens (input) + ~100 tokens (output)
-        ingest_tokens_per_item = 10 * (500 + 200)
-        query_tokens_per_item = 800 + 100
-        total_per_item = ingest_tokens_per_item + query_tokens_per_item
-        total_tokens = n * total_per_item
+        # 实测 token 模型（~90K/条）：每条 ~10 段 ingest（每段 7.5K in + 1.5K out）+ 1 次 query。
+        input_tokens = n * (_CHUNKS_PER_ITEM * _TOKENS_IN_PER_CHUNK + _QUERY_TOKENS_IN)
+        output_tokens = n * (_CHUNKS_PER_ITEM * _TOKENS_OUT_PER_CHUNK + _QUERY_TOKENS_OUT)
+        total_tokens = input_tokens + output_tokens
 
         # 费用估算
         prices = {
@@ -524,8 +549,6 @@ class HotpotEvalRunner:
             "claude": {"input": 3.0 / 1_000_000, "output": 15.0 / 1_000_000},
         }
         price = prices.get(cfg.llm_backend, prices["deepseek"])
-        input_tokens = n * 10 * 500 + n * 800
-        output_tokens = n * 10 * 200 + n * 100
         cost = input_tokens * price["input"] + output_tokens * price["output"]
 
         estimate = {
@@ -557,7 +580,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--llm",
-        choices=["deepseek", "claude"],
+        choices=["deepseek", "claude", "ollama"],
         default="deepseek",
         help="LLM backend to use",
     )
@@ -592,6 +615,12 @@ def main() -> None:
         default=r"D:\code\hotpot",
         help="Directory containing hotpot_evaluate_v1.py",
     )
+    parser.add_argument(
+        "--sp-top-n",
+        type=int,
+        default=2,
+        help="Supporting-facts top-N pruning by node rank (0 = no pruning)",
+    )
 
     args = parser.parse_args()
 
@@ -604,6 +633,7 @@ def main() -> None:
         output_dir=args.output,
         dry_run=args.dry_run,
         resume=not args.no_resume,
+        sp_top_n=args.sp_top_n if args.sp_top_n > 0 else None,
     )
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")

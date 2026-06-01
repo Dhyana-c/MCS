@@ -50,3 +50,11 @@ class StorageInterface(ABC):
     def save_edge(self, edge: "Edge") -> None:
         """持久化单条边。"""
         pass
+
+    def commit(self) -> None:
+        """提交挂起的写入。
+
+        默认空操作：无事务概念的后端无需实现。事务型后端（如 SQLite）应覆写，
+        以便写入管线在每次 ingest 落盘后及时提交（见 write-pipeline 阶段 ⑦）。
+        """
+        return None

@@ -11,8 +11,10 @@ from mcs.bench.multihop_rag import (
     MultiHopDataLoader,
     MultiHopEvalConfig,
     MultiHopEvalRunner,
+    MultiHopQuery,
     aggregate_metrics,
     chunk_body,
+    filter_queries,
     hit_at_k,
     map_at_k,
     mrr_at_k,
@@ -158,7 +160,7 @@ def test_runner_persists_and_resumes(tmp_corpus_qa, tmp_path):
 
     built: list = []
 
-    def fake_build(docs, llm="deepseek", db_path="", max_chunks_per_doc=8):
+    def fake_build(docs, llm="deepseek", db_path="", max_chunks_per_doc=8, **kwargs):
         m = MagicMock()
         node = MagicMock()
         node.extensions = {"source_tracking": {"sources": [
@@ -180,3 +182,44 @@ def test_runner_persists_and_resumes(tmp_corpus_qa, tmp_path):
     with patch("mcs.bench.multihop_rag.build_shared_graph", side_effect=fake_build):
         MultiHopEvalRunner(cfg).run()
         assert built[-1].query.call_count == 0
+
+
+# ─── 7.x（5.7）--exclude-null ─────────────────────────────────────────────────
+
+
+def test_filter_queries_excludes_null():
+    qs = [
+        MultiHopQuery("q1", "a", "inference_query"),
+        MultiHopQuery("q2", "a", "null_query"),
+        MultiHopQuery("q3", "a", "comparison_query"),
+    ]
+    assert len(filter_queries(qs, exclude_null=False)) == 3
+    kept = filter_queries(qs, exclude_null=True)
+    assert len(kept) == 2
+    assert all(q.question_type != "null_query" for q in kept)
+
+
+def test_runner_exclude_null_drops_null_queries(tmp_corpus_qa, tmp_path):
+    """开启 exclude_null 后，null_query 不进入检索结果。"""
+    cp, qp = tmp_corpus_qa
+    out = tmp_path / "out"
+    cfg = MultiHopEvalConfig(
+        corpus_path=cp, queries_path=qp,
+        output_dir=str(out), db_path=str(tmp_path / "g.db"),
+        exclude_null=True,
+    )
+
+    def fake_build(docs, llm="deepseek", db_path="", max_chunks_per_doc=8, **kwargs):
+        m = MagicMock()
+        node = MagicMock()
+        node.extensions = {"source_tracking": {"sources": [MagicMock(doc_id="DocA")]}}
+        m.query.return_value = [node]
+        return m
+
+    with patch("mcs.bench.multihop_rag.build_shared_graph", side_effect=fake_build):
+        MultiHopEvalRunner(cfg).run()
+
+    results = json.loads((out / "retrieval_results.json").read_text(encoding="utf-8"))
+    types = {r["type"] for r in results.values()}
+    assert "null_query" not in types
+    assert types  # 仍有非 null 的 query 被评测

@@ -38,17 +38,31 @@ USER_TEMPLATE = (
 
 
 def parse(raw: str) -> list[Decision]:
-    """将 LLM 响应解析为 DecisionList。
+    """将 LLM 响应解析为 DecisionList（宽容模式）。
 
     LLM 返回的 ``concept_name`` 指向输入 ConceptDraft 的名称；
     调用方（写入管线 ④）负责将匹配的 ConceptDraft 对象重新挂回每个 Decision。
 """
+    from mcs.utils.text_utils import extract_json
+
+    json_str = extract_json(raw)
+    if not json_str:
+        raise LLMParseError("judge_relations", raw, "no JSON found in response")
+
     try:
-        data = json.loads(strip_json_fence(raw))
+        data = json.loads(json_str)
     except json.JSONDecodeError as e:
         raise LLMParseError("judge_relations", raw, str(e)) from e
+
     if isinstance(data, dict):
-        data = [data]  # 容忍 LLM 偶尔只返回单个决策对象
+        # 容忍 {"decisions": [...]} 包装或单个决策
+        if "action" in data:
+            data = [data]
+        elif "decisions" in data and isinstance(data["decisions"], list):
+            data = data["decisions"]
+        elif "results" in data and isinstance(data["results"], list):
+            data = data["results"]
+
     if not isinstance(data, list):
         raise LLMParseError(
             "judge_relations", raw, "expected JSON array or object"
@@ -56,18 +70,16 @@ def parse(raw: str) -> list[Decision]:
     decisions: list[Decision] = []
     valid_actions = {"merge", "create", "attach_statement", "no_op"}
     for item in data:
-        if not isinstance(item, dict) or "action" not in item:
-            raise LLMParseError("judge_relations", raw, f"invalid item: {item!r}")
-        action = item["action"]
+        if not isinstance(item, dict):
+            continue
+        action = item.get("action", "no_op")
         if action not in valid_actions:
-            raise LLMParseError(
-                "judge_relations", raw, f"unknown action: {action!r}"
-            )
+            action = "no_op"  # 容忍无效 action
         decisions.append(
             Decision(
                 action=action,
                 concept=ConceptDraft(
-                    name=item.get("concept_name", ""),
+                    name=item.get("concept_name", "") or item.get("name", ""),
                     content="",  # will be re-attached by caller
                 ),
                 target_id=item.get("target_id"),

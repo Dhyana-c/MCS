@@ -125,7 +125,8 @@ class WritePipeline:
         ) or []
         ctx.concepts = concepts
         if not concepts:
-            return ctx  # 概念数为 0 时静默返回
+            self._mark_ingested_if_success(ctx)
+            return ctx  # 概念数为 0 时静默返回（仍标记已摄入，避免续跑重复处理空块）
 
         # 阶段 ④: 关系判定
         decisions = self.llm.call(
@@ -150,7 +151,32 @@ class WritePipeline:
         # 阶段 ⑦: 自动落盘
         self._run_persist(ctx)
 
+        # 成功完成 → 标记本块已摄入（mark-on-success，与节点提交时机一致）
+        self._mark_ingested_if_success(ctx)
+
         return ctx
+
+    def _mark_ingested_if_success(self, ctx: WriteContext) -> None:
+        """成功完成后把本块记入 idempotency 标记（mark-on-success）。
+
+        - 有变更节点但未成功落盘（持久化失败/中断）→ **不标记**，留待续跑重试；
+        - 其余正常完成（落盘成功，或本就无节点可落盘）→ 标记。
+
+        无 ``_pending_source``（未启用 idempotency 或无文档上下文）时为 no-op。
+        通过 duck-typed ``record_ingested`` 调用，避免 core 硬编码具体插件名。
+        """
+        source = ctx.metadata.get("_pending_source")
+        if source is None:
+            return
+        if ctx.changed and not ctx.persisted:
+            return  # 有节点却未落盘成功 → 不标记，下次续跑重试该块
+
+        from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
+
+        for plugin in self.plugin_manager.get_all(PostprocessPluginInterface):
+            recorder = getattr(plugin, "record_ingested", None)
+            if callable(recorder):
+                recorder(source.doc_id, source.chunk_id, source.content_hash)
 
     def _attach_pending_source(self, ctx: WriteContext) -> None:
         """把 IdempotencyCheckPlugin 暂存于 ``ctx.metadata`` 的 Source 挂到本次
@@ -354,6 +380,8 @@ class WritePipeline:
                         storage.save_edge(edge)
                         persisted_edges.add(key)
 
+            # 每次 ingest 落盘后显式提交：消除"滞后一块 + shutdown 丢最后一块"。
+            storage.commit()
             ctx.persisted = True
         except Exception:
             import logging

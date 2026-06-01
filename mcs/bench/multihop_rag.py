@@ -176,6 +176,19 @@ class MultiHopDataLoader:
         )
 
 
+def filter_queries(
+    queries: list[MultiHopQuery], exclude_null: bool
+) -> list[MultiHopQuery]:
+    """可选地排除 ``null_query``（语料中无答案的诊断项）。
+
+    小 corpus 子集下 null_query 占比极高、干扰检索信号；``--exclude-null`` 开启时
+    只评非 null 的可达 query。
+    """
+    if not exclude_null:
+        return queries
+    return [q for q in queries if q.question_type != "null_query"]
+
+
 # ─── 2. 共享图构建 ─────────────────────────────────────────────────────────────
 
 
@@ -206,12 +219,38 @@ def chunk_body(title: str, body: str, max_chunks: int = 8) -> list[str]:
     return chunks
 
 
-def _make_mcs(llm: str, db_path: str) -> Any:
-    """创建一个配置好持久化与 LLM key 的 MCS 实例（已 initialize）。"""
+def _make_mcs(
+    llm: str,
+    db_path: str,
+    *,
+    rerank: bool = False,
+    rerank_top_n: int | None = None,
+    rerank_min_score: float = 0.0,
+    max_picked: int | None = None,
+    max_rounds: int | None = None,
+) -> Any:
+    """创建一个配置好持久化与 LLM key 的 MCS 实例（已 initialize）。
+
+    ``rerank=True`` 时把 query_postprocess 重排插件加入插件链（opt-in），用于在
+    **不重建图**的前提下对 query 阶段做重排 A/B。``max_picked`` / ``max_rounds``
+    非 None 时放宽遍历宽度/轮数（广召回，最后由 reranker/评测 @k 截断）。
+    """
     from mcs import MCS, MCSConfig
 
     config = MCSConfig.knowledge_graph(llm=llm)
     config.plugin_configs["sqlite_storage"] = {"path": db_path}
+    if max_picked is not None:
+        config.max_picked = max_picked
+    if max_rounds is not None:
+        config.max_rounds = max_rounds
+    if rerank:
+        if "rerank" not in config.plugins:
+            config.plugins.append("rerank")
+        config.plugin_configs["rerank"] = {
+            "scorer": "lexical",
+            "top_n": rerank_top_n,
+            "min_score": rerank_min_score,
+        }
     if llm == "deepseek":
         config.plugin_configs["deepseek_llm"]["api_key"] = os.environ.get(
             "DEEPSEEK_API_KEY", ""
@@ -220,6 +259,11 @@ def _make_mcs(llm: str, db_path: str) -> Any:
         config.plugin_configs["claude_llm"]["auth_token"] = os.environ.get(
             "ANTHROPIC_API_KEY", ""
         )
+    elif llm == "ollama":
+        config.plugin_configs["ollama_llm"].update({
+            "base_url": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+            "model": os.environ.get("OLLAMA_MODEL", ""),
+        })
     mcs = MCS(config)
     mcs.initialize()
     return mcs
@@ -230,12 +274,27 @@ def build_shared_graph(
     llm: str = "deepseek",
     db_path: str = "./multihop_bench.db",
     max_chunks_per_doc: int = 8,
+    *,
+    rerank: bool = False,
+    rerank_top_n: int | None = None,
+    rerank_min_score: float = 0.0,
+    max_picked: int | None = None,
+    max_rounds: int | None = None,
 ) -> Any:
     """把全部文档摄入**同一个**持久化 MCS 实例，返回该实例。
 
     依赖 idempotency_check：重复构建时已摄入的文档块自动跳过（断点续跑）。
+    ``rerank`` / ``max_picked`` / ``max_rounds`` 等参数透传给 ``_make_mcs``。
     """
-    mcs = _make_mcs(llm, db_path)
+    mcs = _make_mcs(
+        llm,
+        db_path,
+        rerank=rerank,
+        rerank_top_n=rerank_top_n,
+        rerank_min_score=rerank_min_score,
+        max_picked=max_picked,
+        max_rounds=max_rounds,
+    )
     total = len(docs)
     for di, doc in enumerate(docs, 1):
         for ci, text in enumerate(chunk_body(doc.title, doc.body, max_chunks_per_doc)):
@@ -367,6 +426,12 @@ class MultiHopEvalConfig:
     resume: bool = True
     dry_run: bool = False
     seed: int = 42
+    exclude_null: bool = False  # 排除 null_query（只评非 null 的可达 query）
+    rerank: bool = False  # query 阶段启用相关性重排（opt-in，不重建图）
+    rerank_top_n: int | None = 10  # 重排后截断 top-N（仅 rerank=True 时生效）
+    rerank_min_score: float = 0.0  # 重排过滤阈值（默认不误杀）
+    max_picked: int | None = None  # 放宽遍历累积上限（None=用默认 50）
+    max_rounds: int | None = None  # 放宽遍历轮数（None=用默认 5）
 
 
 class MultiHopEvalRunner:
@@ -383,12 +448,27 @@ class MultiHopEvalRunner:
             cfg.corpus_path, cfg.queries_path, cfg.corpus_subset, cfg.seed
         )
         docs, queries = loader.load()
-        print(f"语料 {len(docs)} 篇文档, {len(queries)} 个可达 query")
+        queries = filter_queries(queries, cfg.exclude_null)
+        suffix = "（已排除 null_query）" if cfg.exclude_null else ""
+        print(f"语料 {len(docs)} 篇文档, {len(queries)} 个可达 query{suffix}")
+        if cfg.rerank:
+            print(
+                f"重排已启用：scorer=lexical top_n={cfg.rerank_top_n} "
+                f"min_score={cfg.rerank_min_score}"
+            )
 
         # 构建（或复用）共享图
         print("构建共享图（已摄入的会自动跳过）…")
         mcs = build_shared_graph(
-            docs, cfg.llm_backend, cfg.db_path, cfg.max_chunks_per_doc
+            docs,
+            cfg.llm_backend,
+            cfg.db_path,
+            cfg.max_chunks_per_doc,
+            rerank=cfg.rerank,
+            rerank_top_n=cfg.rerank_top_n,
+            rerank_min_score=cfg.rerank_min_score,
+            max_picked=cfg.max_picked,
+            max_rounds=cfg.max_rounds,
         )
 
         # 断点续跑：复用已落盘的检索结果
@@ -492,7 +572,7 @@ def main() -> None:
     parser.add_argument(
         "--corpus-subset", type=int, default=0, help="采样 N 篇文档（0=全量）"
     )
-    parser.add_argument("--llm", choices=["deepseek", "claude"], default="deepseek")
+    parser.add_argument("--llm", choices=["deepseek", "claude", "ollama"], default="deepseek")
     parser.add_argument("--db", default="./multihop_bench.db")
     parser.add_argument("--output", default="./multihop_output")
     parser.add_argument(
@@ -501,6 +581,40 @@ def main() -> None:
     parser.add_argument("--max-chunks", type=int, default=8)
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--exclude-null",
+        action="store_true",
+        help="排除 null_query，只评非 null 的可达 query",
+    )
+    parser.add_argument(
+        "--rerank",
+        action="store_true",
+        help="query 阶段启用相关性重排（opt-in，复用现有图、不重建）",
+    )
+    parser.add_argument(
+        "--rerank-top-n",
+        type=int,
+        default=10,
+        help="重排后截断 top-N（0 = 不截断；仅 --rerank 时生效）",
+    )
+    parser.add_argument(
+        "--rerank-min-score",
+        type=float,
+        default=0.0,
+        help="重排过滤阈值，低于该分的节点被丢弃（默认 0.0 不误杀）",
+    )
+    parser.add_argument(
+        "--max-picked",
+        type=int,
+        default=0,
+        help="放宽遍历累积上限（0=用默认 50；广召回时调大，如 150）",
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=0,
+        help="放宽遍历轮数（0=用默认 5；广召回时调大，如 8）",
+    )
     args = parser.parse_args()
 
     _maybe_load_dotenv()
@@ -517,6 +631,12 @@ def main() -> None:
         max_chunks_per_doc=args.max_chunks,
         resume=not args.no_resume,
         dry_run=args.dry_run,
+        exclude_null=args.exclude_null,
+        rerank=args.rerank,
+        rerank_top_n=args.rerank_top_n if args.rerank_top_n > 0 else None,
+        rerank_min_score=args.rerank_min_score,
+        max_picked=args.max_picked if args.max_picked > 0 else None,
+        max_rounds=args.max_rounds if args.max_rounds > 0 else None,
     )
     runner = MultiHopEvalRunner(cfg)
     if cfg.dry_run:

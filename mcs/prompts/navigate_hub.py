@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from mcs.core.errors import LLMParseError
 from mcs.utils.text_utils import strip_json_fence
@@ -25,10 +26,29 @@ USER_TEMPLATE = (
 )
 
 
+# 抢救已闭合的带引号字符串：用于 LLM 输出因 max_tokens 截断成未闭合 JSON 数组时的容错
+_QUOTED_STR = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _salvage_quoted_strings(text: str) -> list[str]:
+    """从（可能被截断的）JSON 文本里抽出所有**已闭合**的带引号字符串。
+
+    LLM 输出超过 max_tokens 被截断时，JSON 数组末尾会残留未闭合的串；正则只匹配
+    成对引号，天然丢弃被截断的尾部残片。下游会用 ``get_node`` 再过滤掉无效 id。
+    """
+    return [m.group(1) for m in _QUOTED_STR.finditer(text)]
+
+
 def parse(raw: str) -> list[str]:
+    cleaned = strip_json_fence(raw)
     try:
-        data = json.loads(strip_json_fence(raw))
+        data = json.loads(cleaned)
     except json.JSONDecodeError as e:
+        # 容错：LLM 输出可能因 max_tokens 截断成未闭合 JSON 数组（hub 候选过多时常见）。
+        # 抢救已闭合的 id；抢救到就用，完全抢救不到才保持原 raise 行为。
+        salvaged = _salvage_quoted_strings(cleaned)
+        if salvaged:
+            return salvaged
         raise LLMParseError("navigate_hub", raw, str(e)) from e
     if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
         raise LLMParseError(

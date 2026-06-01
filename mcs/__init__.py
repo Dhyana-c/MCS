@@ -49,9 +49,11 @@ def _default_plugin_registry() -> dict[str, type[Plugin]]:
     )
     from mcs.plugins.phase1.claude_llm import ClaudeLLMPlugin
     from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
+    from mcs.plugins.phase1.ollama_llm import OllamaLLMPlugin
     from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
     from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
     from mcs.plugins.phase1.priority_trim import PriorityTrimPlugin
+    from mcs.plugins.phase1.rerank import RerankPlugin
     from mcs.plugins.phase1.source_tracking import (
         IdempotencyCheckPlugin,
         SourceTrackingPlugin,
@@ -65,6 +67,7 @@ def _default_plugin_registry() -> dict[str, type[Plugin]]:
         "alias_entry": AliasEntryPlugin,
         "hub_fallback": HubFallbackEntryPlugin,
         "priority_trim": PriorityTrimPlugin,
+        "rerank": RerankPlugin,  # query_postprocess 重排（opt-in，不入默认链）
         "summary": SummaryPlugin,
         "source_tracking": SourceTrackingPlugin,
         "idempotency_check": IdempotencyCheckPlugin,
@@ -73,6 +76,7 @@ def _default_plugin_registry() -> dict[str, type[Plugin]]:
         "sqlite_storage": SQLiteStoragePlugin,
         "deepseek_llm": DeepSeekLLMPlugin,
         "claude_llm": ClaudeLLMPlugin,
+        "ollama_llm": OllamaLLMPlugin,
     }
 
 

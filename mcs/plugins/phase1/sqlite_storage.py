@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -17,6 +18,8 @@ from mcs.plugins.base import Plugin
 if TYPE_CHECKING:
     from mcs.core.graph import Edge, GraphStore, Node
     from mcs.core.plugin_manager import PluginContext
+
+logger = logging.getLogger(__name__)
 
 
 class SQLiteStoragePlugin(Plugin, StorageInterface):
@@ -36,12 +39,18 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
         self.path: str = self.config.get("path", ":memory:")
         self.conn: sqlite3.Connection | None = None
         self._schema_extensions: list = []
+        # name -> NodeExtensionInterface 插件，用于 extensions 的保真编解码（D5）
+        self._node_extensions: dict[str, Any] = {}
 
     # === 插件 / StorageInterface 生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
         self.conn = sqlite3.connect(self.path)
         self._schema_extensions = context.plugin_manager.collect_schema_extensions()
+        self._node_extensions = {
+            ext.name: ext
+            for ext in context.plugin_manager.collect_node_extensions()
+        }
         self._create_tables(self._schema_extensions)
 
     def shutdown(self) -> None:
@@ -69,7 +78,8 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
         for row in self.conn.execute(
             "SELECT id, name, content, role, extensions_json FROM nodes"
         ):
-            ext = json.loads(row[4]) if row[4] else {}
+            raw = json.loads(row[4]) if row[4] else {}
+            ext = self._deserialize_extensions(raw)
             graph.add_node(
                 Node(id=row[0], name=row[1], content=row[2] or "", role=row[3], extensions=ext)
             )
@@ -94,9 +104,18 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
                 node.name,
                 node.content,
                 node.role,
-                json.dumps(node.extensions, default=str, ensure_ascii=False),
+                json.dumps(
+                    self._serialize_extensions(node.extensions),
+                    default=str,
+                    ensure_ascii=False,
+                ),
             ),
         )
+
+    def commit(self) -> None:
+        """提交挂起的写入（StorageInterface 的可选钩子；供写入管线阶段 ⑦ 调用）。"""
+        if self.conn is not None:
+            self.conn.commit()
 
     def save_edge(self, edge: Edge) -> None:
         if self.conn is None:
@@ -108,6 +127,45 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
         )
 
     # === 内部方法 ===
+
+    def _serialize_extensions(self, extensions: dict | None) -> dict:
+        """对带编解码的 NodeExtension 走其 ``serialize()`` 产出 dict（D5）。
+
+        无对应插件的槽位原样保留（如 alias_index/statements/summary 本就可 JSON 序列化）；
+        ``json.dumps(default=str)`` 仅作最后兜底，避免意外类型导致整次落盘失败。
+        """
+        out: dict = {}
+        for key, value in (extensions or {}).items():
+            ext = self._node_extensions.get(key)
+            if ext is not None:
+                try:
+                    out[key] = ext.serialize(value)
+                    continue
+                except Exception:
+                    logger.warning(
+                        "serialize(%s) 失败，回退原值", key, exc_info=True
+                    )
+            out[key] = value
+        return out
+
+    def _deserialize_extensions(self, raw: dict | None) -> dict:
+        """对带编解码的 NodeExtension 走其 ``deserialize()`` 还原结构化记录（D5）。
+
+        反序列化失败时保留原始值（不致使 load 整体失败）。
+        """
+        out: dict = {}
+        for key, value in (raw or {}).items():
+            ext = self._node_extensions.get(key)
+            if ext is not None:
+                try:
+                    out[key] = ext.deserialize(value)
+                    continue
+                except Exception:
+                    logger.warning(
+                        "deserialize(%s) 失败，保留原值", key, exc_info=True
+                    )
+            out[key] = value
+        return out
 
     def _create_tables(self, schema_extensions: list) -> None:
         if self.conn is None:

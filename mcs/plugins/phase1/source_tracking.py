@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -36,6 +38,46 @@ class Source:
     chunk_id: str
     content_hash: str
     section_title: str | None = None
+
+
+# 历史 db 里 source 曾被 ``json.dumps(default=str)`` 存成 ``Source(...)`` repr 字符串。
+# 用正则定位每个 ``key=<python字面量>``，再 ast.literal_eval 还原（天然处理引号转义/None）。
+_SOURCE_KV_RE = re.compile(
+    r"(\w+)\s*=\s*('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|None|\d+)"
+)
+
+
+def _parse_source_repr(s: str) -> dict:
+    """从字符串化的 ``Source(doc_id='…', …)`` 中抽取字段（向后兼容，D5）。"""
+    fields: dict[str, Any] = {}
+    for m in _SOURCE_KV_RE.finditer(s):
+        key, raw = m.group(1), m.group(2)
+        try:
+            fields[key] = ast.literal_eval(raw)
+        except Exception:
+            fields[key] = None
+    return fields
+
+
+def _coerce_source(s: Any) -> Source | None:
+    """把一条来源记录归一为 ``Source``。
+
+    接受 ``Source`` / dict / 历史 repr 字符串三种形态；无法识别返回 None。
+    """
+    if isinstance(s, Source):
+        return s
+    if isinstance(s, str):
+        f = _parse_source_repr(s)
+    elif isinstance(s, dict):
+        f = s
+    else:
+        return None
+    return Source(
+        doc_id=f.get("doc_id") or "",
+        chunk_id=f.get("chunk_id") or "",
+        content_hash=f.get("content_hash") or "",
+        section_title=f.get("section_title"),
+    )
 
 
 class SourceTrackingPlugin(
@@ -93,9 +135,12 @@ class SourceTrackingPlugin(
     def deserialize(self, data: dict) -> dict:
         if not data:
             return self.default()
-        return {
-            "sources": [Source(**s) for s in data.get("sources", [])]
-        }
+        out: list[Source] = []
+        for s in data.get("sources", []):
+            coerced = _coerce_source(s)
+            if coerced is not None:
+                out.append(coerced)
+        return {"sources": out}
 
     def render(self, node: Node, purpose: str) -> str | None:
         if purpose != "synthesize":
@@ -234,7 +279,8 @@ class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
             ctx.skip = True
             return text
 
-        # 为下游附加暂存 Source（在 ctx.metadata 中）。
+        # 为下游附加暂存 Source（在 ctx.metadata 中）。标记写入推迟到块成功落盘之后
+        # （由写入管线在阶段 ⑦ 后调用 ``record_ingested``），保证"标记已摄入 ⇔ 节点已提交"。
         section_title = metadata.get("section_title")
         metadata["_pending_source"] = Source(
             doc_id=doc_id,
@@ -242,8 +288,27 @@ class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
             content_hash=content_hash,
             section_title=section_title,
         )
-        self._record_chunk(doc_id, chunk_id, content_hash)
         return text
+
+    # === 公共：成功落盘后标记（mark-on-success）===
+
+    def record_ingested(
+        self, doc_id: str, chunk_id: str, content_hash: str
+    ) -> None:
+        """把 ``(doc_id, chunk_id, content_hash)`` 记入 ``document_chunks`` 并提交。
+
+        仅应在该块的节点成功持久化之后调用（见 ``WritePipeline``），从而出错/中断
+        未落盘的块不会被标记完成、续跑会重试。
+        """
+        conn = getattr(self.storage, "conn", None)
+        if conn is None:
+            return
+        conn.execute(
+            "INSERT OR REPLACE INTO document_chunks "
+            "(doc_id, chunk_id, content_hash) VALUES (?, ?, ?)",
+            (doc_id, chunk_id, content_hash),
+        )
+        conn.commit()
 
     # === 内部存储辅助方法 ===
 
@@ -259,19 +324,6 @@ class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
             (doc_id, chunk_id),
         ).fetchone()
         return bool(row and row[0] == content_hash)
-
-    def _record_chunk(
-        self, doc_id: str, chunk_id: str, content_hash: str
-    ) -> None:
-        conn = getattr(self.storage, "conn", None)
-        if conn is None:
-            return
-        conn.execute(
-            "INSERT OR REPLACE INTO document_chunks "
-            "(doc_id, chunk_id, content_hash) VALUES (?, ?, ?)",
-            (doc_id, chunk_id, content_hash),
-        )
-        conn.commit()
 
 
 def _get(obj: Any, attr: str, default: Any = None) -> Any:
