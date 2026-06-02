@@ -263,6 +263,8 @@ def _make_mcs(
         config.plugin_configs["ollama_llm"].update({
             "base_url": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
             "model": os.environ.get("OLLAMA_MODEL", ""),
+            "max_tokens": 32768,
+            "timeout": 300,
         })
     mcs = MCS(config)
     mcs.initialize()
@@ -432,6 +434,8 @@ class MultiHopEvalConfig:
     rerank_min_score: float = 0.0  # 重排过滤阈值（默认不误杀）
     max_picked: int | None = None  # 放宽遍历累积上限（None=用默认 50）
     max_rounds: int | None = None  # 放宽遍历轮数（None=用默认 5）
+    doc_rerank: bool = False  # 文档级重排（bench-only，与节点级 --rerank 正交）
+    doc_rerank_top_n: int | None = None  # 文档级重排截断 top-N（None=不截断）
 
 
 class MultiHopEvalRunner:
@@ -440,6 +444,8 @@ class MultiHopEvalRunner:
 
     def run(self) -> dict[str, dict]:
         _ensure_utf8_stdout()
+        from mcs.bench.doc_rerank import doc_rerank
+
         cfg = self.config
         out = Path(cfg.output_dir)
         out.mkdir(parents=True, exist_ok=True)
@@ -456,6 +462,8 @@ class MultiHopEvalRunner:
                 f"重排已启用：scorer=lexical top_n={cfg.rerank_top_n} "
                 f"min_score={cfg.rerank_min_score}"
             )
+        if cfg.doc_rerank:
+            print(f"文档级重排已启用（bench-only）：top_n={cfg.doc_rerank_top_n}")
 
         # 构建（或复用）共享图
         print("构建共享图（已摄入的会自动跳过）…")
@@ -496,7 +504,10 @@ class MultiHopEvalRunner:
             except Exception:
                 logger.exception("query 失败: %s", q.query_id)
                 nodes = []
-            ranked = retrieved_docs(nodes)
+            if cfg.doc_rerank:
+                ranked = doc_rerank(nodes, q.query, top_n=cfg.doc_rerank_top_n)
+            else:
+                ranked = retrieved_docs(nodes)
             results[q.query_id] = {
                 "type": q.question_type,
                 "gold": sorted(q.gold_doc_titles),
@@ -615,6 +626,17 @@ def main() -> None:
         default=0,
         help="放宽遍历轮数（0=用默认 5；广召回时调大，如 8）",
     )
+    parser.add_argument(
+        "--doc-rerank",
+        action="store_true",
+        help="启用文档级重排（bench-only，对候选文档直接打分排序，与 --rerank 正交）",
+    )
+    parser.add_argument(
+        "--doc-rerank-top-n",
+        type=int,
+        default=0,
+        help="文档级重排截断 top-N（0=不截断）",
+    )
     args = parser.parse_args()
 
     _maybe_load_dotenv()
@@ -637,6 +659,8 @@ def main() -> None:
         rerank_min_score=args.rerank_min_score,
         max_picked=args.max_picked if args.max_picked > 0 else None,
         max_rounds=args.max_rounds if args.max_rounds > 0 else None,
+        doc_rerank=args.doc_rerank,
+        doc_rerank_top_n=args.doc_rerank_top_n if args.doc_rerank_top_n > 0 else None,
     )
     runner = MultiHopEvalRunner(cfg)
     if cfg.dry_run:
