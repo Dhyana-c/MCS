@@ -85,5 +85,71 @@ def extract_json(text: str) -> str:
             if depth == 0:
                 return json_str[:i + 1]
 
-    # 没找到完整 JSON，返回从 start 开始的全部内容
+    # 没找到完整 JSON —— 可能被 max_tokens 截断了
+    # 尝试修复截断的 JSON
+    return _repair_truncated_json(json_str)
+
+
+def _repair_truncated_json(json_str: str) -> str:
+    """尝试修复因 max_tokens 截断而未闭合的 JSON。
+
+    策略：
+    1. 对于数组 [..., {... — 丢弃最后一个不完整的对象，然后闭合
+    2. 对于对象 {... — 尝试在最后一个完整键值对后闭合
+    """
+    if not json_str:
+        return ""
+
+    # 尝试直接解析，如果已经合法就不用修
+    import json
+    try:
+        json.loads(json_str)
+        return json_str
+    except json.JSONDecodeError:
+        pass
+
+    start_char = json_str[0]
+
+    if start_char == "[":
+        # 找最后一个完整的 } ，后面可能是截断的 {... 或 "key": "val
+        # 策略：找到最后一个 }, 然后加 ] 闭合
+        last_brace = json_str.rfind("}")
+        if last_brace > 0:
+            candidate = json_str[:last_brace + 1] + "]"
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass
+
+        # 也尝试找最后一个完整的数组元素（字符串值结尾 " 后面）
+        # 找最后一个 ", " 模式
+        for sep in [",\n", ", "]:
+            last_sep = json_str.rfind(sep)
+            if last_sep > 0:
+                # 从这个分隔符往前找到完整的 }
+                sub = json_str[:last_sep]
+                if sub.rstrip().endswith("}"):
+                    candidate = sub.rstrip() + "]"
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except json.JSONDecodeError:
+                        pass
+
+    elif start_char == "{":
+        # 对象截断：找最后一个完整值（" 后面）
+        # 策略：丢弃最后一个不完整的键值对，然后加 } 闭合
+        last_quote = json_str.rfind('"')
+        if last_quote > 0:
+            # 找这个引号是否是值的结尾
+            sub = json_str[:last_quote + 1]
+            if sub.rstrip().endswith('"'):
+                candidate = sub.rstrip() + "}"
+                try:
+                    json.loads(candidate)
+                    return candidate
+                except json.JSONDecodeError:
+                    pass
+
     return json_str

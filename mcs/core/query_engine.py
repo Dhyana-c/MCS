@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +62,7 @@ class QueryEngine:
         max_rounds: int = 5,
         max_picked: int = 50,
         system_prompt: str = "",
+        seed_bounding: bool = False,
     ):
         self.graph = graph
         self.llm = llm
@@ -69,6 +71,7 @@ class QueryEngine:
         self.max_rounds = max_rounds
         self.max_picked = max_picked
         self.system_prompt = system_prompt
+        self.seed_bounding = seed_bounding
 
     # === 公共 API ===
 
@@ -95,6 +98,10 @@ class QueryEngine:
             seeds = list(existing_context)
         else:
             seeds = self._locate_seeds(processed_text, ctx)
+
+        # 阶段 ②.5（opt-in）：种子集超容量时归纳成分层种子图（虚拟根 + fanout reduce）
+        if self.seed_bounding:
+            seeds = self._bound_seed_graph(seeds, ctx)
 
         # 阶段 ③: 语义理解 Loop
         ctx.intermediate = self._traverse(seeds, processed_text, ctx)
@@ -154,6 +161,55 @@ class QueryEngine:
                 # 预算检查尚未实现；原样传递
                 pass
         return accumulated
+
+    def _bound_seed_graph(
+        self, seeds: list[Node], ctx: QueryContext
+    ) -> list[Node]:
+        """种子集超容量时，用虚拟根 + fanout reduce 归纳成分层种子图。
+
+        复用 fanout_reducer 的图手术（design D1：查询/建图共用一套）：虚拟根临时连上
+        全部种子 → 多轮 fanout reduce 把种子收敛到中间概念之下 → 返回中间概念作种子。
+        中间概念落图，虚拟根用完即弃。
+        """
+        if not seeds:
+            return seeds
+        fanout = self._get_fanout_reducer()
+        if fanout is None:
+            return seeds
+        from mcs.core.graph import Node
+
+        root = Node(
+            id=f"__seed_root__{uuid.uuid4().hex[:8]}",
+            name="__seed_root__",
+            content="",
+            role="hub",
+        )
+        self.graph.add_node(root)
+        for s in seeds:
+            if self.graph.get_node(s.id) is not None:
+                self.graph.add_edge(root.id, s.id)
+        # 多轮自底向上归纳，直到虚拟根直接子集 ≤ 容量（或无进展，防死循环）
+        for _ in range(self.max_rounds + 5):
+            neighbors = self.graph.get_neighbors(root.id)
+            if not fanout._exceeds_budget(root, neighbors):
+                break
+            before = len(neighbors)
+            fanout.run([root], self.graph, self.llm.call)
+            if len(self.graph.get_neighbors(root.id)) >= before:
+                break
+        new_seeds = list(self.graph.get_neighbors(root.id))
+        self.graph.delete_node(root.id)  # 清理虚拟根；中间概念与成员边保留
+        return new_seeds if new_seeds else seeds
+
+    def _get_fanout_reducer(self):
+        """从 plugin_manager 找 FanoutReducerPlugin（复用其图手术）。"""
+        from mcs.interfaces.compaction_plugin import CompactionPluginInterface
+        from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
+
+        for p in self.plugin_manager.get_all(CompactionPluginInterface):
+            if isinstance(p, FanoutReducerPlugin):
+                return p
+        return None
 
     def _traverse(
         self,

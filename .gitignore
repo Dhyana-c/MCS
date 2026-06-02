@@ -35,3 +35,10 @@ Thumbs.db
 *.db
 *.db-journal
 .env
+
+# Runtime artifacts
+*.log
+bench_output/
+multihop_*_output/
+_debug_*.py
+_run_*.py

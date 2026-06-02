@@ -25,9 +25,14 @@
 - [x] **idempotency 过早标记**：`IdempotencyCheckPlugin` 在 preprocess 就记 `document_chunks`，导致中途出错的块也被标记完成、续跑不再重试。改成**成功后才标记**。
   - 涉及：`mcs/plugins/phase1/source_tracking.py:IdempotencyCheckPlugin`
 - [ ] **LLM 瞬时错误处理**：429 / 网络抖动目前直接吞成空结果（计为 miss）。加**重试 + 退避**（并发时尤其必要）。
-- [ ] **navigate_hub 输出被 max_tokens 截断 → 整条 query 失败计 miss**（2026-06-01 重排评测中发现）：`hub_fallback._navigate` 把全部候选节点喂给 `navigate_hub`，要求 LLM 返回相关节点 ID 的 JSON 数组；大 hub / null query 宽召回时，LLM 输出超长 UUID 列表，超过 deepseek `max_tokens`(8192) 被**截断** → `json.loads` 报 `Unterminated string` → `LLMParseError` → 该 query 被吞成空结果（miss）。本轮 418 重排评测约 **~9% query** 受此影响，污染 Hit@k/MAP/MRR（昨天基线那次跑同样受影响，故相对对比仍可参考，但绝对值偏低）。
-  - 修法（任一/组合；**重试无效**——确定性截断）：① `navigate_hub.py:parse` 容错——抢救截断 JSON 数组里已完整的 UUID 元素；② 限制喂给 `navigate_hub` 的候选数上限；③ 让 navigate_hub 返回紧凑标识（序号）而非完整 UUID。
-  - 涉及：`mcs/plugins/phase1/hub_fallback.py:_navigate`、`mcs/prompts/navigate_hub.py:parse`、`mcs/interfaces/llm.py:call`
+- [x] **navigate_hub 解析对 LLM 不规整输出的容错**（2026-06-01 重排评测中发现并修复）：`navigate_hub.parse` 原先 `json.loads` 一失败就 `raise LLMParseError`，经 `hub_fallback` 抛出后**拖垮整条 query**（计 miss）。不规整形态包括 max_tokens 截断的未闭合数组、`JSON:` 前缀污染、对象数组 `[{"id":..}]`、对象包裹 `{"ids":[..]}`。
+  - 已修：`parse` 改为**宽容解析**——去前缀 + 兼容上述各形态抽 id；截断则抢救已闭合串；实在解析不出返回 `[]`（优雅降级、**绝不抛异常**），下游 `get_node` 过滤无效 id。
+  - 涉及：`mcs/prompts/navigate_hub.py:parse`（+ `tests/test_prompt_parse_lenient.py`）
+- [x] **reload 后索引未重建**（2026-06-01 重排评测中发现并修复，比 source 序列化更隐蔽）：`MCS.initialize` 先 `initialize_all`（`AliasIndexPlugin` 在**空图**上 build 索引）→ 再 `_try_load_from_storage`（才加载节点），导致 reload 后倒排索引一直为空 → `alias_entry` 全失效 → 候选集召回从 86% 崩到 7%、检索指标全面崩塌。**这让"reload 复用图再 query"实际是坏的。**
+  - 已修：`_try_load_from_storage` 加载完节点/边后重建所有 `IndexInterface` 索引。验证：reload 后 alias 索引 0→10489、候选召回 7%→86%、recall@10 0.064→0.226。
+  - 涉及：`mcs/__init__.py:_try_load_from_storage`（+ `tests/test_pipeline_write.py`）
+- [ ] **`_locate_seeds` 单 entry 插件容错（防御性，残留）**：目前任一 EntryPlugin 的 `locate` 抛异常会拖垮整个种子定位。navigate_hub 宽容后已大幅缓解，但仍建议 `_locate_seeds` 对单插件异常 try/except 降级。
+  - 涉及：`mcs/core/query_engine.py:_locate_seeds`
 
 ## B. Bench 质量
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from mcs.core.graph import Node
 
 
@@ -18,17 +20,31 @@ class TokenBudget:
     常规设置为 ``T ≈ W / 2``，其中 W 是 LLM 上下文窗口。第一阶段默认值：8000。
     """
 
-    def __init__(self, max_tokens: int):
+    def __init__(
+        self, max_tokens: int, counter: Callable[[str], int] | None = None
+    ):
         self.T = max_tokens
+        # 可选注入真分词器的 count 函数 (text)->int；None 时用经验式估计
+        self._counter = counter
 
     def estimate(self, text: str | None) -> int:
-        """估算 ``text`` 的 token 数量。
+        """估算 ``text`` 的 token 数量（单一入口）。
 
-        启发式：每 2 个字符约 1 个 token。空值/None 返回 0。
+        - 若注入了 ``counter``（真分词器），优先用它；
+        - 否则用经验式：**CJK 约 1 字符/token、拉丁/数字/其它约 4 字符/token**
+          （旧的 ``len//2`` 对英文高估约 2×，这里修正）。
+
+        空值/None 返回 0。
         """
         if not text:
             return 0
-        return max(1, len(text) // 2)
+        if self._counter is not None:
+            try:
+                return max(0, int(self._counter(text)))
+            except Exception:
+                pass  # 注入器异常 → 回退经验式
+        cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
+        return max(1, cjk + (len(text) - cjk) // 4)
 
     def check_subgraph(self, nodes: list[Node]) -> bool:
         """如果 ``nodes`` 的组合内容适合 ``T`` 则返回 True。"""

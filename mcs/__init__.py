@@ -170,6 +170,7 @@ class MCS:
             token_budget=self.token_budget,
             max_rounds=self.config.max_rounds,
             max_picked=self.config.max_picked,
+            seed_bounding=getattr(self.config, "seed_graph_bounding", False),
         )
         self.write_pipeline = WritePipeline(
             graph=self.graph,
@@ -233,6 +234,16 @@ class MCS:
                     self.graph.add_node(node)
             for edge in loaded.get_all_edges():
                 self.graph.add_edge(edge.source_id, edge.target_id, direction=edge.direction)
+            # reload 后重建所有 IndexInterface 索引：插件 initialize 时图尚空、索引停留在
+            # 空状态；此处用加载后的图重建，否则 alias 等种子定位全失效（reload 复用图时
+            # 候选集会崩塌）。
+            from mcs.interfaces.index import IndexInterface
+
+            for index in self.plugin_manager.get_all(IndexInterface):
+                try:
+                    index.build(self.graph)
+                except NotImplementedError:
+                    continue
         except Exception:
             import logging
             logging.getLogger(__name__).warning(

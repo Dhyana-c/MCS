@@ -42,7 +42,7 @@ class OllamaLLMPlugin(Plugin, LLMInterface):
         )
         self.model: str = self.config.get("model", "")
         self.timeout: float = float(self.config.get("timeout", 120.0))
-        self.max_tokens: int = int(self.config.get("max_tokens", 4096))
+        self.max_tokens: int = int(self.config.get("max_tokens", 32768))
         self.api_key: str = self.config.get("api_key", "ollama")
         self.client: Any = None
 
