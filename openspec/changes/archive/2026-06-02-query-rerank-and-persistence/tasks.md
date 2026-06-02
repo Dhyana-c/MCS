@@ -39,9 +39,10 @@
 
 - [x] 6.1 reload 现有 `multihop_bench.db`（修完 2.x 后 source 可用），确认 `retrieved_docs` 非空
       —— 零 LLM 验证：4380 节点全部带 source、6800 条 source 全部反序列化为 `Source`（0 残留字符串），`retrieved_docs` 非空。
-- [ ] 6.2 启用 reranker 重跑 query 阶段（不重建图），对比修复前后的 Hit@k/MAP/MRR
-      —— **已延后**（需 DeepSeek 付费调用 ~117 query）：`python -m mcs.bench.multihop_rag --rerank --rerank-top-n 10`（对照不带 `--rerank`）
-- [ ] 6.3 记录提升幅度；与离线 POC（recall@10 0.14→0.81）对照 —— **依赖 6.2，已延后**
+- [x] 6.2 启用 reranker 重跑 query 阶段（不重建图），对比修复前后的 Hit@k/MAP/MRR
+      —— 修复 reload 索引重建后跑通（117 非 null）：recall@10 0.140→0.226、hit@10 0.265→0.350、mrr@10 0.049→0.231、map@10 0.027→0.135。
+- [x] 6.3 记录提升幅度；与离线 POC（recall@10 0.14→0.81）对照
+      —— 重排有效（全指标提升，mrr/map 约 4-5×）；实测 recall@10 0.226 仍 < POC 文档级 0.81，差距主因是节点级 vs 文档级重排粒度（D3），进一步逼近可做文档级重排。
 
 ## 7. 文档
 
