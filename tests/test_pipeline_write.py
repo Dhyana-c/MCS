@@ -489,3 +489,46 @@ def test_load_on_startup_handles_exception(tmp_path, mock_llm):
     # initialize 应该正常完成，不抛异常
     mcs.initialize()
     assert mcs._initialized is True
+
+
+def test_load_on_startup_rebuilds_indexes(tmp_path, mock_llm):
+    """reload 后必须重建 IndexInterface 索引；否则 alias 种子定位全失效。
+
+    回归 reload 复用图候选集崩塌 bug：AliasIndexPlugin 在 initialize 时图尚空、
+    索引建成空的，load-on-startup 加载节点后必须重建索引。
+    """
+    from mcs import MCS
+    from mcs.plugins.phase1.sqlite_storage import SQLiteStoragePlugin
+
+    db_path = str(tmp_path / "idx.db")
+    # 先用独立 storage 落盘一个节点
+    storage = SQLiteStoragePlugin({"path": db_path})
+    pm = PluginManager()
+    pm.register(storage)
+    pm.initialize_all(
+        PluginContext(
+            graph=GraphStore(),
+            config=MCSConfig(),
+            token_budget=TokenBudget(8000),
+            context_renderer=None,  # type: ignore[arg-type]
+            plugin_manager=pm,
+        )
+    )
+    storage.save_node(Node(id="n1", name="Quantum", content="quantum computing"))
+    storage.commit()
+    storage.shutdown()
+
+    # 新 MCS reload（含 alias_index + alias_entry）
+    config = MCSConfig(
+        plugins=["sqlite_storage", "alias_index", "alias_entry"],
+        plugin_configs={"sqlite_storage": {"path": db_path}},
+    )
+    mcs = MCS(config)
+    mcs.register_plugin(mock_llm)
+    mcs.initialize()
+
+    ai = mcs.get_plugin("alias_index")
+    assert len(ai.index) > 0  # reload 后索引已重建（非空）
+    hits = mcs.get_plugin("alias_entry").locate("Quantum", None)
+    assert any(n.id == "n1" for n in hits)  # 种子定位能命中
+    mcs.shutdown()

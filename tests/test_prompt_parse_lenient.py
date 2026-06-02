@@ -47,3 +47,25 @@ def test_navigate_hub_accepts_valid_array():
 
 def test_navigate_hub_empty_array():
     assert parse_navigate_hub("[]") == []
+
+
+def test_navigate_hub_strips_prefix():
+    """LLM 加了 'JSON:' 之类前缀也能解析。"""
+    assert parse_navigate_hub("JSON:\n[]") == []
+    assert parse_navigate_hub('JSON:\n["u1","u2"]') == ["u1", "u2"]
+
+
+def test_navigate_hub_object_array():
+    """LLM 返回对象数组 [{'id':..}] 时抽出 id。"""
+    assert parse_navigate_hub('[{"id":"u1"},{"id":"u2"}]') == ["u1", "u2"]
+
+
+def test_navigate_hub_object_wrapping_list():
+    """LLM 返回 {'ids':[..]} 包裹时抽出列表。"""
+    assert parse_navigate_hub('{"ids":["u1","u2"]}') == ["u1", "u2"]
+
+
+def test_navigate_hub_garbage_returns_empty_not_raises():
+    """完全不规整 → 返回 []，绝不抛异常（不拖垮 query）。"""
+    assert parse_navigate_hub("抱歉，我无法确定") == []
+    assert parse_navigate_hub("") == []
