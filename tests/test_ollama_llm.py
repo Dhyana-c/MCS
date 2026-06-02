@@ -91,7 +91,8 @@ class TestOllamaLLMPluginDefaults:
 
     def test_default_max_tokens(self):
         plugin = OllamaLLMPlugin()
-        assert plugin.max_tokens == 4096
+        # 32768：给 qwen3 thinking 模式留足输出空间（thinking 很长）
+        assert plugin.max_tokens == 32768
 
     def test_default_api_key_dummy(self):
         plugin = OllamaLLMPlugin()
