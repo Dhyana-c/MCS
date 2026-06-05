@@ -32,15 +32,20 @@ class Decision:
 
     字段有效性取决于 ``action``：
       - merge:             concept, target_id, [aliases_to_add]
-      - create:            concept, [edges_to], [initial_statements]
+      - create:            concept, [edges_to], [edges_to_names], [initial_statements]
       - attach_statement:  target_id（属性节点）, statement
       - no_op:             concept, reason
+
+    ``edges_to`` 是到**已存在节点**的锚点 id；``edges_to_names`` 是到**同一批新概念**
+    的概念名（篇内关系）——写入阶段 ⑤ 在新节点全部建好后按名解析成边，弥补"同次摄入
+    的兄弟概念之间无法用 id 互连"的缺口。
     """
 
     action: ActionType
     concept: ConceptDraft | None = None
     target_id: str | None = None
     edges_to: list[str] = field(default_factory=list)
+    edges_to_names: list[str] = field(default_factory=list)
     initial_statements: list[str] = field(default_factory=list)
     statement: str | None = None
     aliases_to_add: list[str] = field(default_factory=list)

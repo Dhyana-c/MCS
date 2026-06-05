@@ -50,6 +50,7 @@ def _default_plugin_registry() -> dict[str, type[Plugin]]:
     from mcs.plugins.phase1.claude_llm import ClaudeLLMPlugin
     from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
     from mcs.plugins.phase1.ollama_llm import OllamaLLMPlugin
+    from mcs.plugins.phase1.community_merger import CommunityMergerPlugin
     from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
     from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
     from mcs.plugins.phase1.priority_trim import PriorityTrimPlugin
@@ -72,6 +73,7 @@ def _default_plugin_registry() -> dict[str, type[Plugin]]:
         "source_tracking": SourceTrackingPlugin,
         "idempotency_check": IdempotencyCheckPlugin,
         "fanout_reducer": FanoutReducerPlugin,
+        "community_merger": CommunityMergerPlugin,  # CompactionPlugin（opt-in，不入默认链）
         "summary_regen": SummaryRegenPlugin,
         "sqlite_storage": SQLiteStoragePlugin,
         "deepseek_llm": DeepSeekLLMPlugin,
@@ -211,6 +213,19 @@ class MCS:
         self._require_init()
         assert self.query_engine is not None
         return self.query_engine.query(text, existing_context=existing_context)
+
+    def persist_full(self) -> None:
+        """全量重建持久化：让存储与内存图完全一致（反映删除）。
+
+        增量持久化只 upsert 不删行；分层归纳会重挂/删除边，需用本方法对齐快照。
+        建议在建图收尾（及周期性）调用。无 StorageInterface 时为 no-op。
+        """
+        self._require_init()
+        from mcs.interfaces.storage import StorageInterface
+
+        storage = self.plugin_manager.get(StorageInterface)
+        if storage is not None:
+            storage.save_full(self.graph)
 
     def get_plugin(self, name: str) -> Plugin | None:
         """按名称查找插件实例。"""

@@ -13,9 +13,12 @@
   - 涉及：新增 `mcs/plugins/.../rerank.py`，无需改 core。
 - [x] **source_tracking 序列化 bug**：`sqlite_storage.save_node` 用 `json.dumps(extensions, default=str)` 把 `Source` 存成**字符串**而非 dict（没走 `serialize()`），`load()` 也不 `deserialize`。后果：**reload 后检索全空**；本次只因 build+query 同进程才正常。**也是 reranker 廉价迭代的前置**——修好才能 reload 已建图、不必每次 ¥11 重建。
   - 涉及：`mcs/plugins/phase1/sqlite_storage.py:save_node/load`
-- [ ] **图连通性/碎片化（降为次要 · 见 research change `graph-construction-quality`）**：4380 节点 / 2901 边 / 度 1.32、34% 孤立、1681 分量、跨文档边仅 634。⚠️ 修正之前判断：**这不是本指标的根因**——POC 已证 gold 仍进候选集（召回 86%），连通性只是让候选网偏宽，可能影响最难多跳与那 14% 漏召。属次优先。
-  - 边无向无类型（phase-1 设计如此，非 bug）：图模型偏薄，长远可考虑有向/带类型边以支撑更深多跳。
-  - **CommunityMerger 设计了未实现**：`MCS技术方案.md` 与 `compaction_plugin.py` 注释把"社区合并（合并稠密区域）"列为 CompactionPlugin 之一，但 phase-1 只实装了 `fanout_reducer`+`summary_regen`，**无社区检测算法、无 community_merger 插件**。缺这一层高阶结构 → 图停在"每块抽概念 + 无向边"的原始态，34% 孤立 / 1681 碎片无人消化。属中长期图质量改进，**非本检索指标根因**。
+- [x] **图连通性/碎片化（降为次要 · 已由 research change `graph-construction-quality` 收口）**：原始诊断 4380 节点 / 2901 边 / 度 1.32、34% 孤立、1681 分量、跨文档边仅 634。⚠️ 修正之前判断：**这不是本指标的根因**——POC 已证 gold 仍进候选集（召回 86%），连通性只是让候选网偏宽，可能影响最难多跳与那 14% 漏召。属次优先。
+  - **结论（2026-06-05）**：经 `seed_graph_bounding`+`fanout_reducer` 后，现网图（`multihop_chat_200_v2.db`）已是**单连通分量 / 0 孤立 / 度 5.23**，原始碎片化问题已不复现；剩余空间在**跨文档连通性**（跨文档边 15.6%）。
+  - **图质量诊断**：已落地 `mcs/diagnostics/graph_quality.py`（+ `scripts/diagnose_graph.py`、`tests/test_graph_quality.py`），作为可复现回归基线。
+  - **跨文档链接**：已实装 `mcs/plugins/phase1/cross_doc_linker.py`（name/alias 匹配，零 LLM 成本）+ `scripts/cross_doc_link_pass.py`，可**落盘**；实测跨文档边 1555→1987（+27.8%）。作为 build 后可选步骤，未入默认管线。
+  - **CommunityMerger 已实现**：`mcs/plugins/phase1/community_merger.py`（CompactionPlugin，聚类系数启发式 + LLM 造枢纽），已在插件注册表登记、可经 config 启用，但**默认关闭**（大规模 A/B 待评估需要时再开）。
+  - 边无向无类型（phase-1 设计如此，非 bug）：经评估**成本/收益不划算**，建议拆为后续独立 change，不在本轮做。
 
 ## A. MCS core —— 持久化 / 健壮性
 

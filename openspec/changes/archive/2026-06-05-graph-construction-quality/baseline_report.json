@@ -1,0 +1,16 @@
+{
+  "node_count": 3815,
+  "edge_count": 9976,
+  "avg_degree": 5.229882044560943,
+  "isolated_node_count": 0,
+  "isolated_node_rate": 0.0,
+  "connected_component_count": 1,
+  "largest_component_size": 3815,
+  "largest_component_ratio": 1.0,
+  "cross_doc_edge_count": 1555,
+  "cross_doc_edge_rate": 0.15587409783480352,
+  "node_role_distribution": {
+    "concept": 3799,
+    "hub": 16
+  }
+}

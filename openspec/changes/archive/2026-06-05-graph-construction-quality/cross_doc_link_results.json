@@ -1,0 +1,42 @@
+{
+  "baseline": {
+    "node_count": 3815,
+    "edge_count": 9976,
+    "avg_degree": 5.229882044560943,
+    "isolated_node_count": 0,
+    "isolated_node_rate": 0.0,
+    "connected_component_count": 1,
+    "largest_component_size": 3815,
+    "largest_component_ratio": 1.0,
+    "cross_doc_edge_count": 1555,
+    "cross_doc_edge_rate": 0.15587409783480352,
+    "node_role_distribution": {
+      "concept": 3799,
+      "hub": 16
+    }
+  },
+  "candidates_found": 432,
+  "strategies": [
+    "name_match",
+    "alias_match"
+  ],
+  "confidence_threshold": 0.8,
+  "dry_run": false,
+  "links_applied": 432,
+  "new_metrics": {
+    "node_count": 3815,
+    "edge_count": 10408,
+    "avg_degree": 5.456356487549148,
+    "isolated_node_count": 0,
+    "isolated_node_rate": 0.0,
+    "connected_component_count": 1,
+    "largest_component_size": 3815,
+    "largest_component_ratio": 1.0,
+    "cross_doc_edge_count": 1987,
+    "cross_doc_edge_rate": 0.1909108378170638,
+    "node_role_distribution": {
+      "concept": 3799,
+      "hub": 16
+    }
+  }
+}

@@ -134,8 +134,10 @@ from mcs import MCS, MCSConfig
 # 使用本地 Ollama 后端
 config = MCSConfig.knowledge_graph(llm="ollama")
 config.plugin_configs["ollama_llm"].update({
-    "base_url": "http://192.168.31.134:11434/v1",  # Ollama 服务地址
+    "base_url": "http://192.168.31.134:11434/v1",  # Ollama 服务地址（末尾 /v1 会自动归一）
     "model": "qwen3.5:9b",                         # 已拉取的模型名称
+    # 思维模型（qwen3/qwq/deepseek-r1…）默认 think=False：MCS 只取结构化 JSON，
+    # 开 thinking 会让每次调用耗时暴涨、整图 build 跑不完。需要时再显式开 think=True。
 })
 
 mcs = MCS(config)
@@ -152,9 +154,10 @@ nodes = mcs.query("什么是深度学习？")
 - 与 build-cost-reduction 协同：本地探索 + 云端定稿验证
 
 **已知风险：**
-- 小本地模型（7–9B）结构化 JSON 输出可靠性弱于云端 → 解析失败可能更多（lenient parser 已缓解）
-- 推理较慢 → timeout 默认 120s
-- 需本地安装 Ollama + 模型拉取
+- 小本地模型（7–9B）结构化 JSON 输出可靠性弱于云端 → 解析失败可能更多（lenient parser + 截断修复已缓解；bench 中单块失败自动跳过）
+- 思维模型（qwen3/qwq/deepseek-r1…）**必须关闭 thinking**（插件默认 `think=False`，走原生 `/api/chat`）：否则每次调用耗费大量 thinking token，整图 build 实际跑不完。bench 可用环境变量 `OLLAMA_THINK=1` 临时开启
+- 推理较慢 → timeout 默认 120s（bench 用 300s）；整图 build 是 time-bound 而非 cost-bound，可 `resume` 续跑
+- 需本地安装 / 网络可达的 Ollama 服务 + 模型拉取
 
 ### 不带 API key 跑通
 
@@ -270,7 +273,7 @@ mcs/
 │   │   ├── sqlite_storage.py
 │   │   ├── deepseek_llm.py     # 厂商适配（OpenAI 兼容，不含 prompt 模板）
 │   │   ├── claude_llm.py       # 厂商适配（Anthropic Messages，不含 prompt 模板）
-│   │   └── ollama_llm.py       # 厂商适配（本地 Ollama，OpenAI 兼容端点）
+│   │   └── ollama_llm.py       # 厂商适配（本地/远程 Ollama，原生 /api/chat 端点，支持 think 开关）
 │   └── phase2/                 # Phase 2 插件（预留）
 │
 ├── prompts/                    # 9 个 purpose 的默认 prompt (system + template + parser)
@@ -363,6 +366,36 @@ python -m mcs.bench.hotpot --subset 100 --llm claude
 4. 输出预测 + gold 子集 → 计算官方指标
 
 详见 [`mcs/bench/README.md`](mcs/bench/README.md)。
+
+## MultiHop-RAG 检索评测
+
+与 HotpotQA（每条独立建图）相反，MultiHop-RAG 评测是**一次建图、多 query**：把整个语料摄入**同一个持久化 MCS 实例**，再对所有 query 评**文档级检索**指标——`query()` 返回的节点经 `source_tracking` 映射回来源文档，与 gold evidence 文档比对，算 **Hit@k / Recall@k / MAP@k / MRR@k**。绕开"MCS 不是答题器"的弱点，直接量化"图召回 + 排序"的质量。
+
+数据：HuggingFace `yixuantt/MultiHop-RAG`（`multihoprag_corpus.json` + `multihoprag_qa.json`）。
+
+### 快速评测
+
+```bash
+# 200 篇子集，DeepSeek 后端（相关性重排默认开）
+python -m mcs.bench.multihop_rag --llm deepseek --corpus-subset 200 --output ./mh_out
+
+# 整篇摄入（不切块，文本 100% 覆盖）+ 关闭重排做对照
+python -m mcs.bench.multihop_rag --llm deepseek --corpus-subset 200 --whole-doc --no-rerank
+```
+
+### 关键选项
+
+| 选项 | 说明 |
+| --- | --- |
+| `--corpus-subset N` | 采样 N 篇文档（0=全量 609 篇） |
+| `--whole-doc` | 整篇摄入（每篇作为单个单元，不切块）；默认按段落切、`--max-chunks` 截断 |
+| `--no-rerank` | 关闭相关性重排（**重排默认开**） |
+| 环境变量 `OLLAMA_*` / `DEEPSEEK_MODEL` | 选后端模型；`MCS_NO_SUMMARY_REGEN=1` 关逐节点摘要提速 |
+
+### 实测要点
+
+- **相关性重排是检索质量的决定性因素**：查询管线默认按 BFS 发现顺序返回（无排序），gold 文档常被埋没。开启查询侧 lexical 重排（现为**默认**、复用现有图、零额外 LLM 调用）后，overall **Hit@10 从 ~0.16 提升到 ~0.73**、MRR@10 数倍提升。Hit@k/MRR@k 等对排名敏感的指标，务必在有重排的前提下解读。
+- **关键词召回（`alias_entry`）是检索主力**：去掉它、只靠"分层种子图导航"（`hub_fallback` 从持久虚拟根下钻）取种子时，Hit@10 回落到 ~0.28——分层种子图目前对检索的边际贡献有限，仍以别名/关键词命中为主。
 
 ## 开发状态
 

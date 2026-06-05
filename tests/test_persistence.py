@@ -44,6 +44,40 @@ def _storage_with_source_tracking(db_path: str):
     return storage, st, pm
 
 
+def test_save_full_reflects_edge_deletion(tmp_path):
+    """save_full 全量重建：被删除的边在持久化后消失（增量 save 做不到）。"""
+    db = str(tmp_path / "sf.db")
+    storage, _st, _pm = _storage_with_source_tracking(db)
+    g = GraphStore()
+    g.add_node(Node(id="a", name="A", content=""))
+    g.add_node(Node(id="b", name="B", content=""))
+    g.add_edge("a", "b")
+    storage.save(g)              # 增量存：a、b、边 a-b
+    g.delete_edge("a", "b")     # 内存删边
+    storage.save_full(g)        # 全量重建应反映删除
+
+    loaded = storage.load()
+    assert loaded.get_node("a") is not None
+    assert loaded.get_node("b") is not None
+    assert loaded.get_edge("a", "b") is None  # 边已不在持久存储
+
+
+def test_incremental_save_does_not_delete_edge(tmp_path):
+    """对照：增量 save 只 upsert、不删行 —— 这正是需要 save_full 的原因。"""
+    db = str(tmp_path / "sf2.db")
+    storage, _st, _pm = _storage_with_source_tracking(db)
+    g = GraphStore()
+    g.add_node(Node(id="a", name="A", content=""))
+    g.add_node(Node(id="b", name="B", content=""))
+    g.add_edge("a", "b")
+    storage.save(g)
+    g.delete_edge("a", "b")
+    storage.save(g)             # 增量再存：不会删除旧边
+
+    loaded = storage.load()
+    assert loaded.get_edge("a", "b") is not None  # 旧边仍在 → 故需 save_full
+
+
 def _full_pipeline(db_path: str, mock_llm):
     """完整写入管线：sqlite + source_tracking + idempotency + mock LLM。"""
     graph = GraphStore()

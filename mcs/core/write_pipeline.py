@@ -245,11 +245,18 @@ class WritePipeline:
         """阶段 ⑤：将每个 Decision 分派到原子 GraphStore 操作。
 
         返回新创建或合并的节点列表（即状态发生变化的节点）。
+
+        两遍处理：第一遍派发 4 种 action 并记录「概念名 → 节点 id」映射；第二遍把
+        ``edges_to_names``（同一批新概念之间的篇内关系）按名解析成边——兄弟概念此刻
+        已全部建好，弥补"同次摄入的概念之间无法用 id 互连"的缺口。
         """
 
         changed: list[Node] = []
+        name_to_id: dict[str, str] = {}
+        pending_named_edges: list[tuple[str, list[str]]] = []
         for decision in decisions:
             action = decision.action
+            cname = decision.concept.name if decision.concept else None
             if action == "merge":
                 if decision.target_id is None:
                     raise InvalidDecisionError("merge without target_id")
@@ -257,9 +264,15 @@ class WritePipeline:
                 node = self.graph.get_node(decision.target_id)
                 if node is not None:
                     changed.append(node)
+                if cname:
+                    name_to_id[cname] = decision.target_id
             elif action == "create":
                 node = self._dispatch_create(decision)
                 changed.append(node)
+                if cname:
+                    name_to_id[cname] = node.id
+                if decision.edges_to_names:
+                    pending_named_edges.append((node.id, decision.edges_to_names))
             elif action == "attach_statement":
                 if decision.target_id is None:
                     raise InvalidDecisionError("attach_statement without target_id")
@@ -267,10 +280,19 @@ class WritePipeline:
                 node = self.graph.get_node(decision.target_id)
                 if node is not None:
                     changed.append(node)
+                if cname:
+                    name_to_id[cname] = decision.target_id
             elif action == "no_op":
                 continue  # 显式无操作；无需处理
             else:
                 raise UnknownActionError(action)
+
+        # 第二遍：篇内关系边（add_edge 自带去重 / 防自环 / 端点存在校验）
+        for source_id, names in pending_named_edges:
+            for nm in names:
+                target_id = name_to_id.get(nm)
+                if target_id:
+                    self.graph.add_edge(source_id, target_id)
         return changed
 
     def _dispatch_merge(self, decision: Decision) -> None:

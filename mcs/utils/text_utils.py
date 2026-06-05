@@ -40,12 +40,22 @@ def extract_json(text: str) -> str:
     if not text:
         return ""
 
+    import json
+
     s = text.strip()
 
-    # 先尝试 strip_json_fence
+    # 去掉可选的 markdown 围栏
     stripped = strip_json_fence(s)
+
+    # 快路径：去栏后整体已是合法 JSON → 直接返回
     if stripped and stripped[0] in "{[":
-        return stripped
+        try:
+            json.loads(stripped)
+            return stripped
+        except json.JSONDecodeError:
+            # 尾部可能有多余文本，或被 max_tokens 截断 →
+            # 落到下面的括号扫描 + _repair_truncated_json 兜底
+            s = stripped
 
     # 在文本中查找 JSON 起始位置
     # 找第一个 { 或 [

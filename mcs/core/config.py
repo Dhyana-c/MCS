@@ -79,6 +79,9 @@ class MCSConfig:
             plugin_configs["ollama_llm"] = {
                 "model": "",
                 "base_url": "http://localhost:11434/v1",
+                # 思维模型（qwen3/qwq/deepseek-r1…）默认关闭 thinking：
+                # MCS 只取结构化 JSON，thinking 纯属浪费且会把调用拖到分钟级。
+                "think": False,
             }
         elif llm != "deepseek":
             raise ValueError(

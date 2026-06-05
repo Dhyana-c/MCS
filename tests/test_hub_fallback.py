@@ -84,3 +84,47 @@ def test_disable_llm_navigation_returns_hubs(mock_llm):
     seeds = plugin.locate("q", None)
     assert {n.id for n in seeds} == {"h"}
     assert mock_llm.call_log == []
+
+
+def test_navigates_from_persistent_root(mock_llm):
+    """存在持久根 __seed_root__ 时，从根自顶向下导航；绝不把合成根当种子。"""
+    from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
+
+    g = GraphStore()
+    g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub"))
+    g.add_node(Node(id="t1", name="顶层1", content="..."))
+    g.add_node(Node(id="t2", name="顶层2", content="..."))
+    g.add_node(Node(id="leaf", name="叶", content="..."))
+    g.add_edge(SEED_ROOT_ID, "t1")
+    g.add_edge(SEED_ROOT_ID, "t2")
+    g.add_edge("t1", "leaf")
+    plugin = HubFallbackEntryPlugin()
+    _init(plugin, g, mock_llm)
+    routes = {SEED_ROOT_ID: ["t1"], "t1": ["leaf"]}
+
+    def _route(nodes_in, _free_args):
+        first = (nodes_in or [None])[0]
+        return routes.get(first.id, []) if first is not None else []
+
+    mock_llm.set_response("navigate_hub", _route)
+    seeds = plugin.locate("找叶", None)
+
+    seed_ids = {n.id for n in seeds}
+    assert SEED_ROOT_ID not in seed_ids  # 绝不返回合成根
+    assert "leaf" in seed_ids            # 从根下钻到叶
+
+
+def test_root_present_no_llm_returns_children(mock_llm):
+    """有持久根但关闭导航：返回根的直接子节点作种子（不含根本身）。"""
+    from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
+
+    g = GraphStore()
+    g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub"))
+    g.add_node(Node(id="t1", name="顶层1", content="..."))
+    g.add_node(Node(id="t2", name="顶层2", content="..."))
+    g.add_edge(SEED_ROOT_ID, "t1")
+    g.add_edge(SEED_ROOT_ID, "t2")
+    plugin = HubFallbackEntryPlugin({"use_llm_navigation": False})
+    _init(plugin, g, mock_llm)
+    seeds = plugin.locate("q", None)
+    assert {n.id for n in seeds} == {"t1", "t2"}

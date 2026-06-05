@@ -22,6 +22,8 @@ Ollama 在 `http://localhost:11434/v1` 暴露 OpenAI 兼容的 `chat/completions
 
 **备选**：原生 `/api/chat`（httpx/requests）——更贴近 Ollama 专有选项（keep_alive/num_ctx 等），但要新代码/依赖。先不做，必要时再加。
 
+> **更新（实现修正）**：上述备选已被采纳——实现改走原生 `/api/chat`（`httpx`）。原因：只有原生端点支持 `think` 开关，能对思维模型（qwen3/qwq/deepseek-r1…）关闭 chain-of-thought；OpenAI 兼容 `/v1` 无法关闭 thinking（实测 `think` 参数 / `/no_think` 后缀 / `chat_template_kwargs.enable_thinking` 均被忽略），会让每次调用耗费数千 thinking token、整图 build 实际跑不完。随之 `num_ctx` / `think` 成为配置项、SDK 由 `openai` 改为 `httpx`、返回值取 `message.content`。下方 D2/D4/D5 中关于 `openai` / `choices[0]` / `max_tokens 默认 4096` 的描述以此修正为准。
+
 ### D2: 本地无需凭证 → 默认就构造 client
 
 与 deepseek/claude 不同（它们要 key 才构造 client），Ollama 本地无鉴权：`initialize` 默认就构造 client（`api_key` 用 dummy 占位 `"ollama"`，因 openai SDK 要求非空）。惰性导入 `openai`，缺失时安全置 `client=None`。
@@ -35,11 +37,12 @@ Ollama 在 `http://localhost:11434/v1` 暴露 OpenAI 兼容的 `chat/completions
 - `base_url` 默认 `http://localhost:11434/v1`
 - `model` 可配置（如 `qwen2.5:7b`/`qwen3:8b`），**需先 pull**；无内置厂商默认或给明显占位
 - `timeout` 默认更长（如 120s，本地推理慢）
-- `max_tokens` 默认 4096；OpenAI 兼容下 Ollama 将其映射为 `num_predict`
+- `max_tokens` 默认 32768、`num_ctx` 默认 8192；原生端点下映射为 `options.num_predict` / `options.num_ctx`
+- `think` 默认 `False`（思维模型关闭 chain-of-thought）
 
 ### D5: `_raw_call` 映射
 
-把 `system`/`user` 映射为 chat messages（system 非空才加 system 消息），返回 `choices[0].message.content`。与 deepseek 一致。
+把 `system`/`user` 映射为原生 `/api/chat` messages（system 非空才加 system 消息），返回 `message.content`（内容为空但有 `message.thinking` 时从 thinking 文本兜底提取 JSON）。
 
 ## Risks / Trade-offs
 

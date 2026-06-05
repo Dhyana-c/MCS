@@ -52,6 +52,68 @@ def test_create_adds_node_with_edges(empty_graph, mock_llm):
     assert neighbors == {"anchor1", "anchor2"}
 
 
+def test_create_links_intra_batch_via_edges_to_names(empty_graph, mock_llm):
+    """同一批新概念之间用 edges_to_names 按名互连（篇内关系边）。"""
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="苹果公司", content=""),
+                edges_to_names=["iPhone", "乔布斯"],
+            ),
+            Decision(action="create", concept=ConceptDraft(name="iPhone", content="")),
+            Decision(action="create", concept=ConceptDraft(name="乔布斯", content="")),
+        ]
+    )
+    assert [c.name for c in changed] == ["苹果公司", "iPhone", "乔布斯"]
+    apple = next(n for n in empty_graph.get_all_nodes() if n.name == "苹果公司")
+    neighbor_names = {n.name for n in empty_graph.get_neighbors(apple.id)}
+    assert neighbor_names == {"iPhone", "乔布斯"}
+
+
+def test_edges_to_names_skips_unknown_and_self(empty_graph, mock_llm):
+    """edges_to_names 引用未知名跳过、引用自身防自环。"""
+    wp = _make_pipeline(empty_graph, mock_llm)
+    wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="A", content=""),
+                edges_to_names=["A", "不存在", "B"],
+            ),
+            Decision(action="create", concept=ConceptDraft(name="B", content="")),
+        ]
+    )
+    a = next(n for n in empty_graph.get_all_nodes() if n.name == "A")
+    neighbors = {n.name for n in empty_graph.get_neighbors(a.id)}
+    assert neighbors == {"B"}
+
+
+def test_edges_to_names_can_link_to_merged_target(empty_graph, mock_llm):
+    """edges_to_names 指向一个被 merge 的概念名 → 连到其 merge 目标节点。"""
+    target = Node(id="t1", name="深度学习", content="")
+    empty_graph.add_node(target)
+    wp = _make_pipeline(empty_graph, mock_llm)
+    wp._apply_decisions(
+        [
+            Decision(
+                action="merge",
+                concept=ConceptDraft(name="DL", content=""),
+                target_id="t1",
+            ),
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="神经网络", content=""),
+                edges_to_names=["DL"],
+            ),
+        ]
+    )
+    nn = next(n for n in empty_graph.get_all_nodes() if n.name == "神经网络")
+    neighbors = {n.id for n in empty_graph.get_neighbors(nn.id)}
+    assert "t1" in neighbors
+
+
 def test_create_with_initial_statements_persists_them(empty_graph, mock_llm):
     wp = _make_pipeline(empty_graph, mock_llm)
     concept = ConceptDraft(name="C", content="")

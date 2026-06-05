@@ -238,6 +238,18 @@ def _make_mcs(
     from mcs import MCS, MCSConfig
 
     config = MCSConfig.knowledge_graph(llm=llm)
+    config.seed_graph_bounding = True  # 开启虚拟根节点 + fanout reduce
+    # 评测可选关闭逐节点摘要重生（summary_regen）：文档级检索不直接依赖摘要文本，
+    # 关掉可省 ~2.6× LLM 调用（摘要渲染回退到 content[:200]）。用于本地慢后端提速。
+    if os.environ.get("MCS_NO_SUMMARY_REGEN", "0").lower() in ("1", "true", "yes"):
+        if "summary_regen" in config.plugins:
+            config.plugins.remove("summary_regen")
+    # 评测可选去掉"关键词召回"(alias_entry)：种子只来自 hub_fallback 的种子图导航
+    # (从持久根下钻)，用于隔离评估分层种子图本身的检索能力。build 走 resume 时被
+    # 幂等跳过，故只影响查询阶段，不改已建图。
+    if os.environ.get("MCS_NO_ALIAS_ENTRY", "0").lower() in ("1", "true", "yes"):
+        if "alias_entry" in config.plugins:
+            config.plugins.remove("alias_entry")
     config.plugin_configs["sqlite_storage"] = {"path": db_path}
     if max_picked is not None:
         config.max_picked = max_picked
@@ -252,19 +264,29 @@ def _make_mcs(
             "min_score": rerank_min_score,
         }
     if llm == "deepseek":
-        config.plugin_configs["deepseek_llm"]["api_key"] = os.environ.get(
-            "DEEPSEEK_API_KEY", ""
-        )
+        ds = config.plugin_configs["deepseek_llm"]
+        ds["api_key"] = os.environ.get("DEEPSEEK_API_KEY", "")
+        # 模型/base_url 可经环境变量覆盖（如 DEEPSEEK_MODEL=deepseek-v4-flash）
+        if os.environ.get("DEEPSEEK_MODEL"):
+            ds["model"] = os.environ["DEEPSEEK_MODEL"]
+        if os.environ.get("DEEPSEEK_BASE_URL"):
+            ds["base_url"] = os.environ["DEEPSEEK_BASE_URL"]
     elif llm == "claude":
         config.plugin_configs["claude_llm"]["auth_token"] = os.environ.get(
             "ANTHROPIC_API_KEY", ""
         )
     elif llm == "ollama":
+        # think 默认关闭（OLLAMA_THINK=1 可开）；思维模型开 thinking 会把每次调用
+        # 从秒级拖到分钟级，整图 build 实际跑不完。
+        think = os.environ.get("OLLAMA_THINK", "0").lower() in ("1", "true", "yes")
         config.plugin_configs["ollama_llm"].update({
             "base_url": os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1"),
             "model": os.environ.get("OLLAMA_MODEL", ""),
             "max_tokens": 32768,
             "timeout": 300,
+            "think": think,
+            # 整篇摄入时调大上下文窗口（OLLAMA_NUM_CTX），避免长文档被静默截断。
+            "num_ctx": int(os.environ.get("OLLAMA_NUM_CTX", "8192")),
         })
     mcs = MCS(config)
     mcs.initialize()
@@ -277,6 +299,7 @@ def build_shared_graph(
     db_path: str = "./multihop_bench.db",
     max_chunks_per_doc: int = 8,
     *,
+    whole_doc: bool = False,
     rerank: bool = False,
     rerank_top_n: int | None = None,
     rerank_min_score: float = 0.0,
@@ -299,7 +322,13 @@ def build_shared_graph(
     )
     total = len(docs)
     for di, doc in enumerate(docs, 1):
-        for ci, text in enumerate(chunk_body(doc.title, doc.body, max_chunks_per_doc)):
+        if whole_doc:
+            # 整篇摄入：标题+正文作为单个单元（chunk_id=0），文本 100% 覆盖。
+            body = (doc.body or "").strip()
+            units = [f"{doc.title}: {body}".strip()] if (body or doc.title) else []
+        else:
+            units = chunk_body(doc.title, doc.body, max_chunks_per_doc)
+        for ci, text in enumerate(units):
             try:
                 mcs.ingest(
                     text,
@@ -311,6 +340,16 @@ def build_shared_graph(
                 logger.warning("ingest 失败: doc=%r chunk=%d，跳过", doc.title, ci)
         if di == 1 or di % 5 == 0 or di == total:
             print(f"  building graph: {di}/{total} docs")
+        # 周期性全量重建持久化：反映分层归纳产生的边删除/重挂（增量持久化只 upsert）
+        if di % 25 == 0:
+            try:
+                mcs.persist_full()
+            except Exception:
+                logger.warning("persist_full 失败 @doc %d，继续", di)
+    try:
+        mcs.persist_full()  # 收尾：使持久图与内存图完全一致
+    except Exception:
+        logger.warning("最终 persist_full 失败")
     return mcs
 
 
@@ -425,12 +464,13 @@ class MultiHopEvalConfig:
     output_dir: str = "./multihop_output"
     k_values: list[int] = field(default_factory=lambda: [2, 4, 10])
     max_chunks_per_doc: int = 8
+    whole_doc: bool = False  # 整篇摄入（不切块）：标题+正文作为单个单元，文本100%覆盖
     resume: bool = True
     dry_run: bool = False
     seed: int = 42
     exclude_null: bool = False  # 排除 null_query（只评非 null 的可达 query）
-    rerank: bool = False  # query 阶段启用相关性重排（opt-in，不重建图）
-    rerank_top_n: int | None = 10  # 重排后截断 top-N（仅 rerank=True 时生效）
+    rerank: bool = True  # query 阶段相关性重排（默认开；实测 hit@10 0.16→0.73，零额外 LLM）
+    rerank_top_n: int | None = 50  # 重排后截断 top-N（仅 rerank=True 时生效）
     rerank_min_score: float = 0.0  # 重排过滤阈值（默认不误杀）
     max_picked: int | None = None  # 放宽遍历累积上限（None=用默认 50）
     max_rounds: int | None = None  # 放宽遍历轮数（None=用默认 5）
@@ -467,11 +507,14 @@ class MultiHopEvalRunner:
 
         # 构建（或复用）共享图
         print("构建共享图（已摄入的会自动跳过）…")
+        if cfg.whole_doc:
+            print("整篇摄入模式：每篇文档作为单个单元（不切块），文本 100% 覆盖")
         mcs = build_shared_graph(
             docs,
             cfg.llm_backend,
             cfg.db_path,
             cfg.max_chunks_per_doc,
+            whole_doc=cfg.whole_doc,
             rerank=cfg.rerank,
             rerank_top_n=cfg.rerank_top_n,
             rerank_min_score=cfg.rerank_min_score,
@@ -590,6 +633,11 @@ def main() -> None:
         "--k", default="2,4,10", help="逗号分隔的 k 列表，如 2,4,10"
     )
     parser.add_argument("--max-chunks", type=int, default=8)
+    parser.add_argument(
+        "--whole-doc",
+        action="store_true",
+        help="整篇摄入（不切块）：标题+正文作为单个单元，文本 100%% 覆盖（长文档需调大 OLLAMA_NUM_CTX）",
+    )
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
@@ -598,15 +646,15 @@ def main() -> None:
         help="排除 null_query，只评非 null 的可达 query",
     )
     parser.add_argument(
-        "--rerank",
+        "--no-rerank",
         action="store_true",
-        help="query 阶段启用相关性重排（opt-in，复用现有图、不重建）",
+        help="关闭相关性重排（默认开；重排为查询侧 lexical、复用现有图、不重建）",
     )
     parser.add_argument(
         "--rerank-top-n",
         type=int,
-        default=10,
-        help="重排后截断 top-N（0 = 不截断；仅 --rerank 时生效）",
+        default=50,
+        help="重排后截断 top-N（0 = 不截断；默认 50）",
     )
     parser.add_argument(
         "--rerank-min-score",
@@ -651,10 +699,11 @@ def main() -> None:
         output_dir=args.output,
         k_values=[int(x) for x in args.k.split(",") if x.strip()],
         max_chunks_per_doc=args.max_chunks,
+        whole_doc=args.whole_doc,
         resume=not args.no_resume,
         dry_run=args.dry_run,
         exclude_null=args.exclude_null,
-        rerank=args.rerank,
+        rerank=not args.no_rerank,
         rerank_top_n=args.rerank_top_n if args.rerank_top_n > 0 else None,
         rerank_min_score=args.rerank_min_score,
         max_picked=args.max_picked if args.max_picked > 0 else None,

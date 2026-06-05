@@ -58,3 +58,13 @@ class StorageInterface(ABC):
         以便写入管线在每次 ingest 落盘后及时提交（见 write-pipeline 阶段 ⑦）。
         """
         return None
+
+    def save_full(self, graph: "GraphStore") -> None:
+        """全量重建持久化：使持久存储与当前内存图**完全一致**（含删除）。
+
+        增量 ``save_node`` / ``save_edge`` 只 upsert、不删行，无法反映图手术（如分层
+        归纳重挂边）产生的节点/边删除。需要一致快照的场景（如建图收尾）应调用本方法。
+        默认回退为 ``save()``（仅追加）；事务型后端（如 SQLite）应覆写为「先清表再整图
+        重写」。注意：仅重建图本身（节点/边），不应清理 idempotency 等辅助表。
+        """
+        self.save(graph)

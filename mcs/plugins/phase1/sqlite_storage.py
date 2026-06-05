@@ -69,6 +69,21 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
             self.save_edge(edge)
         self.conn.commit()
 
+    def save_full(self, graph: GraphStore) -> None:
+        """全量重建：先清空 nodes/edges 再整图重写，反映边/节点删除（如分层归纳重挂）。
+
+        只清图表，不动 document_chunks 等辅助表（idempotency 续跑依赖它）。
+        """
+        if self.conn is None:
+            return
+        self.conn.execute("DELETE FROM edges")
+        self.conn.execute("DELETE FROM nodes")
+        for node in graph.get_all_nodes():
+            self.save_node(node)
+        for edge in graph.get_all_edges():
+            self.save_edge(edge)
+        self.conn.commit()
+
     def load(self) -> GraphStore:
         from mcs.core.graph import GraphStore, Node
 

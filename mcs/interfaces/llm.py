@@ -12,6 +12,7 @@ nodes_in, free_args)`` 驱动所有 LLM 调用。基类提供完整的调用
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from mcs.core.context_renderer import ContextRenderer
     from mcs.core.graph import Node
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -74,8 +77,16 @@ class LLMInterface(ABC):
 
         user = _safe_format(bundle.template, args)
         system = _safe_format(bundle.system, args)
+        # 可观测：INFO 记录每次决策摘要；DEBUG 记录完整 system/user 与原始响应
+        logger.debug(
+            "LLM call purpose=%s nodes_in=%d\n--- system ---\n%s\n--- user ---\n%s",
+            purpose, len(nodes_in or []), system, user,
+        )
         raw = self._raw_call(system, user)
-        return bundle.parse(raw)
+        logger.debug("LLM raw purpose=%s\n--- raw ---\n%s", purpose, raw)
+        result = bundle.parse(raw)
+        logger.info("LLM 决策 purpose=%s | %s", purpose, _summarize_result(result))
+        return result
 
     # === 子类填充的钩子 ===
 
@@ -135,6 +146,24 @@ class LLMInterface(ABC):
         if purpose not in DEFAULT_PROMPTS:
             raise KeyError(f"No prompt bundle registered for purpose={purpose!r}")
         return DEFAULT_PROMPTS[purpose]
+
+
+def _short_repr(obj: Any, limit: int = 200) -> str:
+    s = repr(obj)
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
+def _summarize_result(result: Any) -> str:
+    """决策结果的紧凑摘要（解耦：仅用 repr/len，不依赖具体类型）。
+
+    对 dataclass 列表（如 judge_relations 的 Decision），repr 会展示 action /
+    edges_to / edges_to_names 等字段，便于观测大模型的实际决策。
+    """
+    if isinstance(result, list):
+        head = "; ".join(_short_repr(r, 200) for r in result[:8])
+        more = "" if len(result) <= 8 else f" …(+{len(result) - 8})"
+        return f"[{len(result)}] {head}{more}"
+    return _short_repr(result, 400)
 
 
 def _safe_format(template: str, args: dict) -> str:

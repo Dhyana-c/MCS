@@ -2,7 +2,7 @@
 
 ### Requirement: OllamaLLMPlugin 实现统一 LLMInterface
 
-The system SHALL provide `OllamaLLMPlugin` implementing `LLMInterface`. Its ONLY vendor-specific responsibility is `_raw_call(system: str, user: str) -> str` via Ollama's OpenAI-compatible endpoint. Rendering, prompt assembly, and parsing MUST be inherited from the `LLMInterface.call` base implementation — the plugin MUST NOT override `call`.
+The system SHALL provide `OllamaLLMPlugin` implementing `LLMInterface`. Its ONLY vendor-specific responsibility is `_raw_call(system: str, user: str) -> str` via Ollama's native `/api/chat` endpoint. Rendering, prompt assembly, and parsing MUST be inherited from the `LLMInterface.call` base implementation — the plugin MUST NOT override `call`.
 
 #### Scenario: 插件接口契约
 
@@ -34,12 +34,17 @@ The system SHALL provide `OllamaLLMPlugin` implementing `LLMInterface`. Its ONLY
 
 ### Requirement: 配置键与本地默认
 
-`OllamaLLMPlugin` SHALL accept config keys: `base_url`, `model`, `timeout`, `max_tokens`, `api_key`. `base_url` SHALL default to `http://localhost:11434/v1`; `timeout` SHALL default to a longer-than-cloud value（本地推理较慢）；`max_tokens` SHALL have a sane default. 因本地无需鉴权，`api_key` 用占位字符串即可。
+`OllamaLLMPlugin` SHALL accept config keys: `base_url`, `model`, `timeout`, `max_tokens`, `num_ctx`, `think`, `api_key`. `base_url` SHALL default to `http://localhost:11434/v1`（末尾 `/v1` 在推导原生端点时归一为根地址，保持与历史配置兼容）；`timeout` SHALL default to a longer-than-cloud value（本地推理较慢）；`max_tokens` / `num_ctx` SHALL have sane defaults. `think` SHALL default to `False`（思维模型默认关闭 chain-of-thought）。因本地无需鉴权，`api_key` 用占位字符串即可。
 
 #### Scenario: 默认值
 
-- **WHEN** 配置未提供 `base_url` / `timeout` / `max_tokens`
-- **THEN** `base_url` MUST 回退到 `http://localhost:11434/v1`；`timeout` MUST 取较长的内置默认；`max_tokens` MUST 取内置默认（非 None）
+- **WHEN** 配置未提供 `base_url` / `timeout` / `max_tokens` / `num_ctx` / `think`
+- **THEN** `base_url` MUST 回退到 `http://localhost:11434/v1`；`timeout` MUST 取较长的内置默认；`max_tokens` / `num_ctx` MUST 取内置默认（非 None）；`think` MUST 默认 `False`
+
+#### Scenario: base_url 归一为原生端点
+
+- **WHEN** `base_url` 形如 `http://host:11434/v1`（或带末尾斜杠）
+- **THEN** 插件 MUST 把请求发往归一后的根地址 + `/api/chat`（如 `http://host:11434/api/chat`）
 
 #### Scenario: 模型可配置且需先 pull
 
@@ -48,24 +53,31 @@ The system SHALL provide `OllamaLLMPlugin` implementing `LLMInterface`. Its ONLY
 
 ---
 
-### Requirement: OpenAI 兼容 chat 调用与响应解析
+### Requirement: 原生 /api/chat 调用、think 控制与响应解析
 
-`_raw_call(system, user)` MUST issue an OpenAI-compatible `chat/completions` request to the Ollama endpoint: `system`（非空时）作为一条 `role="system"` 消息、`user` 作为一条 `role="user"` 消息，并 MUST 返回响应首选项的 message content 文本。
+`_raw_call(system, user)` MUST issue a native Ollama `/api/chat` request（`stream=false`）：`system`（非空时）作为一条 `role="system"` 消息、`user` 作为一条 `role="user"` 消息；请求 MUST 携带 `think`（来自配置，默认 `False`）以及 `options.num_predict`（= `max_tokens`）/ `options.num_ctx`（= `num_ctx`）。`_raw_call` MUST 返回 `message.content` 文本（无内容时返回空串）。
+
+之所以走原生端点而非 OpenAI 兼容 `/v1`：只有原生 `/api/chat` 支持 `think` 开关，能对思维模型（qwen3/qwq/deepseek-r1…）关闭冗长的 chain-of-thought——这是 Ollama 后端在这类模型上可用的前提。
 
 #### Scenario: system / user 映射
 
 - **WHEN** `_raw_call("S", "U")` 被调用
-- **THEN** 请求 MUST 含一条 `role="user"` 内容 `"U"`；当 `"S"` 非空时 MUST 另含一条 `role="system"` 内容 `"S"`
+- **THEN** 请求体 MUST 含一条 `role="user"` 内容 `"U"`；当 `"S"` 非空时 MUST 另含一条 `role="system"` 内容 `"S"`；MUST 含 `think` 字段与 `options.num_predict` / `options.num_ctx`
 
 #### Scenario: 空 system 不传
 
 - **WHEN** `_raw_call("", "U")`
 - **THEN** 请求 MUST NOT 含空的 system 消息；仍含 user 消息
 
+#### Scenario: 默认关闭 thinking
+
+- **WHEN** 配置未显式开启 `think`
+- **THEN** 请求体 `think` MUST 为 `False`；当 `think=True` 时 MUST 透传为 `True`
+
 #### Scenario: 返回 message 文本
 
 - **WHEN** Ollama 返回成功的 chat 响应
-- **THEN** `_raw_call` MUST 返回 `choices[0].message.content`（无内容时返回空串）
+- **THEN** `_raw_call` MUST 返回 `message.content`（无内容时返回空串）；`message.content` 为空但存在 `message.thinking` 时 MAY 从 thinking 文本兜底提取 JSON
 
 ---
 
@@ -87,17 +99,17 @@ The system SHALL provide `OllamaLLMPlugin` implementing `LLMInterface`. Its ONLY
 
 ### Requirement: 可选依赖、惰性导入与默认后端不变
 
-`OllamaLLMPlugin` MUST lazily import its client SDK (`openai`) so the plugin class loads even when the SDK or Ollama is absent. Adding this adapter MUST NOT change the default LLM of `MCSConfig.knowledge_graph()`.
+`OllamaLLMPlugin` MUST lazily import its HTTP client (`httpx`) so the plugin class loads even when the client or Ollama is absent. Adding this adapter MUST NOT change the default LLM of `MCSConfig.knowledge_graph()`.
 
 #### Scenario: 惰性导入不阻塞加载
 
-- **WHEN** 环境未安装 `openai` 或本地无 Ollama
-- **THEN** 仍 MUST 能 `import` `OllamaLLMPlugin` 类并读取其 `name` / `interfaces`（仅在实际调用时才需 SDK/服务）
+- **WHEN** 环境未安装 `httpx` 或 Ollama 不可达
+- **THEN** 仍 MUST 能 `import` `OllamaLLMPlugin` 类并读取其 `name` / `interfaces`（仅在实际调用时才需 client/服务）
 
 #### Scenario: 本地无凭证默认构造 client
 
-- **WHEN** `OllamaLLMPlugin.initialize(context)` 执行且 `openai` 可用
-- **THEN** 因本地无需鉴权，插件 MUST 默认构造客户端（用占位 `api_key`），无需用户提供凭证
+- **WHEN** `OllamaLLMPlugin.initialize(context)` 执行且 `httpx` 可用
+- **THEN** 因本地无需鉴权，插件 MUST 默认构造 HTTP 客户端，无需用户提供凭证；仅当 `api_key` 非占位值时才附带 `Authorization: Bearer` 头（支持带鉴权的远程代理）
 
 #### Scenario: 默认后端保持 DeepSeek
 

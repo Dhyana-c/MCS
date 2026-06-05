@@ -17,6 +17,8 @@ SYSTEM_PROMPT = (
     "(a) merge 并入某已有节点; (b) create 新建并连边到锚点; "
     "(c) attach_statement 把关系说法挂到属性节点; (d) no_op 不入图。"
     "宁可不合，不可错合——把握不大就 create。"
+    "此外，新概念彼此之间若有直接关系，用 edges_to_names 列出与它直接相关的"
+    "**其它新概念名**（仅限本次待判定列表中的名称），以建立篇内连接。"
 )
 
 USER_TEMPLATE = (
@@ -28,12 +30,14 @@ USER_TEMPLATE = (
     '  {{"action": "merge|create|attach_statement|no_op",\n'
     '   "concept_name": "...",\n'
     '   "target_id": "<相关节点id>",\n'
-    '   "edges_to": ["<锚点id>"],\n'
+    '   "edges_to": ["<已存在锚点节点id>"],\n'
+    '   "edges_to_names": ["<与之直接相关的其它新概念名>"],\n'
     '   "initial_statements": ["..."],\n'
     '   "statement": "...",\n'
     '   "aliases_to_add": ["..."],\n'
     '   "reason": "..."}}\n'
-    "字段按 action 类型按需填写; 只返回 JSON。"
+    "字段按 action 类型按需填写; edges_to 用已存在节点的 id，"
+    "edges_to_names 用本次新概念的名称; 只返回 JSON。"
 )
 
 
@@ -84,6 +88,12 @@ def parse(raw: str) -> list[Decision]:
                 ),
                 target_id=item.get("target_id"),
                 edges_to=item.get("edges_to", []) or [],
+                edges_to_names=(
+                    item.get("edges_to_names", [])
+                    or item.get("related_concepts", [])
+                    or item.get("edges_to_concepts", [])
+                    or []
+                ),
                 initial_statements=item.get("initial_statements", []) or [],
                 statement=item.get("statement"),
                 aliases_to_add=item.get("aliases_to_add", []) or [],

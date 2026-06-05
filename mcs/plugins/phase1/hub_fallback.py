@@ -50,6 +50,18 @@ class HubFallbackEntryPlugin(Plugin, EntryPluginInterface):
     def locate(self, query: str, ctx: Any) -> list[Node]:
         if self.graph is None:
             return []
+        # 优先：从持久虚拟根自顶向下导航（其(递归)子节点即兜底种子）
+        from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
+
+        root = self.graph.get_node(SEED_ROOT_ID)
+        if root is not None:
+            children = self.graph.get_neighbors(root.id)
+            if self.llm is None or not self.use_llm_navigation:
+                return children[: self.max_seeds]
+            landed = [n for n in self._navigate(query, [root]) if n.id != root.id]
+            # 导航失败（只剩根）则回退为根的直接子节点；绝不把合成根当种子
+            return (landed or children)[: self.max_seeds]
+        # 回退：无持久根时用 role==hub 的旧行为
         hubs = [n for n in self.graph.get_all_nodes() if n.role == "hub"]
         if not hubs:
             return []
@@ -92,11 +104,15 @@ class HubFallbackEntryPlugin(Plugin, EntryPluginInterface):
                 or []
             )
 
+            # 整圈候选(本层 examined 的所有节点)一次性标记已访问：BFS 每个节点只
+            # 检视一次，避免后续层把同一圈点反复当候选、重复喂给 navigate_hub
+            # （双向图下成环/调用爆量的根因）。
+            visited.update(seen)
+
             next_frontier: list[Node] = []
             for cid in drill_ids:
                 node = self.graph.get_node(cid)
-                if node is not None and cid not in visited:
-                    visited.add(cid)
+                if node is not None and cid in seen:  # 必须是本层提出的候选
                     landing.append(node)
                     next_frontier.append(node)
             if not next_frontier:

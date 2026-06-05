@@ -35,6 +35,28 @@ def test_judge_relations_accepts_single_object():
     assert result[0].concept.name == "X"
 
 
+def test_judge_relations_parses_edges_to_names():
+    raw = (
+        '[{"action": "create", "concept_name": "苹果公司", '
+        '"edges_to_names": ["iPhone", "乔布斯"]}]'
+    )
+    result = parse_relations(raw)
+    assert result[0].edges_to_names == ["iPhone", "乔布斯"]
+
+
+def test_judge_relations_edges_to_names_defaults_empty():
+    raw = '{"action": "create", "concept_name": "X"}'
+    result = parse_relations(raw)
+    assert result[0].edges_to_names == []
+
+
+def test_judge_relations_edges_to_names_accepts_aliases():
+    # 容忍 related_concepts / edges_to_concepts 别名
+    raw = '{"action": "create", "concept_name": "X", "related_concepts": ["Y"]}'
+    result = parse_relations(raw)
+    assert result[0].edges_to_names == ["Y"]
+
+
 def test_navigate_hub_salvages_truncated_array():
     """LLM 输出因 max_tokens 截断成未闭合数组时，抢救已闭合的 id、丢弃尾部残片。"""
     raw = '["a1b2","c3d4","e5f6'  # 第三个 id 被截断（未闭合引号）
