@@ -38,8 +38,9 @@ class MCSConfig:
     max_rounds: int = 5
     max_picked: int = 50
     auto_persist: bool = True
-    # subgraph-bounding：查询侧种子图归纳（虚拟根 + fanout reduce）；默认 opt-in
-    seed_graph_bounding: bool = False
+    # subgraph-bounding：查询侧种子图归纳（虚拟根 + fanout reduce）
+    # 默认开启，保证默认配置下核心不变量（任意节点 + 一跳子节点 ≤ T）
+    seed_graph_bounding: bool = True
     plugins: list[str] = field(default_factory=list)
     plugin_configs: dict = field(default_factory=dict)
     prompt_overrides: dict[str, dict] = field(default_factory=dict)

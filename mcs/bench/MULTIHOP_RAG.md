@@ -116,7 +116,7 @@ python -m mcs.bench.multihop_rag --db ./multihop_bench.db --doc-rerank --exclude
 - **token 估计修正**：`TokenBudget.estimate` 从 `len//2`（英文高估约 2×）改为「CJK ~1、拉丁/数字 ~4 字符/token」，并预留真分词器注入口。它是所有 token-aware 判据的底座。
 - **token-aware fanout 阈值**：`fanout_reducer` 触发由「邻域渲染 token > 窗口」判定（替掉硬编码 12），`floor` 兜底。
 - **真正建中间概念节点**：`fanout_reducer` 经 `decide_hub` 归纳后**新建/提拔中间节点 + 星型重组边**（补完原来「只标记」的图手术）。
-- **查询侧虚拟根种子图**：阶段② 召回的扁平种子挂一个临时虚拟根，复用同一套 fanout reduce 递归归纳成分层种子图、中间概念作种子。**opt-in**：`MCSConfig(seed_graph_bounding=True)`，默认 off、不改既有基线。
+- **查询侧虚拟根种子图**：阶段② 召回的扁平种子挂一个临时虚拟根，复用同一套 fanout reduce 递归归纳成分层种子图、中间概念作种子。由 `MCSConfig.seed_graph_bounding` 驱动，**默认 `True`**（保证核心不变量）；置 `False` 回退既有基线。
 
 **verify 思路**（测试阶段：重建小图、不做成本优化/offline）：
 

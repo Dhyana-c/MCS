@@ -48,35 +48,22 @@ class ContextRenderer:
         """
         if not nodes_in:
             return "(无)"
-        lines: list[str] = []
         extensions = self._get_extensions()
+        lines: list[str] = []
         for idx, node in enumerate(nodes_in):
             is_focus = idx == 0
-            lines.append(f"- {node.name} (id={node.id})")
-            body = self._select_body(node, purpose, is_focus)
-            if body:
-                lines.append(f"  {body}")
-            for ext in extensions:
-                fragment = ext.render(node, purpose)
-                if fragment:
-                    lines.append(f"  {fragment}")
+            lines.append(
+                self.render_node_full(node, purpose, is_focus, extensions)
+            )
         return "\n".join(lines)
-
-    def _select_body(self, node: Node, purpose: str, is_focus: bool) -> str:
-        """根据目的和焦点位置选择内容或摘要。"""
-        if purpose in _ALL_SUMMARY_PURPOSES:
-            return self.get_summary(node)
-        if purpose in _SUMMARY_PURPOSES and not is_focus:
-            return self.get_summary(node)
-        return node.content or self.get_summary(node)
 
     def _get_extensions(self) -> list[NodeExtensionInterface]:
         """返回所有已注册的 NodeExtension 插件（去重）。"""
         if self.plugin_manager is None:
             return []
-        from mcs.interfaces.node_extension import NodeExtensionInterface
+        from mcs.core.plugin import PluginType
 
-        return self.plugin_manager.get_all(NodeExtensionInterface)  # type: ignore[return-value]
+        return self.plugin_manager.get_all(PluginType.NODE_EXTENSION)  # type: ignore[return-value]
 
     @staticmethod
     def get_summary(node: Node) -> str:
@@ -92,3 +79,50 @@ class ContextRenderer:
             return text
         content = getattr(node, "content", "") or ""
         return content[:200]
+
+    @staticmethod
+    def render_node_full(
+        node: Node,
+        purpose: str,
+        is_focus: bool,
+        extensions: list[NodeExtensionInterface] | None = None,
+    ) -> str:
+        """渲染单个节点的完整文本（用于估算和渲染）。
+
+        包含：格式行（- name (id=id)）、body（content/summary）、extension 贡献。
+        这是估算与渲染的**唯一口径**：TokenBudget.estimate_node 应使用此方法。
+
+        Args:
+            node: 要渲染的节点
+            purpose: LLM 目的（影响是否使用 summary）
+            is_focus: 是否为焦点节点（第一个节点）
+            extensions: NodeExtension 插件列表（用于贡献额外内容）
+
+        Returns:
+            完整渲染文本，与 render() 输出的单节点部分一致
+        """
+        lines: list[str] = []
+        lines.append(f"- {node.name} (id={node.id})")
+
+        # body 选择：摘要类 purpose 对非焦点节点降级为 summary，其余用完整内容。
+        if purpose in _ALL_SUMMARY_PURPOSES:
+            body = ContextRenderer.get_summary(node)
+        elif purpose in _SUMMARY_PURPOSES and not is_focus:
+            body = ContextRenderer.get_summary(node)
+        else:
+            body = node.content or ContextRenderer.get_summary(node)
+
+        # name==content 去重：body 与 name 相同时省略（name 已在头行写过一份）。
+        # 该规则同时作用于实际渲染与 token 估算（estimate_node 共用本函数），
+        # 维持「估算口径 == 渲染口径」（铁律一）。
+        if body and body != node.name:
+            lines.append(f"  {body}")
+
+        # extension 贡献
+        if extensions:
+            for ext in extensions:
+                fragment = ext.render(node, purpose)
+                if fragment:
+                    lines.append(f"  {fragment}")
+
+        return "\n".join(lines)

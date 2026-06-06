@@ -1,11 +1,10 @@
 """LLM 接口 - 所有语义 LLM 操作的统一调用签名。
 
-框架通过 ``LLMInterface.call(purpose,
-nodes_in, free_args)`` 驱动所有 LLM 调用。基类提供完整的调用
-编排；供应商适配器只需实现 ``_raw_call(system, user)``。
+框架通过 LLMInterface.call(purpose, nodes_in, free_args) 驱动所有 LLM 调用。
+基类提供完整的调用编排；供应商适配器只需实现 _raw_call(system, user)。
 
-提示词模板和解析器位于 ``mcs/prompts/``，通过提示词注册表
-进行连接（参见 ``PromptBundle`` 和 ``register_prompt``）。
+提示词模板和解析器位于 mcs/prompts/，通过提示词注册表进行连接
+（参见 PromptBundle 和 register_prompt）。
 
 参见 openspec/specs/llm-interaction/spec.md。
 """
@@ -13,10 +12,14 @@ nodes_in, free_args)`` 驱动所有 LLM 调用。基类提供完整的调用
 from __future__ import annotations
 
 import logging
-from abc import ABC, abstractmethod
+import time
+from abc import abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+
+from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
     from mcs.core.context_renderer import ContextRenderer
@@ -29,12 +32,12 @@ logger = logging.getLogger(__name__)
 class PromptBundle:
     """完整描述一个用途的三个制品。
 
-    - ``system``：系统提示词（可能包含绑定到 free_args 的 ``{...}`` 占位符；
+    - system：系统提示词（可能包含绑定到 free_args 的 {...} 占位符；
       如果没有占位符，则原样使用）
-    - ``template``：用户提示词模板（``str.format`` 风格；
-      ``{material}`` 绑定到框架渲染的 ``nodes_in``；
-      其他 ``{...}`` 占位符绑定到 ``free_args``）
-    - ``parse``：可调用对象 ``(raw: str) -> Any``，将原始 LLM
+    - template：用户提示词模板（str.format 风格；
+      {material} 绑定到框架渲染的 nodes_in；
+      其他 {...} 占位符绑定到 free_args）
+    - parse：可调用对象 (raw: str) -> Any，将原始 LLM
       响应转换为此用途的类型化结果
     """
 
@@ -43,18 +46,29 @@ class PromptBundle:
     parse: Callable[[str], Any]
 
 
-class LLMInterface(ABC):
+class LLMInterface(Plugin):
     """统一 LLM 后端。
 
-    具体子类（例如 ``DeepSeekLLMPlugin``）实现
-    ``_raw_call(system, user)``。默认的 ``call`` 方法执行：
+    具体子类（例如 DeepSeekLLMPlugin）实现
+    _raw_call(system, user)。默认的 call 方法执行：
 
-      1. 通过 ``get_prompt(purpose)`` 查找当前活跃的 ``PromptBundle``
-      2. 通过框架的 ``ContextRenderer`` 渲染 ``nodes_in``
-      3. 用 ``material`` + free_args 格式化 ``system`` 和 ``template``
-      4. 调用 ``_raw_call`` 与供应商通信
-      5. 运行 ``bundle.parse(raw)`` 生成类型化结果
+      1. 通过 get_prompt(purpose) 查找当前活跃的 PromptBundle
+      2. 通过框架的 ContextRenderer 渲染 nodes_in
+      3. 用 material + free_args 格式化 system 和 template
+      4. 调用 _raw_call 与供应商通信
+      5. 运行 bundle.parse(raw) 生成类型化结果
     """
+
+    def get_type(self) -> PluginType:
+        return PluginType.LLM
+
+    def execute(self, **kwargs) -> Any:
+        """统一入口，委托给 call()。"""
+        return self.call(
+            purpose=kwargs["purpose"],
+            nodes_in=kwargs.get("nodes_in"),
+            free_args=kwargs.get("free_args"),
+        )
 
     @abstractmethod
     def _raw_call(self, system: str, user: str) -> str:
@@ -77,25 +91,60 @@ class LLMInterface(ABC):
 
         user = _safe_format(bundle.template, args)
         system = _safe_format(bundle.system, args)
-        # 可观测：INFO 记录每次决策摘要；DEBUG 记录完整 system/user 与原始响应
         logger.debug(
             "LLM call purpose=%s nodes_in=%d\n--- system ---\n%s\n--- user ---\n%s",
             purpose, len(nodes_in or []), system, user,
         )
+        t0 = time.perf_counter()
         raw = self._raw_call(system, user)
+        latency_ms = round((time.perf_counter() - t0) * 1000, 1)
         logger.debug("LLM raw purpose=%s\n--- raw ---\n%s", purpose, raw)
-        result = bundle.parse(raw)
+        try:
+            result = bundle.parse(raw)
+        except Exception as e:
+            self._emit_record(purpose, nodes_in, system, user, raw, latency_ms, repr(e))
+            raise
         logger.info("LLM 决策 purpose=%s | %s", purpose, _summarize_result(result))
+        self._emit_record(purpose, nodes_in, system, user, raw, latency_ms, None)
         return result
+
+    def attach_recorder(self, recorder: Callable[[dict], None] | None) -> None:
+        """挂载 LLM 调用记录器（opt-in 可观测）。"""
+        self._recorder = recorder
+
+    def _emit_record(
+        self,
+        purpose: str,
+        nodes_in: list[Node] | None,
+        system: str,
+        user: str,
+        raw: str,
+        latency_ms: float,
+        parse_error: str | None,
+    ) -> None:
+        """把一条完整调用记录交给已挂载的 recorder（未挂载则跳过）。"""
+        recorder = getattr(self, "_recorder", None)
+        if recorder is None:
+            return
+        try:
+            recorder({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "purpose": purpose,
+                "model": getattr(self, "model", None),
+                "n_nodes": len(nodes_in or []),
+                "latency_ms": latency_ms,
+                "system": system,
+                "user": user,
+                "raw": raw,
+                "parse_error": parse_error,
+            })
+        except Exception:
+            logger.warning("LLM 记录器异常，跳过本条记录", exc_info=True)
 
     # === 子类填充的钩子 ===
 
     def _render_nodes(self, nodes_in: list[Node], purpose: str) -> str:
-        """为给定用途渲染 ``nodes_in``。
-
-        默认委托给通过 ``attach_renderer`` 设置的 ``ContextRenderer``。
-        如果未附加渲染器，则回退到最小的名称列表渲染。
-        """
+        """为给定用途渲染 nodes_in。"""
         renderer: ContextRenderer | None = getattr(self, "_renderer", None)
         if renderer is not None:
             return renderer.render(nodes_in, purpose)
@@ -118,10 +167,7 @@ class LLMInterface(ABC):
         template: str | None = None,
         parser: Callable[[str], Any] | None = None,
     ) -> None:
-        """覆盖某个用途的 PromptBundle 的一个或多个组件。
-
-        缺失的参数回退到当前已注册的值。
-        """
+        """覆盖某个用途的 PromptBundle 的一个或多个组件。"""
         if not hasattr(self, "_prompt_overrides"):
             self._prompt_overrides: dict[str, PromptBundle] = {}
         current = self.get_prompt(purpose)
@@ -132,10 +178,7 @@ class LLMInterface(ABC):
         )
 
     def get_prompt(self, purpose: str) -> PromptBundle:
-        """解析顺序：用户覆盖 → ``mcs.prompts.DEFAULT_PROMPTS``。
-
-        如果两层都没有 ``purpose`` 对应的 bundle，则抛出 ``KeyError``。
-        """
+        """解析顺序：用户覆盖 → mcs.prompts.DEFAULT_PROMPTS。"""
         if (
             hasattr(self, "_prompt_overrides")
             and purpose in self._prompt_overrides
@@ -154,11 +197,7 @@ def _short_repr(obj: Any, limit: int = 200) -> str:
 
 
 def _summarize_result(result: Any) -> str:
-    """决策结果的紧凑摘要（解耦：仅用 repr/len，不依赖具体类型）。
-
-    对 dataclass 列表（如 judge_relations 的 Decision），repr 会展示 action /
-    edges_to / edges_to_names 等字段，便于观测大模型的实际决策。
-    """
+    """决策结果的紧凑摘要。"""
     if isinstance(result, list):
         head = "; ".join(_short_repr(r, 200) for r in result[:8])
         more = "" if len(result) <= 8 else f" …(+{len(result) - 8})"
@@ -167,11 +206,7 @@ def _summarize_result(result: Any) -> str:
 
 
 def _safe_format(template: str, args: dict) -> str:
-    """用 ``args`` 格式化 ``template``；将缺失的占位符视为字面量。
-
-    这使得不含任何 ``{...}`` 占位符的 ``system`` 提示词可以
-    原样通过。
-    """
+    """用 args 格式化 template；将缺失的占位符视为字面量。"""
     try:
         return template.format(**args)
     except (KeyError, IndexError):

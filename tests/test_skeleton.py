@@ -47,7 +47,7 @@ ALL_MODULES = [
     "mcs.interfaces.trim_plugin",
     # plugins
     "mcs.plugins",
-    "mcs.plugins.base",
+    "mcs.core.plugin",
     "mcs.plugins.phase1",
     "mcs.plugins.phase1.alias_index",
     "mcs.plugins.phase1.claude_llm",
@@ -146,7 +146,7 @@ def test_source_lives_in_plugin_not_core() -> None:
 
 
 def test_plugin_names_match_design() -> None:
-    """每个 Phase 1 插件类都有默认配置和测试所期望的 ``name`` 类属性。"""
+    """每个 Phase 1 插件类都有默认配置和测试所期望的 ``get_name()`` 方法。"""
     from mcs.plugins.phase1.alias_index import (
         AliasEntryPlugin,
         AliasIndexPlugin,
@@ -164,26 +164,27 @@ def test_plugin_names_match_design() -> None:
     from mcs.plugins.phase1.summary import SummaryPlugin
     from mcs.plugins.phase1.summary_regen import SummaryRegenPlugin
 
-    assert AliasIndexPlugin.name == "alias_index"
-    assert AliasEntryPlugin.name == "alias_entry"
-    assert HubFallbackEntryPlugin.name == "hub_fallback"
-    assert PriorityTrimPlugin.name == "priority_trim"
-    assert SummaryPlugin.name == "summary"
-    assert SourceTrackingPlugin.name == "source_tracking"
-    assert IdempotencyCheckPlugin.name == "idempotency_check"
-    assert FanoutReducerPlugin.name == "fanout_reducer"
-    assert SummaryRegenPlugin.name == "summary_regen"
-    assert SQLiteStoragePlugin.name == "sqlite_storage"
-    assert DeepSeekLLMPlugin.name == "deepseek_llm"
-    assert ClaudeLLMPlugin.name == "claude_llm"
+    assert AliasIndexPlugin().get_name() == "alias_index"
+    assert AliasEntryPlugin().get_name() == "alias_entry"
+    assert HubFallbackEntryPlugin().get_name() == "hub_fallback"
+    assert PriorityTrimPlugin().get_name() == "priority_trim"
+    assert SummaryPlugin().get_name() == "summary"
+    assert SourceTrackingPlugin().get_name() == "source_tracking"
+    assert IdempotencyCheckPlugin().get_name() == "idempotency_check"
+    assert FanoutReducerPlugin().get_name() == "fanout_reducer"
+    assert SummaryRegenPlugin().get_name() == "summary_regen"
+    assert SQLiteStoragePlugin().get_name() == "sqlite_storage"
+    assert DeepSeekLLMPlugin().get_name() == "deepseek_llm"
+    assert ClaudeLLMPlugin().get_name() == "claude_llm"
 
 
 def test_alias_entry_plugin_priority() -> None:
-    """AliasEntryPlugin 必须声明 priority=100, exclusive=False。"""
+    """AliasEntryPlugin 必须声明 get_priority()=100, exclusive=False。"""
     from mcs.plugins.phase1.alias_index import AliasEntryPlugin
 
-    assert AliasEntryPlugin.priority == 100
-    assert AliasEntryPlugin.exclusive is False
+    p = AliasEntryPlugin()
+    assert p.get_priority() == 100
+    assert p.exclusive is False
 
 
 # === (e) 结构健全性 ===
@@ -307,24 +308,19 @@ def test_plugin_manager_arbitration_singleton() -> None:
     """注册第二个 ArbitrationPlugin 必须抛出 ConfigurationError。"""
     from mcs.core.errors import ConfigurationError
     from mcs.core.plugin_manager import PluginManager
+    from mcs.core.plugin import PluginType
     from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
-    from mcs.plugins.base import Plugin
 
-    class FakeArb(Plugin, ArbitrationPluginInterface):
-        name = "fake_arb_1"
-        interfaces = [ArbitrationPluginInterface]
-
-        def initialize(self, context):
-            pass
-
-        def shutdown(self):
-            pass
+    class FakeArb(ArbitrationPluginInterface):
+        def get_name(self) -> str:
+            return "fake_arb_1"
 
         def arbitrate(self, accumulated, query, ctx):
             return accumulated
 
     class FakeArb2(FakeArb):
-        name = "fake_arb_2"
+        def get_name(self) -> str:
+            return "fake_arb_2"
 
     pm = PluginManager()
     pm.register(FakeArb())
@@ -333,39 +329,40 @@ def test_plugin_manager_arbitration_singleton() -> None:
 
 
 def test_plugin_manager_entry_plugin_priority_sort() -> None:
-    """get_all(EntryPluginInterface) 返回按优先级排序的列表。"""
+    """get_all(PluginType.ENTRY) 返回按优先级排序的列表。"""
     from mcs.core.plugin_manager import PluginManager
+    from mcs.core.plugin import PluginType
     from mcs.interfaces.entry_plugin import EntryPluginInterface
-    from mcs.plugins.base import Plugin
 
-    class FakeEntry(Plugin, EntryPluginInterface):
-        interfaces = [EntryPluginInterface]
-
-        def initialize(self, context):
-            pass
-
-        def shutdown(self):
-            pass
-
+    class FakeEntry(EntryPluginInterface):
         def locate(self, query, ctx):
             return []
 
     class High(FakeEntry):
-        name = "high"
-        priority = 100
+        def get_name(self) -> str:
+            return "high"
+
+        def get_priority(self) -> int:
+            return 100
 
     class Low(FakeEntry):
-        name = "low"
-        priority = 0
+        def get_name(self) -> str:
+            return "low"
+
+        def get_priority(self) -> int:
+            return 0
 
     class Mid(FakeEntry):
-        name = "mid"
-        priority = 50
+        def get_name(self) -> str:
+            return "mid"
+
+        def get_priority(self) -> int:
+            return 50
 
     pm = PluginManager()
     pm.register(Low())
     pm.register(High())
     pm.register(Mid())
 
-    sorted_plugins = pm.get_all(EntryPluginInterface)
-    assert [p.name for p in sorted_plugins] == ["high", "mid", "low"]
+    sorted_plugins = pm.get_all(PluginType.ENTRY)
+    assert [p.get_name() for p in sorted_plugins] == ["high", "mid", "low"]

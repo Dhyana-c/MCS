@@ -56,13 +56,34 @@ DecisionList = list[Decision]
 
 
 @dataclass
-class HubDecision:
-    """``decide_hub`` LLM 目的的输出。
+class Community:
+    """一进多出聚类中的一个社区。
 
-    当 LLM 判定没有现有节点适合作为 hub 时，``hub_id`` 为 None，
-    应创建一个合成 hub 节点。
+    每个社区按优先级重组：
+    ① 合并同义——把旧的同义概念合并为一
+    ② 找到关键概念——识别社区里的关键概念作组织中心
+    ③ 概括成新概念——无现成关键概念时概括成一个新概念
+
+    ``member_ids`` 是归属此社区的一跳子节点 id 列表（允许重叠）。
+    ``strategy`` 是重组方式："merge" / "key_concept" / "summarize"。
+    ``key_concept_id`` 当 strategy=="key_concept" 时，指定关键概念节点 id。
     """
 
-    hub_id: str | None
+    theme: str
+    member_ids: list[str] = field(default_factory=list)
+    strategy: str = "summarize"  # "merge" | "key_concept" | "summarize"
+    key_concept_id: str | None = None
+    summary: str | None = None  # strategy=="summarize" 时的概括内容
+
+
+@dataclass
+class MultiHubDecision:
+    """一进多出聚类决策：``decide_hub`` 返回多个社区。
+
+    ``communities`` 是社区列表；``unassigned_ids`` 是无法分类的成员 id
+    （确定性兜底：保留在中心节点下，不丢）。
+    """
+
+    communities: list[Community] = field(default_factory=list)
+    unassigned_ids: list[str] = field(default_factory=list)
     reason: str = ""
-    synthetic_hub_summary: str | None = None

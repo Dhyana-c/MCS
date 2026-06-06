@@ -19,19 +19,16 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from mcs.core.config import MCSConfig
 from mcs.core.context_renderer import ContextRenderer
 from mcs.core.graph import GraphStore
+from mcs.core.plugin import Plugin, PluginType
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
-
-if TYPE_CHECKING:
-    from mcs.interfaces.llm import LLMInterface
-    from mcs.plugins.base import Plugin
 
 
 __all__ = ["MCS", "MCSConfig"]
@@ -104,7 +101,7 @@ class MCS:
             self.plugin_manager
         )
 
-        self.llm: LLMInterface | None = None
+        self.llm: Plugin | None = None
         self.query_engine: QueryEngine | None = None
         self.write_pipeline: WritePipeline | None = None
 
@@ -131,13 +128,11 @@ class MCS:
                 instance = cls(plugin_config)
             except TypeError:
                 instance = cls()
-            if plugin_name not in self.plugin_manager.plugins:
+            if self.plugin_manager.get_by_name(plugin_name) is None:
                 self.plugin_manager.register(instance)
 
-        # 解析 LLM 插件（第一个实现 LLMInterface 的）
-        from mcs.interfaces.llm import LLMInterface
-
-        llm = self.plugin_manager.get(LLMInterface)
+        # 解析 LLM 插件（第一个 PluginType.LLM 类型的）
+        llm = self.plugin_manager.get(PluginType.LLM)
         if llm is None:
             raise RuntimeError(
                 "未注册 LLM 插件。第一期期望配置中有 ``deepseek_llm`` "
@@ -221,25 +216,22 @@ class MCS:
         建议在建图收尾（及周期性）调用。无 StorageInterface 时为 no-op。
         """
         self._require_init()
-        from mcs.interfaces.storage import StorageInterface
 
-        storage = self.plugin_manager.get(StorageInterface)
+        storage = self.plugin_manager.get(PluginType.STORAGE)
         if storage is not None:
             storage.save_full(self.graph)
 
     def get_plugin(self, name: str) -> Plugin | None:
         """按名称查找插件实例。"""
-        return self.plugin_manager.plugins.get(name)
+        return self.plugin_manager.get_by_name(name)
 
     # === 内部方法 ===
 
     def _try_load_from_storage(self) -> None:
         """若图为空且 StorageInterface 已注册，从存储加载已有数据。"""
-        from mcs.interfaces.storage import StorageInterface
-
         if self.graph.get_all_nodes():
             return
-        storage = self.plugin_manager.get(StorageInterface)
+        storage = self.plugin_manager.get(PluginType.STORAGE)
         if storage is None:
             return
         try:
@@ -252,9 +244,7 @@ class MCS:
             # reload 后重建所有 IndexInterface 索引：插件 initialize 时图尚空、索引停留在
             # 空状态；此处用加载后的图重建，否则 alias 等种子定位全失效（reload 复用图时
             # 候选集会崩塌）。
-            from mcs.interfaces.index import IndexInterface
-
-            for index in self.plugin_manager.get_all(IndexInterface):
+            for index in self.plugin_manager.get_all(PluginType.INDEX):
                 try:
                     index.build(self.graph)
                 except NotImplementedError:

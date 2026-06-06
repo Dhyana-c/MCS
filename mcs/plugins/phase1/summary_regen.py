@@ -8,10 +8,10 @@ LLM（``gen_summary`` 目的）并更新该槽位。
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
+from mcs.core.plugin import PluginType
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
-from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -20,12 +20,8 @@ if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginContext
 
 
-class SummaryRegenPlugin(Plugin, CompactionPluginInterface):
+class SummaryRegenPlugin(CompactionPluginInterface):
     """为需要摘要的节点刷新 ``extensions["summary"]``。"""
-
-    name: ClassVar[str] = "summary_regen"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [CompactionPluginInterface]
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
@@ -33,11 +29,20 @@ class SummaryRegenPlugin(Plugin, CompactionPluginInterface):
             "max_summary_tokens", 100
         )
 
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "summary_regen"
+
+    # === 插件生命周期 ===
+
     def initialize(self, context: PluginContext) -> None:
         return None
 
     def shutdown(self) -> None:
         return None
+
+    # === CompactionPluginInterface ===
 
     def should_run(
         self, changed_nodes: list[Node], graph: GraphStore

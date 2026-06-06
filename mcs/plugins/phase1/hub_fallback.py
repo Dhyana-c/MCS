@@ -9,24 +9,18 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
+from mcs.core.plugin import PluginType
 from mcs.interfaces.entry_plugin import EntryPluginInterface
-from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
     from mcs.core.graph import GraphStore, Node
     from mcs.core.plugin_manager import PluginContext
 
 
-class HubFallbackEntryPlugin(Plugin, EntryPluginInterface):
+class HubFallbackEntryPlugin(EntryPluginInterface):
     """从顶层 hub 自顶向下做 LLM 导航；无 hub 时返回空。"""
-
-    name: ClassVar[str] = "hub_fallback"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [EntryPluginInterface]
-    priority: ClassVar[int] = 0
-    exclusive: ClassVar[bool] = False
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
@@ -37,15 +31,31 @@ class HubFallbackEntryPlugin(Plugin, EntryPluginInterface):
         self.max_depth: int = cfg.get("max_depth", 3)
         self.use_llm_navigation: bool = cfg.get("use_llm_navigation", True)
 
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "hub_fallback"
+
+    def get_priority(self) -> int:
+        return 0
+
+    @property
+    def exclusive(self) -> bool:
+        return False
+
+    # === 插件生命周期 ===
+
     def initialize(self, context: PluginContext) -> None:
-        from mcs.interfaces.llm import LLMInterface
+        from mcs.core.plugin import PluginType
 
         self.graph = context.graph
-        self.llm = context.plugin_manager.get(LLMInterface)
+        self.llm = context.plugin_manager.get(PluginType.LLM)
 
     def shutdown(self) -> None:
         self.graph = None
         self.llm = None
+
+    # === EntryPluginInterface ===
 
     def locate(self, query: str, ctx: Any) -> list[Node]:
         if self.graph is None:
@@ -76,6 +86,9 @@ class HubFallbackEntryPlugin(Plugin, EntryPluginInterface):
         每层一次 LLM 调用（输入 = 当前层节点 + 其未访问下属），按返回的下属 id
         继续下钻；``visited`` 防环，``max_depth`` 封顶。返回最终落地节点（若一路
         未下钻成功则回退为 roots）。
+
+        **仅沿 out 边下钻**：取候选时用 get_out_neighbors，以区分"层级"与"语义"边、
+        避免在双向/缠绕结构中成环。
         """
         assert self.graph is not None
         visited: set[str] = {n.id for n in roots}
@@ -88,7 +101,8 @@ class HubFallbackEntryPlugin(Plugin, EntryPluginInterface):
             candidates: list[Node] = []
             seen: set[str] = set()
             for node in frontier:
-                for neighbor in self.graph.get_neighbors(node.id):
+                # 仅沿 out 边取候选（自顶向下下钻，不沿语义/上行边回退）
+                for neighbor in self.graph.get_out_neighbors(node.id):
                     if neighbor.id not in visited and neighbor.id not in seen:
                         seen.add(neighbor.id)
                         candidates.append(neighbor)

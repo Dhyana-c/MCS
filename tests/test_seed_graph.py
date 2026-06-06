@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from mcs.core.config import MCSConfig
-from mcs.core.decisions import HubDecision
+from mcs.core.decisions import Community, MultiHubDecision
 from mcs.core.graph import GraphStore, Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryContext, QueryEngine
@@ -90,6 +90,14 @@ def test_opt_in_off_does_not_bound(mock_llm):
 # ── 建图侧：持久虚拟根 + 递归分层 ─────────────────────────────────────────────
 
 
+def _group_response(nodes_in, free_args):
+    """mock decide_hub：把整批邻居归为一个 summarize 社区（summary="Group"）。"""
+    ids = [n.id for n in nodes_in[1:]]
+    return MultiHubDecision(communities=[
+        Community(theme="Group", member_ids=ids, strategy="summarize", summary="Group")
+    ])
+
+
 def _fanout_with_root(graph, token_budget, mock_llm):
     pm = PluginManager()
     pm.register(mock_llm)
@@ -115,9 +123,7 @@ def test_fanout_maintains_persistent_root(mock_llm):
         n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400, role="concept")
         g.add_node(n)
         concepts.append(n)
-    mock_llm.set_response(
-        "decide_hub", HubDecision(hub_id=None, synthetic_hub_summary="Group")
-    )
+    mock_llm.set_response("decide_hub", _group_response)
     fr = _fanout_with_root(g, TokenBudget(500), mock_llm)
 
     changed = list(concepts)
@@ -141,12 +147,12 @@ def test_no_persistent_root_when_disabled(mock_llm):
     g.add_node(n)
     pm = PluginManager()
     pm.register(mock_llm)
-    fr = FanoutReducerPlugin({"floor": 16})
+    fr = FanoutReducerPlugin({"floor": 16, "maintain_root": False})
     pm.register(fr)
     pm.initialize_all(
         PluginContext(
             graph=g,
-            config=MCSConfig(),  # seed_graph_bounding 默认 False
+            config=MCSConfig(seed_graph_bounding=False),  # 显式关闭
             token_budget=TokenBudget(8000),
             context_renderer=None,  # type: ignore[arg-type]
             plugin_manager=pm,

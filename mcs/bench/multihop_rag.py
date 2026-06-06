@@ -219,10 +219,34 @@ def chunk_body(title: str, body: str, max_chunks: int = 8) -> list[str]:
     return chunks
 
 
+def _attach_llm_recorder(mcs: Any, record_path: str) -> None:
+    """给 mcs 的 LLM 挂一个 JSONL 调用记录器（append 写入，支持续跑追加）。
+
+    每次 LLM 调用落一行：purpose/model/system/user/raw/latency/parse_error。
+    文件句柄挂在 mcs 上保活，flush-per-line 确保进程被杀也不丢已写记录。
+    """
+    import threading
+
+    Path(record_path).parent.mkdir(parents=True, exist_ok=True)
+    fh = open(record_path, "a", encoding="utf-8")
+    lock = threading.Lock()
+
+    def _rec(record: dict) -> None:
+        line = json.dumps(record, ensure_ascii=False)
+        with lock:
+            fh.write(line + "\n")
+            fh.flush()
+
+    mcs.llm.attach_recorder(_rec)
+    mcs._llm_record_fh = fh  # 保活，避免句柄被 GC 关闭
+
+
 def _make_mcs(
     llm: str,
     db_path: str,
     *,
+    token_budget: int = 8000,
+    record_path: str | None = None,
     rerank: bool = False,
     rerank_top_n: int | None = None,
     rerank_min_score: float = 0.0,
@@ -231,14 +255,15 @@ def _make_mcs(
 ) -> Any:
     """创建一个配置好持久化与 LLM key 的 MCS 实例（已 initialize）。
 
-    ``rerank=True`` 时把 query_postprocess 重排插件加入插件链（opt-in），用于在
-    **不重建图**的前提下对 query 阶段做重排 A/B。``max_picked`` / ``max_rounds``
-    非 None 时放宽遍历宽度/轮数（广召回，最后由 reranker/评测 @k 截断）。
+    ``token_budget`` 设核心不变量阈值 T（如 32000）。``record_path`` 非空时挂载
+    JSONL LLM 调用记录器。``rerank=True`` 时把 query_postprocess 重排插件加入插件链
+    （opt-in）。``max_picked`` / ``max_rounds`` 非 None 时放宽遍历宽度/轮数。
     """
     from mcs import MCS, MCSConfig
 
     config = MCSConfig.knowledge_graph(llm=llm)
     config.seed_graph_bounding = True  # 开启虚拟根节点 + fanout reduce
+    config.token_budget = token_budget  # 核心不变量阈值 T（如 32k）
     # 评测可选关闭逐节点摘要重生（summary_regen）：文档级检索不直接依赖摘要文本，
     # 关掉可省 ~2.6× LLM 调用（摘要渲染回退到 content[:200]）。用于本地慢后端提速。
     if os.environ.get("MCS_NO_SUMMARY_REGEN", "0").lower() in ("1", "true", "yes"):
@@ -290,6 +315,8 @@ def _make_mcs(
         })
     mcs = MCS(config)
     mcs.initialize()
+    if record_path:
+        _attach_llm_recorder(mcs, record_path)
     return mcs
 
 
@@ -300,6 +327,8 @@ def build_shared_graph(
     max_chunks_per_doc: int = 8,
     *,
     whole_doc: bool = False,
+    token_budget: int = 8000,
+    record_path: str | None = None,
     rerank: bool = False,
     rerank_top_n: int | None = None,
     rerank_min_score: float = 0.0,
@@ -309,11 +338,13 @@ def build_shared_graph(
     """把全部文档摄入**同一个**持久化 MCS 实例，返回该实例。
 
     依赖 idempotency_check：重复构建时已摄入的文档块自动跳过（断点续跑）。
-    ``rerank`` / ``max_picked`` / ``max_rounds`` 等参数透传给 ``_make_mcs``。
+    ``token_budget`` / ``record_path`` / ``rerank`` 等参数透传给 ``_make_mcs``。
     """
     mcs = _make_mcs(
         llm,
         db_path,
+        token_budget=token_budget,
+        record_path=record_path,
         rerank=rerank,
         rerank_top_n=rerank_top_n,
         rerank_min_score=rerank_min_score,
@@ -460,6 +491,7 @@ class MultiHopEvalConfig:
     queries_path: str = DEFAULT_QA
     corpus_subset: int | None = None
     llm_backend: str = "deepseek"
+    token_budget: int = 8000  # 核心不变量阈值 T（如 32000）
     db_path: str = "./multihop_bench.db"
     output_dir: str = "./multihop_output"
     k_values: list[int] = field(default_factory=lambda: [2, 4, 10])
@@ -515,6 +547,8 @@ class MultiHopEvalRunner:
             cfg.db_path,
             cfg.max_chunks_per_doc,
             whole_doc=cfg.whole_doc,
+            token_budget=cfg.token_budget,
+            record_path=str(out / "llm_calls.jsonl"),
             rerank=cfg.rerank,
             rerank_top_n=cfg.rerank_top_n,
             rerank_min_score=cfg.rerank_min_score,
@@ -627,6 +661,12 @@ def main() -> None:
         "--corpus-subset", type=int, default=0, help="采样 N 篇文档（0=全量）"
     )
     parser.add_argument("--llm", choices=["deepseek", "claude", "ollama"], default="deepseek")
+    parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=8000,
+        help="核心不变量阈值 T（如 32000）；建图守门与查询子图共用",
+    )
     parser.add_argument("--db", default="./multihop_bench.db")
     parser.add_argument("--output", default="./multihop_output")
     parser.add_argument(
@@ -695,6 +735,7 @@ def main() -> None:
         queries_path=args.queries,
         corpus_subset=args.corpus_subset if args.corpus_subset > 0 else None,
         llm_backend=args.llm,
+        token_budget=args.token_budget,
         db_path=args.db,
         output_dir=args.output,
         k_values=[int(x) for x in args.k.split(",") if x.strip()],

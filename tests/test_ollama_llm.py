@@ -42,10 +42,12 @@ class TestOllamaLLMPluginContract:
     """3.1 接口契约：name/interfaces/实现 _raw_call、未 override call"""
 
     def test_name(self):
-        assert OllamaLLMPlugin.name == "ollama_llm"
+        p = OllamaLLMPlugin()
+        assert p.get_name() == "ollama_llm"
 
     def test_interfaces(self):
-        assert LLMInterface in OllamaLLMPlugin.interfaces
+        p = OllamaLLMPlugin()
+        assert p.get_type().value == "llm"
 
     def test_has_raw_call(self):
         plugin = OllamaLLMPlugin()
@@ -263,9 +265,10 @@ class TestOllamaLLMPluginLazyImport:
     """3.6 惰性导入：缺 httpx 时仍能 import 类、读 name/interfaces"""
 
     def test_import_without_sdk(self):
-        # 即使 httpx 不可用，类定义也应可加载并读取类属性
-        assert OllamaLLMPlugin.name == "ollama_llm"
-        assert LLMInterface in OllamaLLMPlugin.interfaces
+        # 即使 httpx 不可用，类定义也应可加载并读取 get_name()/get_type()
+        p = OllamaLLMPlugin()
+        assert p.get_name() == "ollama_llm"
+        assert p.get_type().value == "llm"
 
     def test_initialize_constructs_and_shutdown_closes_client(self):
         plugin = OllamaLLMPlugin({"model": "qwen3.5:9b"})

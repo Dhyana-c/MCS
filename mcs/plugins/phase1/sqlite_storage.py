@@ -10,10 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
+from mcs.core.plugin import PluginType
 from mcs.interfaces.storage import StorageInterface
-from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
     from mcs.core.graph import Edge, GraphStore, Node
@@ -22,17 +22,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SQLiteStoragePlugin(Plugin, StorageInterface):
+class SQLiteStoragePlugin(StorageInterface):
     """具有动态模式扩展的 SQLite 持久化。
 
     注意：Phase 1 的图操作是内存中的；此插件通过显式的
     ``save()`` / ``load()`` 调用持久化快照。每次变更后自动
     刷新留待未来实现。
     """
-
-    name: ClassVar[str] = "sqlite_storage"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [StorageInterface]
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
@@ -42,14 +38,21 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
         # name -> NodeExtensionInterface 插件，用于 extensions 的保真编解码（D5）
         self._node_extensions: dict[str, Any] = {}
 
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "sqlite_storage"
+
     # === 插件 / StorageInterface 生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
         self.conn = sqlite3.connect(self.path)
-        self._schema_extensions = context.plugin_manager.collect_schema_extensions()
+        self._schema_extensions = context.plugin_manager.get_all(
+            PluginType.STORAGE_SCHEMA_EXT
+        )
         self._node_extensions = {
-            ext.name: ext
-            for ext in context.plugin_manager.collect_node_extensions()
+            ext.get_name(): ext
+            for ext in context.plugin_manager.get_all(PluginType.NODE_EXTENSION)
         }
         self._create_tables(self._schema_extensions)
 
@@ -101,11 +104,9 @@ class SQLiteStoragePlugin(Plugin, StorageInterface):
         for row in self.conn.execute(
             "SELECT source_id, target_id, direction FROM edges"
         ):
-            graph.add_edge(row[0], row[1], direction=row[2])
-            # 如有必要，恢复存储边上的方向。
-            edge = graph.get_edge(row[0], row[1])
-            if edge is not None and row[2] in ("bidirectional", "out"):
-                edge.direction = row[2]
+            # add_edge 已按 direction 如实建边（含同对节点 out + bidirectional 共存）；
+            # 旧数据 direction 为 NULL 时回退 bidirectional（与 schema 默认一致）。
+            graph.add_edge(row[0], row[1], direction=row[2] or "bidirectional")
         return graph
 
     def save_node(self, node: Node) -> None:

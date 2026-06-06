@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any
 
 from mcs.core.graph import GraphStore, Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
@@ -10,26 +10,20 @@ from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
-from mcs.plugins.base import Plugin
 
 
-class _StaticEntry(Plugin, EntryPluginInterface):
+class _StaticEntry(EntryPluginInterface):
     """按 id 从图中返回静态节点列表的 entry 插件。"""
 
-    name: ClassVar[str] = "static_entry"
-    interfaces: ClassVar[list[type]] = [EntryPluginInterface]
-    priority: ClassVar[int] = 100
+    def get_name(self) -> str:
+        return "static_entry"
+
+    def get_priority(self) -> int:
+        return 100
 
     def __init__(self, node_ids: list[str], graph: GraphStore):
-        super().__init__(None)
         self._ids = node_ids
         self._graph = graph
-
-    def initialize(self, ctx: Any) -> None:
-        return None
-
-    def shutdown(self) -> None:
-        return None
 
     def locate(self, query: str, ctx: Any) -> list[Node]:
         return [
@@ -153,16 +147,12 @@ def test_max_picked_caps_node_count(seeded_graph, mock_llm):
 def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
     """当提供 existing_context 时，entry 插件不会被调用。"""
 
-    class _RaisingEntry(Plugin, EntryPluginInterface):
-        name = "should_not_run"
-        interfaces = [EntryPluginInterface]
-        priority = 1000
+    class _RaisingEntry(EntryPluginInterface):
+        def get_name(self) -> str:
+            return "should_not_run"
 
-        def initialize(self, ctx):
-            pass
-
-        def shutdown(self):
-            pass
+        def get_priority(self) -> int:
+            return 1000
 
         def locate(self, query, ctx):
             raise AssertionError("entry 插件在有 existing_context 时不能运行")
@@ -177,16 +167,9 @@ def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
 def test_postprocess_chain_transforms_output(seeded_graph, mock_llm):
     """postprocess 插件可以将 List[Node] 替换为任意类型。"""
 
-    class _Stringify(Plugin, PostprocessPluginInterface):
-        name = "stringify"
-        interfaces = [PostprocessPluginInterface]
-        position = "query_postprocess"
-
-        def initialize(self, ctx):
-            pass
-
-        def shutdown(self):
-            pass
+    class _Stringify(PostprocessPluginInterface):
+        def get_name(self) -> str:
+            return "stringify"
 
         def process(self, input, ctx):
             return ", ".join(n.name for n in input)
@@ -208,16 +191,9 @@ def test_query_context_lifecycle_fields_populated(seeded_graph, mock_llm):
 
     captured: dict[str, Any] = {}
 
-    class _Spy(Plugin, PostprocessPluginInterface):
-        name = "ctx_spy"
-        interfaces = [PostprocessPluginInterface]
-        position = "query_postprocess"
-
-        def initialize(self, ctx):
-            pass
-
-        def shutdown(self):
-            pass
+    class _Spy(PostprocessPluginInterface):
+        def get_name(self) -> str:
+            return "ctx_spy"
 
         def process(self, input, ctx: QueryContext):
             captured["intermediate"] = list(ctx.intermediate)

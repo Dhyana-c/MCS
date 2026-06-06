@@ -13,22 +13,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from mcs.core.errors import LLMCallError
 from mcs.interfaces.llm import LLMInterface
-from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginContext
 
 
-class DeepSeekLLMPlugin(Plugin, LLMInterface):
+class DeepSeekLLMPlugin(LLMInterface):
     """通过 OpenAI 兼容 API 的 DeepSeek LLM 后端。"""
-
-    name: ClassVar[str] = "deepseek_llm"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [LLMInterface]
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
@@ -40,6 +35,13 @@ class DeepSeekLLMPlugin(Plugin, LLMInterface):
         self.timeout: float = float(self.config.get("timeout", 60.0))
         self.max_tokens: int = int(self.config.get("max_tokens", 8192))
         self.client: Any = None
+
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "deepseek_llm"
+
+    # 注：LLMInterface 已提供 get_type() 和 execute()，无需重写
 
     # === 插件生命周期 ===
 

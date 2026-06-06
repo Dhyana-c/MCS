@@ -7,25 +7,26 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
+from mcs.core.plugin import PluginType
 from mcs.interfaces.node_extension import NodeExtensionInterface
-from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
     from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
 
 
-class SummaryPlugin(Plugin, NodeExtensionInterface):
+class SummaryPlugin(NodeExtensionInterface):
     """``extensions["summary"]`` = ``{"text": str, "generated_at": str|None}``."""
-
-    name: ClassVar[str] = "summary"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [NodeExtensionInterface]
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
+
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "summary"
 
     # === 插件生命周期 ===
 

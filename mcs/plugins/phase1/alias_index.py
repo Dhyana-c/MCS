@@ -10,12 +10,12 @@ Phase 1 将旧的"一体化" AliasIndex 拆分为两个清晰分离的插件：
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
+from mcs.core.plugin import PluginType
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.index import IndexInterface
 from mcs.interfaces.node_extension import NodeExtensionInterface
-from mcs.plugins.base import Plugin
 from mcs.utils.tokenizer import ChineseTokenizer
 
 if TYPE_CHECKING:
@@ -23,25 +23,30 @@ if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginContext
 
 
-class AliasIndexPlugin(Plugin, IndexInterface, NodeExtensionInterface):
+class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):
     """别名字典索引 + 节点扩展管理器。
 
     存储: ``self.index`` 映射 ``term -> set[node_id]``，其中 ``term``
     是节点的名称 + 别名词条之一。
     """
 
-    name: ClassVar[str] = "alias_index"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [
-        IndexInterface,
-        NodeExtensionInterface,
-    ]
-
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.index: dict[str, set[str]] = {}
         self.tokenizer: ChineseTokenizer | None = None
         self.graph: GraphStore | None = None
+
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "alias_index"
+
+    def get_type(self) -> PluginType:
+        return PluginType.INDEX
+
+    def get_types(self) -> set[PluginType]:
+        # 同时实现 Index 与 NodeExtension，两类型都登记
+        return {PluginType.INDEX, PluginType.NODE_EXTENSION}
 
     # === 插件生命周期 ===
 
@@ -88,7 +93,7 @@ class AliasIndexPlugin(Plugin, IndexInterface, NodeExtensionInterface):
 
     def add_entry(self, node: Node) -> None:
         aliases = (
-            node.extensions.get(self.name, {}).get("aliases", []) if node.extensions else []
+            node.extensions.get(self.get_name(), {}).get("aliases", []) if node.extensions else []
         )
         for term in [node.name, *aliases]:
             if not term:
@@ -117,34 +122,44 @@ class AliasIndexPlugin(Plugin, IndexInterface, NodeExtensionInterface):
         self.add_entry(node)
 
 
-class AliasEntryPlugin(Plugin, EntryPluginInterface):
+class AliasEntryPlugin(EntryPluginInterface):
     """条目插件：使用 AliasIndexPlugin 的字典来定位种子节点。
 
     优先级 100 (Phase 1 默认中最高)。非排他性——当此插件返回
     空结果时，链仍会回退到 ``HubFallbackEntryPlugin`` (优先级 0)。
     """
 
-    name: ClassVar[str] = "alias_entry"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [EntryPluginInterface]
-    priority: ClassVar[int] = 100
-    exclusive: ClassVar[bool] = False
-
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.alias_index: AliasIndexPlugin | None = None
         self.graph: GraphStore | None = None
 
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "alias_entry"
+
+    def get_priority(self) -> int:
+        return 100
+
+    @property
+    def exclusive(self) -> bool:
+        return False
+
+    # === 插件生命周期 ===
+
     def initialize(self, context: PluginContext) -> None:
         self.graph = context.graph
-        from mcs.interfaces.index import IndexInterface
+        from mcs.core.plugin import PluginType
 
-        idx = context.plugin_manager.get(IndexInterface)
+        idx = context.plugin_manager.get(PluginType.INDEX)
         if isinstance(idx, AliasIndexPlugin):
             self.alias_index = idx
 
     def shutdown(self) -> None:
         self.alias_index = None
+
+    # === EntryPluginInterface ===
 
     def locate(self, query: str, ctx: Any) -> list[Node]:
         if self.alias_index is None or self.graph is None:

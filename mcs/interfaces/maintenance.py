@@ -1,20 +1,31 @@
 """维护接口 - 后台任务如 GC。"""
 
-from abc import ABC, abstractmethod
+from __future__ import annotations
+
+from abc import abstractmethod
 from typing import TYPE_CHECKING
+
+from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
     from mcs.core.graph import GraphStore
 
 
-class MaintenanceInterface(ABC):
+class MaintenanceInterface(Plugin):
     """抽象维护任务。
 
     阶段2 GC 及其他周期性任务。参见 architecture.md §3.8。
     """
 
+    def get_type(self) -> PluginType:
+        return PluginType.MAINTENANCE
+
+    def execute(self, **kwargs) -> None:
+        """统一入口，委托给 run()。"""
+        return self.run(kwargs["graph"])
+
     @abstractmethod
-    def run(self, graph: "GraphStore") -> None:
+    def run(self, graph: GraphStore) -> None:
         """执行维护任务。"""
         pass
 

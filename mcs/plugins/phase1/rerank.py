@@ -16,8 +16,8 @@ import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from mcs.core.plugin import PluginType
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
-from mcs.plugins.base import Plugin
 from mcs.utils.tokenizer import ChineseTokenizer
 
 if TYPE_CHECKING:
@@ -125,7 +125,7 @@ _SCORERS: dict[str, type[Scorer]] = {
 # === 重排插件 ===
 
 
-class RerankPlugin(Plugin, PostprocessPluginInterface):
+class RerankPlugin(PostprocessPluginInterface):
     """``query_postprocess`` 相关性重排插件（默认 opt-in）。
 
     config 项：
@@ -133,11 +133,6 @@ class RerankPlugin(Plugin, PostprocessPluginInterface):
       - ``top_n``: ``int | None`` —— 截断到前 N；``None``=不截断（默认，最保守）
       - ``min_score``: ``float`` —— 丢弃分值低于该阈值的节点；默认 ``0.0``（不误杀）
     """
-
-    name: ClassVar[str] = "rerank"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [PostprocessPluginInterface]
-    position: ClassVar[str] = "query_postprocess"
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
@@ -152,6 +147,15 @@ class RerankPlugin(Plugin, PostprocessPluginInterface):
         top_n = self.config.get("top_n")
         self.top_n: int | None = int(top_n) if top_n is not None else None
         self.min_score: float = float(self.config.get("min_score", 0.0))
+
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "rerank"
+
+    @property
+    def position(self) -> str:
+        return "query_postprocess"
 
     # === 插件生命周期 ===
 

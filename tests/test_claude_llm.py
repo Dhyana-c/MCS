@@ -14,8 +14,9 @@ from mcs.plugins.phase1.claude_llm import ClaudeLLMPlugin
 
 
 def test_name_and_interfaces():
-    assert ClaudeLLMPlugin.name == "claude_llm"
-    assert LLMInterface in ClaudeLLMPlugin.interfaces
+    p = ClaudeLLMPlugin({})
+    assert p.get_name() == "claude_llm"
+    assert p.get_type().value == "llm"
 
 
 def test_does_not_override_call():
@@ -24,10 +25,10 @@ def test_does_not_override_call():
 
 
 def test_lazy_import_class_loadable_without_credentials():
-    """不配置凭证也能实例化并读取 name/interfaces（不触发 anthropic 导入）。"""
+    """不配置凭证也能实例化并读取 name/type（不触发 anthropic 导入）。"""
     p = ClaudeLLMPlugin({})
-    assert p.name == "claude_llm"
-    assert LLMInterface in p.interfaces
+    assert p.get_name() == "claude_llm"
+    assert p.get_type().value == "llm"
     assert p.client is None
 
 

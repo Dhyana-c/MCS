@@ -46,11 +46,29 @@ class TokenBudget:
         cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
         return max(1, cjk + (len(text) - cjk) // 4)
 
+    def estimate_node(self, node: Node) -> int:
+        """估算单个节点的渲染 token（含格式行、body、extensions）。
+
+        与 ContextRenderer.render_node_full 口径一致，确保估算值 == 实际渲染 token。
+        估算使用 purpose="decide_hub"（最严格的摘要降级场景）且 is_focus=True（焦点节点
+        不被降级），extensions=None（保守估算，不含插件贡献——插件贡献难以在静态
+        估算中获取，且通常远小于主内容）。
+
+        对于 decide_hub 场景的守门检查，此口径足够准确：焦点节点（中心节点）用完整内容，
+        邻居用 summary（实际渲染也是这样）。
+        """
+        from mcs.core.context_renderer import ContextRenderer
+
+        rendered = ContextRenderer.render_node_full(
+            node, purpose="decide_hub", is_focus=True, extensions=None
+        )
+        return self.estimate(rendered)
+
     def check_subgraph(self, nodes: list[Node]) -> bool:
         """如果 ``nodes`` 的组合内容适合 ``T`` 则返回 True。"""
         total = 0
         for node in nodes:
-            total += self.estimate(getattr(node, "content", ""))
+            total += self.estimate_node(node)
             if total > self.T:
                 return False
         return True

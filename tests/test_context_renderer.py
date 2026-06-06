@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 
@@ -10,20 +10,13 @@ from mcs.core.context_renderer import ContextRenderer
 from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginManager
 from mcs.interfaces.node_extension import NodeExtensionInterface
-from mcs.plugins.base import Plugin
 
 
-class FakeSourceExt(Plugin, NodeExtensionInterface):
+class FakeSourceExt(NodeExtensionInterface):
     """最小的 NodeExt，仅在 purpose='synthesize' 时贡献内容。"""
 
-    name: ClassVar[str] = "fake_source"
-    interfaces: ClassVar[list[type]] = [NodeExtensionInterface]
-
-    def initialize(self, ctx: Any) -> None:
-        return None
-
-    def shutdown(self) -> None:
-        return None
+    def get_name(self) -> str:
+        return "fake_source"
 
     def schema(self) -> dict:
         return {"src": "str"}
@@ -40,7 +33,7 @@ class FakeSourceExt(Plugin, NodeExtensionInterface):
     def render(self, node: Node, purpose: str) -> str | None:
         if purpose != "synthesize":
             return None
-        slot = (node.extensions or {}).get(self.name, {})
+        slot = (node.extensions or {}).get("fake_source", {})
         src = slot.get("src") if isinstance(slot, dict) else None
         if not src:
             return None
@@ -141,3 +134,29 @@ def test_get_summary_prefers_extension():
 
 # 减少 pytest 自动发现时 ruff 对 "unused import" 的警告。
 _ = pytest
+
+
+# ─── Task 1.3: 口径统一单测（name==content 去重、估算 == 渲染）───────────────────
+
+
+def test_render_node_full_deduplicates_name_equals_content():
+    """name==content 时正文去重——在实际渲染口径（render_node_full）生效。"""
+    n = Node(id="a", name="Fantasy Football", content="Fantasy Football")
+    out = ContextRenderer.render_node_full(n, purpose="decide_hub", is_focus=True)
+    # name 只在头行出现一次，正文被省略
+    assert out == "- Fantasy Football (id=a)"
+    assert out.count("Fantasy Football") == 1
+
+
+def test_render_node_full_writes_both_when_different():
+    """name!=content 时正文照写（含义独立成行）。"""
+    n = Node(id="a", name="AI", content="Artificial Intelligence")
+    out = ContextRenderer.render_node_full(n, purpose="decide_hub", is_focus=True)
+    assert out == "- AI (id=a)\n  Artificial Intelligence"
+
+
+def test_render_node_full_empty_content():
+    """content 为空时只有头行。"""
+    n = Node(id="a", name="Topic", content="")
+    out = ContextRenderer.render_node_full(n, purpose="decide_hub", is_focus=True)
+    assert out == "- Topic (id=a)"

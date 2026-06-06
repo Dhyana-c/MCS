@@ -145,6 +145,9 @@ class WritePipeline:
         self._attach_pending_source(ctx)
         self._notify_indexes(ctx.changed)
 
+        # 阶段 ⑤.5: 立即守门检查（不变量保证）
+        self._guard_invariant(ctx.changed)
+
         # 阶段 ⑥: 压缩判定插件链
         self._run_compaction(ctx.changed)
 
@@ -171,9 +174,9 @@ class WritePipeline:
         if ctx.changed and not ctx.persisted:
             return  # 有节点却未落盘成功 → 不标记，下次续跑重试该块
 
-        from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
+        from mcs.core.plugin import PluginType
 
-        for plugin in self.plugin_manager.get_all(PostprocessPluginInterface):
+        for plugin in self.plugin_manager.get_all(PluginType.POSTPROCESS):
             recorder = getattr(plugin, "record_ingested", None)
             if callable(recorder):
                 recorder(source.doc_id, source.chunk_id, source.content_hash)
@@ -195,9 +198,9 @@ class WritePipeline:
         """通知每个 IndexInterface 插件已更改的节点，以保持索引同步。
         替代旧的 ``on_created_or_merged`` 管道钩子的角色。
         """
-        from mcs.interfaces.index import IndexInterface
+        from mcs.core.plugin import PluginType
 
-        indexes = self.plugin_manager.get_all(IndexInterface)
+        indexes = self.plugin_manager.get_all(PluginType.INDEX)
         for index in indexes:
             for node in changed_nodes:
                 try:
@@ -209,11 +212,11 @@ class WritePipeline:
 
     def _run_preprocess(self, text: str, ctx: WriteContext) -> str:
         """阶段 ①：串行 PostprocessPlugin 链，``position == 'write_preprocess'``。"""
-        from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
+        from mcs.core.plugin import PluginType
 
         plugins = [
             p
-            for p in self.plugin_manager.get_all(PostprocessPluginInterface)
+            for p in self.plugin_manager.get_all(PluginType.POSTPROCESS)
             if getattr(p, "position", "query_postprocess") == "write_preprocess"
         ]
         result: Any = text
@@ -355,11 +358,48 @@ class WritePipeline:
         slot = node.extensions.setdefault("statements", {"items": []})
         slot.setdefault("items", []).append(decision.statement)
 
+    def _guard_invariant(self, changed_nodes: list[Node]) -> None:
+        """阶段 ⑤.5：立即守门检查，确保不变量不被破坏。
+
+        检查 root 和所有 changed_nodes 的一跳邻域是否 ≤ T。
+        如果超预算，立即触发 FanoutReducer 的守门逻辑，
+        而非等阶段 ⑥ 的 should_run（后者可能因 floor 阈值跳过）。
+        """
+        from mcs.core.plugin import PluginType
+        from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin, SEED_ROOT_ID
+
+        fanout_plugin = None
+        for plugin in self.plugin_manager.get_all(PluginType.COMPACTION):
+            if isinstance(plugin, FanoutReducerPlugin):
+                fanout_plugin = plugin
+                break
+
+        if fanout_plugin is None or fanout_plugin.token_budget is None:
+            return
+
+        # 收集需检查的节点：root + changed
+        nodes_to_check: list[Node] = []
+        seen: set[str] = set()
+        root = self.graph.get_node(SEED_ROOT_ID)
+        if root is not None and root.id not in seen:
+            nodes_to_check.append(root)
+            seen.add(root.id)
+        for n in changed_nodes:
+            if n.id not in seen:
+                nodes_to_check.append(n)
+                seen.add(n.id)
+
+        # 对每个超预算节点立即触发裂变
+        for node in nodes_to_check:
+            neighbors = self.graph.get_neighbors(node.id)
+            if fanout_plugin._exceeds_budget(node, neighbors):
+                fanout_plugin._compact_node(node, self.graph, self.llm.call)
+
     def _run_compaction(self, changed_nodes: list[Node]) -> None:
         """阶段 ⑥：每个 CompactionPlugin 检查 should_run，然后运行。"""
-        from mcs.interfaces.compaction_plugin import CompactionPluginInterface
+        from mcs.core.plugin import PluginType
 
-        plugins = self.plugin_manager.get_all(CompactionPluginInterface)
+        plugins = self.plugin_manager.get_all(PluginType.COMPACTION)
         for plugin in plugins:
             if plugin.should_run(changed_nodes, self.graph):
                 plugin.run(changed_nodes, self.graph, self.llm.call)
@@ -370,7 +410,7 @@ class WritePipeline:
         检查 config.auto_persist 开关；无 StorageInterface 或 changed 为空时跳过。
         存储异常被捕获并记录警告，不影响 ingest 返回。
         """
-        from mcs.interfaces.storage import StorageInterface
+        from mcs.core.plugin import PluginType
 
         if not ctx.changed:
             return
@@ -379,7 +419,7 @@ class WritePipeline:
         if not auto_persist:
             return
 
-        storage = self.plugin_manager.get(StorageInterface)
+        storage = self.plugin_manager.get(PluginType.STORAGE)
         if storage is None:
             return
 

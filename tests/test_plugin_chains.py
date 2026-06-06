@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 
@@ -12,37 +12,38 @@ from mcs.core.plugin_manager import PluginManager
 from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
-from mcs.plugins.base import Plugin
+from mcs.core.plugin import PluginType
 
 # === EntryPlugin 优先级排序 ===
 
 
-class _Entry(Plugin, EntryPluginInterface):
-    interfaces: ClassVar[list[type]] = [EntryPluginInterface]
-
-    def initialize(self, ctx: Any) -> None:
-        return None
-
-    def shutdown(self) -> None:
-        return None
-
+class _Entry(EntryPluginInterface):
     def locate(self, query: str, ctx: Any) -> list[Node]:
         return []
 
 
 class _High(_Entry):
-    name = "high"
-    priority = 100
+    def get_name(self) -> str:
+        return "high"
+
+    def get_priority(self) -> int:
+        return 100
 
 
 class _Mid(_Entry):
-    name = "mid"
-    priority = 50
+    def get_name(self) -> str:
+        return "mid"
+
+    def get_priority(self) -> int:
+        return 50
 
 
 class _Low(_Entry):
-    name = "low"
-    priority = 0
+    def get_name(self) -> str:
+        return "low"
+
+    def get_priority(self) -> int:
+        return 0
 
 
 def test_entry_plugins_returned_in_priority_descending():
@@ -50,24 +51,31 @@ def test_entry_plugins_returned_in_priority_descending():
     pm.register(_Low())
     pm.register(_High())
     pm.register(_Mid())
-    plugins = pm.get_all(EntryPluginInterface)
-    assert [p.name for p in plugins] == ["high", "mid", "low"]
+    plugins = pm.get_all(PluginType.ENTRY)
+    assert [p.get_name() for p in plugins] == ["high", "mid", "low"]
 
 
 def test_entry_plugin_default_priority_is_zero():
     class _Default(_Entry):
-        name = "default"
+        def get_name(self) -> str:
+            return "default"
 
     p = _Default()
-    assert p.priority == 0
+    assert p.get_priority() == 0
     assert p.exclusive is False
 
 
 def test_entry_plugin_exclusive_attribute():
     class _Excl(_Entry):
-        name = "ex"
-        priority = 50
-        exclusive = True
+        def get_name(self) -> str:
+            return "ex"
+
+        def get_priority(self) -> int:
+            return 50
+
+        @property
+        def exclusive(self) -> bool:
+            return True
 
     p = _Excl()
     assert p.exclusive is True
@@ -76,29 +84,35 @@ def test_entry_plugin_exclusive_attribute():
 # === ArbitrationPlugin 单例 ===
 
 
-class _Arb(Plugin, ArbitrationPluginInterface):
-    interfaces: ClassVar[list[type]] = [ArbitrationPluginInterface]
-
-    def initialize(self, ctx):
-        return None
-
-    def shutdown(self):
-        return None
-
+class _Arb(ArbitrationPluginInterface):
     def arbitrate(self, accumulated, query, ctx):
         return accumulated
 
 
 def test_registering_first_arbitration_plugin_succeeds():
     pm = PluginManager()
-    pm.register(type("_Arb1", (_Arb,), {"name": "arb1"})())
+
+    class _Arb1(_Arb):
+        def get_name(self) -> str:
+            return "arb1"
+
+    pm.register(_Arb1())
 
 
 def test_registering_second_arbitration_plugin_raises():
     pm = PluginManager()
-    pm.register(type("_Arb1", (_Arb,), {"name": "arb1"})())
+
+    class _Arb1(_Arb):
+        def get_name(self) -> str:
+            return "arb1"
+
+    class _Arb2(_Arb):
+        def get_name(self) -> str:
+            return "arb2"
+
+    pm.register(_Arb1())
     with pytest.raises(ConfigurationError):
-        pm.register(type("_Arb2", (_Arb,), {"name": "arb2"})())
+        pm.register(_Arb2())
 
 
 # === Postprocess 输出类型自由 ===
@@ -107,15 +121,9 @@ def test_registering_second_arbitration_plugin_raises():
 def test_postprocess_can_return_arbitrary_type():
     """Postprocess 插件可以返回任意类型——框架不做约束。"""
 
-    class _ToInt(Plugin, PostprocessPluginInterface):
-        name = "to_int"
-        interfaces = [PostprocessPluginInterface]
-
-        def initialize(self, ctx):
-            pass
-
-        def shutdown(self):
-            pass
+    class _ToInt(PostprocessPluginInterface):
+        def get_name(self) -> str:
+            return "to_int"
 
         def process(self, input, ctx):
             return len(input) if hasattr(input, "__len__") else 0

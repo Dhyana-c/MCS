@@ -56,15 +56,15 @@ class QueryEngine:
     """
 
     def __init__(
-        self,
-        graph: GraphStore,
-        llm: LLMInterface,
-        plugin_manager: PluginManager,
-        token_budget: TokenBudget,
-        max_rounds: int = 5,
-        max_picked: int = 50,
-        system_prompt: str = "",
-        seed_bounding: bool = False,
+            self,
+            graph: GraphStore,
+            llm: LLMInterface,
+            plugin_manager: PluginManager,
+            token_budget: TokenBudget,
+            max_rounds: int = 5,
+            max_picked: int = 50,
+            system_prompt: str = "",
+            seed_bounding: bool = False,
     ):
         self.graph = graph
         self.llm = llm
@@ -78,9 +78,9 @@ class QueryEngine:
     # === 公共 API ===
 
     def query(
-        self,
-        text: str,
-        existing_context: list[Node] | None = None,
+            self,
+            text: str,
+            existing_context: list[Node] | None = None,
     ) -> Any:
         """执行 5 阶段读取管道。
 
@@ -132,10 +132,9 @@ class QueryEngine:
 
     def _locate_seeds(self, query: str, ctx: QueryContext) -> list[Node]:
         """阶段 ②：运行所有 EntryPlugins（按优先级排序），合并，裁剪。"""
-        from mcs.interfaces.entry_plugin import EntryPluginInterface
-        from mcs.interfaces.trim_plugin import TrimPluginInterface
+        from mcs.core.plugin import PluginType
 
-        entry_plugins = self.plugin_manager.get_all(EntryPluginInterface)
+        entry_plugins = self.plugin_manager.get_all(PluginType.ENTRY)
         accumulated: list[Node] = []
         seen: set[str] = set()
         exclusive_hit = False
@@ -155,7 +154,7 @@ class QueryEngine:
                 exclusive_hit = True
 
         # 如果超出预算则裁剪
-        trim = self.plugin_manager.get(TrimPluginInterface)
+        trim = self.plugin_manager.get(PluginType.TRIM)
         if trim is not None and accumulated:
             try:
                 accumulated = trim.trim(accumulated, self.token_budget.T)
@@ -165,33 +164,101 @@ class QueryEngine:
         return accumulated
 
     def _bound_seed_graph(
-        self, seeds: list[Node], ctx: QueryContext
+            self, seeds: list[Node], ctx: QueryContext
     ) -> list[Node]:
-        """种子集超容量时做**只读**收敛（查询不再改图）。
+        """种子集超容量时做分层收敛。
 
-        分层种子图已在**建图时**持久化（见 fanout_reducer 维护的持久根
-        ``__seed_root__``）；查询是只读路径，这里仅在种子超出上下文预算时按预算截断，
-        避免下游渲染超窗。真正的分层兜底由 hub_fallback 从持久根自顶向下导航提供。
+        策略：
+        1. 若存在持久虚拟根 __seed_root__ 且有 LLM，从中导航定位最相关 hub
+        2. 否则，按预算截断（保守兜底）
+
+        与 hub_fallback 协同：hub_fallback 已从 root 导航，
+        本方法仅在 hub_fallback 返回过多种子时做二次收敛。
+
+        估算口径与渲染口径一致：使用 estimate_node（含格式行、body、extensions）。
         """
         if not seeds:
             return seeds
         tb = self.token_budget
         if tb is None:
             return seeds
+
+        # 检查是否超出预算
+        used = sum(tb.estimate_node(n) for n in seeds)
+        if used <= tb.T:
+            return seeds  # 未超预算，直接返回
+
+        # 超预算：尝试从 root 导航收敛
+        from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
+        root = self.graph.get_node(SEED_ROOT_ID)
+
+        if root is not None and self.llm is not None:
+            try:
+                narrowed = self._navigate_to_relevant_hubs(seeds, root, ctx)
+                if narrowed:
+                    # 再次检查预算
+                    narrowed_used = sum(tb.estimate_node(n) for n in narrowed)
+                    if narrowed_used <= tb.T:
+                        return narrowed
+            except Exception:
+                logger.warning("导航收敛失败，回退截断")
+
+        # 兜底：按优先级截断
         kept: list[Node] = []
         used = 0
         for n in seeds:
-            used += tb.estimate(n.content or n.name)
+            used += tb.estimate_node(n)
             if used > tb.T and kept:
                 break
             kept.append(n)
         return kept
 
+    def _navigate_to_relevant_hubs(
+            self, seeds: list[Node], root: Node, ctx: QueryContext
+    ) -> list[Node]:
+        """从 root 导航到最相关的 hub 子集。
+
+        输入：超量的种子集
+        输出：预算内的相关 hub 子集
+        """
+        # 获取 root 的直接子节点（顶层 hub）
+        top_hubs = self.graph.get_out_neighbors(root.id)
+        if not top_hubs:
+            return seeds
+
+        # LLM 导航：选择最相关的顶层 hub
+        selected_ids = self.llm.call(
+            purpose="navigate_hub",
+            nodes_in=[root, *top_hubs],
+            free_args={"target": ctx.user_input},
+        ) or []
+
+        selected = [self.graph.get_node(i) for i in selected_ids]
+        selected = [n for n in selected if n is not None]
+
+        # 从选中的 hub 继续下钻
+        result: list[Node] = []
+        visited: set[str] = {root.id}
+
+        for hub in selected:
+            if hub.id in visited:
+                continue
+            visited.add(hub.id)
+
+            # 获取 hub 的概念成员
+            members = self.graph.get_out_neighbors(hub.id)
+            for m in members:
+                if m.id in visited or m.role == "hub":
+                    continue
+                result.append(m)
+
+        return result[: self.max_picked]
+
     def _traverse(
-        self,
-        seeds: list[Node],
-        query: str,
-        ctx: QueryContext,
+            self,
+            seeds: list[Node],
+            query: str,
+            ctx: QueryContext,
     ) -> list[Node]:
         """阶段 ③：BFS 遍历，带 visited 集合 + max_rounds + max_picked。"""
         if not seeds:
@@ -241,21 +308,21 @@ class QueryEngine:
         return accumulated
 
     def _arbitrate(
-        self,
-        accumulated: list[Node],
-        query: str,
-        ctx: QueryContext,
+            self,
+            accumulated: list[Node],
+            query: str,
+            ctx: QueryContext,
     ) -> list[Node]:
         """阶段 ④：≤1 个 ArbitrationPlugin；默认为直通。"""
-        from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
+        from mcs.core.plugin import PluginType
 
-        plugin = self.plugin_manager.get(ArbitrationPluginInterface)
+        plugin = self.plugin_manager.get(PluginType.ARBITRATION)
         if plugin is None:
             return list(accumulated)
         result = plugin.arbitrate(accumulated, query, ctx)
         if not isinstance(result, list):
             raise TypeError(
-                f"Arbitration plugin {plugin.name!r} returned non-list "
+                f"Arbitration plugin {plugin.get_name()!r} returned non-list "
                 f"({type(result).__name__}); arbitration must return List[Node]"
             )
         return result
@@ -277,9 +344,9 @@ class QueryEngine:
         ("query_preprocess", "query_postprocess", "write_preprocess")。
         没有该属性的插件默认为 "query_postprocess"。
         """
-        from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
+        from mcs.core.plugin import PluginType
 
-        plugins = self.plugin_manager.get_all(PostprocessPluginInterface)
+        plugins = self.plugin_manager.get_all(PluginType.POSTPROCESS)
         return [p for p in plugins if getattr(p, "position", "query_postprocess") == position]
 
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
-
 from mcs.core.config import MCSConfig
 from mcs.core.decisions import ConceptDraft, Decision
 from mcs.core.graph import GraphStore, Node
@@ -13,7 +11,6 @@ from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 from mcs.interfaces.storage import StorageInterface
-from mcs.plugins.base import Plugin
 
 
 def _build_pipelines(graph: GraphStore, mock_llm, *extra_plugins, config=None):
@@ -162,15 +159,9 @@ def test_compaction_chain_runs_when_should_run_true(empty_graph, mock_llm):
     """⑥ 当 should_run 返回 True 时，Compaction 插件的 run() 必须被调用。"""
     run_count = {"n": 0}
 
-    class _CountingCompaction(Plugin, CompactionPluginInterface):
-        name: ClassVar[str] = "counting_compaction"
-        interfaces: ClassVar[list[type]] = [CompactionPluginInterface]
-
-        def initialize(self, ctx):
-            pass
-
-        def shutdown(self):
-            pass
+    class _CountingCompaction(CompactionPluginInterface):
+        def get_name(self) -> str:
+            return "counting_compaction"
 
         def should_run(self, changed_nodes, graph):
             return bool(changed_nodes)
@@ -190,15 +181,9 @@ def test_compaction_chain_runs_when_should_run_true(empty_graph, mock_llm):
 
 
 def test_compaction_skipped_when_should_run_false(empty_graph, mock_llm):
-    class _BlockedCompaction(Plugin, CompactionPluginInterface):
-        name = "blocked"
-        interfaces = [CompactionPluginInterface]
-
-        def initialize(self, ctx):
-            pass
-
-        def shutdown(self):
-            pass
+    class _BlockedCompaction(CompactionPluginInterface):
+        def get_name(self) -> str:
+            return "blocked"
 
         def should_run(self, changed_nodes, graph):
             return False
@@ -266,24 +251,17 @@ def test_write_context_fields_populated(empty_graph, mock_llm):
 # === 阶段 ⑦ 自动落盘测试 ===
 
 
-class _MockStorage(Plugin, StorageInterface):
+class _MockStorage(StorageInterface):
     """用于测试的 mock 存储插件。"""
 
-    name: ClassVar[str] = "mock_storage"
-    interfaces: ClassVar[list[type]] = [StorageInterface]
+    def get_name(self) -> str:
+        return "mock_storage"
 
     def __init__(self, config=None):
-        super().__init__(config)
         self.saved_nodes: list[Node] = []
         self.saved_edges: list = []
         self._load_graph: GraphStore | None = None
         self._load_raise: Exception | None = None
-
-    def initialize(self, context):
-        pass
-
-    def shutdown(self):
-        pass
 
     def save(self, graph):
         pass

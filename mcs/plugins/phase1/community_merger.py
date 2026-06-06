@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
+from mcs.core.plugin import PluginType
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
-from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginContext
 
 
-class CommunityMergerPlugin(Plugin, CompactionPluginInterface):
+class CommunityMergerPlugin(CompactionPluginInterface):
     """Detect and merge densely connected node clusters.
 
     This plugin uses a lightweight heuristic to identify communities:
@@ -36,10 +36,6 @@ class CommunityMergerPlugin(Plugin, CompactionPluginInterface):
     The goal is to improve cross-document connectivity by creating
     bridge nodes that connect dense clusters.
     """
-
-    name: ClassVar[str] = "community_merger"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [CompactionPluginInterface]
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
@@ -53,11 +49,20 @@ class CommunityMergerPlugin(Plugin, CompactionPluginInterface):
         # Whether to merge cross-document communities only
         self.cross_doc_only: bool = cfg.get("cross_doc_only", True)
 
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "community_merger"
+
+    # === 插件生命周期 ===
+
     def initialize(self, context: PluginContext) -> None:
         pass
 
     def shutdown(self) -> None:
         pass
+
+    # === CompactionPluginInterface ===
 
     def should_run(self, changed_nodes: list[Node], graph: GraphStore) -> bool:
         """Check if there are dense communities to merge."""

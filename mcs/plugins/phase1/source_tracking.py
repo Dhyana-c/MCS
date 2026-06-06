@@ -13,12 +13,12 @@ import ast
 import hashlib
 import re
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
+from mcs.core.plugin import PluginType
 from mcs.interfaces.node_extension import NodeExtensionInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
-from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
     from mcs.core.graph import GraphStore, Node
@@ -43,7 +43,7 @@ class Source:
 # 历史 db 里 source 曾被 ``json.dumps(default=str)`` 存成 ``Source(...)`` repr 字符串。
 # 用正则定位每个 ``key=<python字面量>``，再 ast.literal_eval 还原（天然处理引号转义/None）。
 _SOURCE_KV_RE = re.compile(
-    r"(\w+)\s*=\s*('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"|None|\d+)"
+    r"(\w+)\s*=\s*(\'(?:[^\'\\]|\\.)*\'|\"(?:[^\"\\]|\\.)*\"|None|\d+)"
 )
 
 
@@ -81,7 +81,6 @@ def _coerce_source(s: Any) -> Source | None:
 
 
 class SourceTrackingPlugin(
-    Plugin,
     NodeExtensionInterface,
     StorageSchemaExtensionInterface,
 ):
@@ -91,25 +90,31 @@ class SourceTrackingPlugin(
     消费者可以将答案归因于来源块。
     """
 
-    name: ClassVar[str] = "source_tracking"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [
-        NodeExtensionInterface,
-        StorageSchemaExtensionInterface,
-    ]
-
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.storage: Any = None
         self.graph: GraphStore | None = None
 
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "source_tracking"
+
+    def get_type(self) -> PluginType:
+        # 多接口插件，返回主类型
+        return PluginType.NODE_EXTENSION
+
+    def get_types(self) -> set[PluginType]:
+        # 同时实现 NodeExtension 与 StorageSchemaExtension，两类型都登记
+        return {PluginType.NODE_EXTENSION, PluginType.STORAGE_SCHEMA_EXT}
+
     # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
-        from mcs.interfaces.storage import StorageInterface
+        from mcs.core.plugin import PluginType
 
         self.graph = context.graph
-        self.storage = context.plugin_manager.get(StorageInterface)
+        self.storage = context.plugin_manager.get(PluginType.STORAGE)
 
     def shutdown(self) -> None:
         self.storage = None
@@ -145,7 +150,7 @@ class SourceTrackingPlugin(
     def render(self, node: Node, purpose: str) -> str | None:
         if purpose != "synthesize":
             return None
-        sources = (node.extensions or {}).get(self.name, {}).get("sources", [])
+        sources = (node.extensions or {}).get(self.get_name(), {}).get("sources", [])
         if not sources:
             return None
         refs = []
@@ -206,7 +211,7 @@ class SourceTrackingPlugin(
         if self.graph is None:
             return
         for node in self.graph.get_all_nodes():
-            slot = (node.extensions or {}).get(self.name, {})
+            slot = (node.extensions or {}).get(self.get_name(), {})
             sources = slot.get("sources", [])
             if not sources:
                 continue
@@ -226,7 +231,7 @@ class SourceTrackingPlugin(
         """
         orphans: list[str] = []
         for node in graph.get_all_nodes():
-            slot = (node.extensions or {}).get(self.name, {})
+            slot = (node.extensions or {}).get(self.get_name(), {})
             if not slot.get("sources"):
                 orphans.append(node.id)
         for nid in orphans:
@@ -234,7 +239,7 @@ class SourceTrackingPlugin(
         return orphans
 
 
-class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
+class IdempotencyCheckPlugin(PostprocessPluginInterface):
     """写入阶段 ① 的幂等性检查。
 
     计算内容哈希并查询存储的 ``document_chunks`` 表；如果该块
@@ -243,28 +248,36 @@ class IdempotencyCheckPlugin(Plugin, PostprocessPluginInterface):
     以供后续附加。
     """
 
-    name: ClassVar[str] = "idempotency_check"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [PostprocessPluginInterface]
-    position: ClassVar[str] = "write_preprocess"
-
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.storage: Any = None
         self.source_tracking: SourceTrackingPlugin | None = None
 
-    def initialize(self, context: PluginContext) -> None:
-        from mcs.interfaces.storage import StorageInterface
+    # === Plugin 基类方法 ===
 
-        self.storage = context.plugin_manager.get(StorageInterface)
+    def get_name(self) -> str:
+        return "idempotency_check"
+
+    @property
+    def position(self) -> str:
+        return "write_preprocess"
+
+    # === 插件生命周期 ===
+
+    def initialize(self, context: PluginContext) -> None:
+        from mcs.core.plugin import PluginType
+
+        self.storage = context.plugin_manager.get(PluginType.STORAGE)
         # 通过接口定位 SourceTracking 插件
-        for p in context.plugin_manager.get_all(NodeExtensionInterface):
+        for p in context.plugin_manager.get_all(PluginType.NODE_EXTENSION):
             if isinstance(p, SourceTrackingPlugin):
                 self.source_tracking = p
                 break
 
     def shutdown(self) -> None:
         self.storage = None
+
+    # === PostprocessPluginInterface ===
 
     def process(self, input: Any, ctx: Any) -> Any:
         text = input if isinstance(input, str) else ""

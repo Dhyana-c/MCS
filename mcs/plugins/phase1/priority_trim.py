@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
+from mcs.core.plugin import PluginType
 from mcs.interfaces.trim_plugin import TrimPluginInterface
-from mcs.plugins.base import Plugin
 
 if TYPE_CHECKING:
     from mcs.core.graph import Node
@@ -17,22 +17,27 @@ if TYPE_CHECKING:
     from mcs.core.token_budget import TokenBudget
 
 
-class PriorityTrimPlugin(Plugin, TrimPluginInterface):
+class PriorityTrimPlugin(TrimPluginInterface):
     """按优先级顺序保留节点，丢弃超出预算的尾部。"""
-
-    name: ClassVar[str] = "priority_trim"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [TrimPluginInterface]
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.token_budget: TokenBudget | None = None
+
+    # === Plugin 基类方法 ===
+
+    def get_name(self) -> str:
+        return "priority_trim"
+
+    # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
         self.token_budget = context.token_budget
 
     def shutdown(self) -> None:
         self.token_budget = None
+
+    # === TrimPluginInterface ===
 
     def trim(self, nodes: list[Node], budget: int) -> list[Node]:
         if not nodes:
@@ -48,8 +53,12 @@ class PriorityTrimPlugin(Plugin, TrimPluginInterface):
         return result
 
     def _estimate(self, node: Node) -> int:
+        """估算单个节点的渲染 token（口径与渲染一致）。"""
         if self.token_budget is not None:
-            return self.token_budget.estimate(node.content or node.name)
-        # 未初始化时的回退。
-        text = node.content or node.name or ""
+            return self.token_budget.estimate_node(node)
+        # 未初始化时的回退：使用 ContextRenderer.render_node_full（保守估算）
+        from mcs.core.context_renderer import ContextRenderer
+        text = ContextRenderer.render_node_full(
+            node, purpose="decide_hub", is_focus=True, extensions=None
+        )
         return max(1, len(text) // 2)

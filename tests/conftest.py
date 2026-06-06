@@ -12,21 +12,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
 
 from mcs.core.config import MCSConfig
-from mcs.core.decisions import ConceptDraft, Decision, HubDecision
+from mcs.core.decisions import ConceptDraft, Decision, MultiHubDecision
 from mcs.core.graph import Edge, GraphStore, Node
 from mcs.interfaces.llm import LLMInterface
-from mcs.plugins.base import Plugin
 
 
 def _default_for_purpose(purpose: str) -> Any:
     """为每个目的返回合理的空/默认值，以便未识别的目的返回安全值而非抛出异常。"""
     if purpose == "decide_hub":
-        return HubDecision(hub_id=None)
+        return MultiHubDecision()
     if purpose in {"synthesize", "gen_summary"}:
         return ""
     # extract_concepts, judge_relations, decide_directions, navigate_hub,
@@ -34,21 +33,20 @@ def _default_for_purpose(purpose: str) -> Any:
     return []
 
 
-class MockLLM(Plugin, LLMInterface):
+class MockLLM(LLMInterface):
     """可编程的 LLM 桩，用于测试。
 
     直接覆写 ``call``（绕过提示词组装），以便测试可以注入类型化的返回值。
     调用记录保存在 ``call_log`` 中。
     """
 
-    name: ClassVar[str] = "mock_llm"
-    version: ClassVar[str] = "0.1.0"
-    interfaces: ClassVar[list[type]] = [LLMInterface]
-
     def __init__(self, config: dict | None = None) -> None:
-        super().__init__(config)
+        self.config = config or {}
         self._typed: dict[str, Any] = {}
         self.call_log: list[dict] = []
+
+    def get_name(self) -> str:
+        return "mock_llm"
 
     def initialize(self, context: Any) -> None:
         self.attach_renderer(context.context_renderer)
@@ -161,7 +159,7 @@ __all__ = [
     "MockLLM",
     "ConceptDraft",
     "Decision",
-    "HubDecision",
+    "MultiHubDecision",
     "Edge",
     "Node",
 ]

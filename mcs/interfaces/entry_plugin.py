@@ -5,32 +5,50 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar
+from abc import abstractmethod
+from typing import TYPE_CHECKING, Any
+
+from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
     from mcs.core.graph import Node
 
 
-class EntryPluginInterface(ABC):
+class EntryPluginInterface(Plugin):
     """为查询流水线定位种子节点。
 
-    子类设置 ``priority``（数值越大优先级越高），并可设置 ``exclusive=True``
-    以在非空命中时短路低优先级插件。
+    继承 Plugin，实现 get_type() 返回 ENTRY，
+    并定义 locate() 作为核心方法。
 
     查询流水线按优先级顺序执行所有已注册的 EntryPlugin。它们的输出
-    被合并（按优先级排序）并裁剪以适应 ``token_budget.T``，
+    被合并（按优先级排序）并裁剪以适应 token_budget.T，
     然后进入阶段 ③ 语义循环。
     """
 
-    priority: ClassVar[int] = 0
-    exclusive: ClassVar[bool] = False
+    def get_type(self) -> PluginType:
+        return PluginType.ENTRY
+
+    def execute(self, **kwargs) -> Any:
+        """统一入口，委托给 locate()。"""
+        return self.locate(
+            query=kwargs["query"],
+            ctx=kwargs.get("ctx"),
+        )
 
     @abstractmethod
     def locate(self, query: str, ctx: Any) -> list[Node]:
-        """返回 ``query`` 的候选种子节点。
+        """返回 query 的候选种子节点。
 
-        ``ctx`` 是 QueryContext。返回空列表表示此插件未找到任何内容
+        ctx 是 QueryContext。返回空列表表示此插件未找到任何内容
         —— 链式调用继续到低优先级插件。
         """
         pass
+
+    @property
+    def exclusive(self) -> bool:
+        """是否独占。默认 False。
+
+        当 exclusive=True 且此插件返回非空结果时，
+        框架将跳过优先级更低的 EntryPlugin。
+        """
+        return False

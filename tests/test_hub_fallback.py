@@ -9,15 +9,16 @@ from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
 
 
 def _hub_graph() -> GraphStore:
-    """根枢纽 h → {c1, c2}（c1 再挂一个 g1）。"""
+    """根枢纽 h → {c1, c2}（c1 再挂一个 g1）。使用有向下行边构建层级。"""
     g = GraphStore()
     g.add_node(Node(id="h", name="根枢纽", content="顶层", role="hub"))
     g.add_node(Node(id="c1", name="子概念1", content="..."))
     g.add_node(Node(id="c2", name="子概念2", content="..."))
     g.add_node(Node(id="g1", name="孙概念1", content="..."))
-    g.add_edge("h", "c1")
-    g.add_edge("h", "c2")
-    g.add_edge("c1", "g1")
+    # 层级边使用 out 方向
+    g.add_edge("h", "c1", direction="out")
+    g.add_edge("h", "c2", direction="out")
+    g.add_edge("c1", "g1", direction="out")
     return g
 
 
@@ -95,9 +96,10 @@ def test_navigates_from_persistent_root(mock_llm):
     g.add_node(Node(id="t1", name="顶层1", content="..."))
     g.add_node(Node(id="t2", name="顶层2", content="..."))
     g.add_node(Node(id="leaf", name="叶", content="..."))
-    g.add_edge(SEED_ROOT_ID, "t1")
-    g.add_edge(SEED_ROOT_ID, "t2")
-    g.add_edge("t1", "leaf")
+    # 层级边使用 out 方向
+    g.add_edge(SEED_ROOT_ID, "t1", direction="out")
+    g.add_edge(SEED_ROOT_ID, "t2", direction="out")
+    g.add_edge("t1", "leaf", direction="out")
     plugin = HubFallbackEntryPlugin()
     _init(plugin, g, mock_llm)
     routes = {SEED_ROOT_ID: ["t1"], "t1": ["leaf"]}
@@ -122,9 +124,11 @@ def test_root_present_no_llm_returns_children(mock_llm):
     g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub"))
     g.add_node(Node(id="t1", name="顶层1", content="..."))
     g.add_node(Node(id="t2", name="顶层2", content="..."))
-    g.add_edge(SEED_ROOT_ID, "t1")
-    g.add_edge(SEED_ROOT_ID, "t2")
+    # 层级边使用 out 方向
+    g.add_edge(SEED_ROOT_ID, "t1", direction="out")
+    g.add_edge(SEED_ROOT_ID, "t2", direction="out")
     plugin = HubFallbackEntryPlugin({"use_llm_navigation": False})
     _init(plugin, g, mock_llm)
     seeds = plugin.locate("q", None)
+    # 根的 out 邻居是 t1, t2
     assert {n.id for n in seeds} == {"t1", "t2"}
