@@ -24,6 +24,7 @@ from typing import Any
 from mcs.core.config import MCSConfig
 from mcs.core.context_renderer import ContextRenderer
 from mcs.core.graph import GraphStore
+from mcs.core.graph_store import GraphStoreInterface, InMemoryGraphStore
 from mcs.core.plugin import Plugin, PluginType
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
@@ -31,7 +32,7 @@ from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
 
 
-__all__ = ["MCS", "MCSConfig"]
+__all__ = ["MCS", "MCSConfig", "GraphStoreInterface", "InMemoryGraphStore"]
 
 
 # 将插件"名称"（出现在 MCSConfig.plugins 中）映射到其类。
@@ -94,7 +95,7 @@ class MCS:
         self.config = config or MCSConfig.knowledge_graph()
         self._plugin_registry = plugin_registry or _default_plugin_registry()
 
-        self.graph: GraphStore = GraphStore()
+        self.graph: GraphStoreInterface = InMemoryGraphStore()
         self.token_budget: TokenBudget = TokenBudget(self.config.token_budget)
         self.plugin_manager: PluginManager = PluginManager()
         self.context_renderer: ContextRenderer = ContextRenderer(

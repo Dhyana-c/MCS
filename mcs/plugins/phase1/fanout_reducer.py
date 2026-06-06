@@ -19,7 +19,7 @@ from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import Edge, GraphStore, Node
+    from mcs.core.graph import Edge, GraphStoreInterface, Node
     from mcs.core.plugin_manager import PluginContext
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     # === CompactionPluginInterface ===
 
     def should_run(
-        self, changed_nodes: list[Node], graph: GraphStore
+        self, changed_nodes: list[Node], graph: GraphStoreInterface
     ) -> bool:
         # 1. root 始终检查（不变量含虚拟根）
         root = graph.get_node(SEED_ROOT_ID)
@@ -117,7 +117,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def run(
         self,
         changed_nodes: list[Node],
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         llm_caller: Callable,
     ) -> None:
         # 收集需检查的完整节点集：changed + 受影响 + root
@@ -141,7 +141,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             self._maintain_seed_root(changed_nodes, graph, llm_caller)
 
     def _collect_all_affected(
-        self, changed_nodes: list[Node], graph: GraphStore
+        self, changed_nodes: list[Node], graph: GraphStoreInterface
     ) -> list[Node]:
         """收集所有需守门检查的节点：changed + 受影响 + root。
 
@@ -168,7 +168,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def _compact_node(
         self,
         node: Node,
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         llm_caller: Callable,
     ) -> list[Node]:
         """对单个节点执行守门 + 裂变，不变量违反时分批循环处理。
@@ -225,7 +225,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def _guard_new_hubs(
         self,
         new_hubs: list[Node],
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         llm_caller: Callable,
     ) -> None:
         """对新 hub 递归守门检查：若新 hub 邻域仍超预算，继续裂变。
@@ -270,7 +270,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def _maintain_seed_root(
         self,
         changed_nodes: list[Node],
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         llm_caller: Callable,
     ) -> None:
         """维护持久虚拟根 + 递归分层种子图。
@@ -340,7 +340,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             if nd not in changed_nodes:
                 changed_nodes.append(nd)
 
-    def _absorb_hub_edges(self, graph: GraphStore) -> None:
+    def _absorb_hub_edges(self, graph: GraphStoreInterface) -> None:
         """hub 复用（边吸收）：一跳子节点 ⊇ hub 全部成员的节点改连 hub。
 
         若某节点 X 的一跳子节点集合包含 hub H 的全部成员 M（M ⊆ children(X)），
@@ -484,7 +484,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         return False
 
     def _find_similar_hub(
-        self, summary: str, graph: GraphStore, threshold: float = 0.7
+        self, summary: str, graph: GraphStoreInterface, threshold: float = 0.7
     ) -> Node | None:
         """查找与给定摘要近似的既有 hub（简单词重叠）。
 
@@ -508,7 +508,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         return None
 
     def _reorganize(
-        self, node: Node, hub: Node, members: list[Node], graph: GraphStore
+        self, node: Node, hub: Node, members: list[Node], graph: GraphStoreInterface
     ) -> None:
         """有向层级重组：把 ``members`` 从 ``node`` 改挂到 ``hub``，产出有向层级边。
 
@@ -537,7 +537,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         node: Node,
         decision: Any,
         neighbors: list[Node],
-        graph: GraphStore,
+        graph: GraphStoreInterface,
     ) -> list[Node]:
         """一进多出重组：根据 MultiHubDecision 一次造多个 hub。
 
@@ -614,7 +614,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         node: Node,
         rep: Node,
         members: list[Node],
-        graph: GraphStore,
+        graph: GraphStoreInterface,
     ) -> None:
         """合并同义概念：把 members 的内容/边合并到 rep，删除 members。
 
@@ -667,7 +667,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         )
 
     def _migrate_edges(
-        self, old_id: str, new_id: str, graph: GraphStore
+        self, old_id: str, new_id: str, graph: GraphStoreInterface
     ) -> None:
         """把 old_id 的所有边迁移到 new_id，避免悬空边。
 
@@ -704,7 +704,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         self,
         before_nodes: int,
         before_edges: int,
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         rollback_state: dict | None = None,
         center_node_id: str | None = None,
         before_token_total: int | None = None,
@@ -776,7 +776,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
 
         return True
 
-    def _rollback_reorg(self, graph: GraphStore, state: dict) -> None:
+    def _rollback_reorg(self, graph: GraphStoreInterface, state: dict) -> None:
         """回滚重组操作。
 
         Args:
@@ -798,7 +798,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def _create_hub_from_community(
         self,
         community: Any,
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         neighbors: list[Node],
     ) -> Node | None:
         """从社区信息创建/提拔 hub。

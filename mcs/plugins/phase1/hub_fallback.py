@@ -15,7 +15,7 @@ from mcs.core.plugin import PluginType
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStore, Node
+    from mcs.core.graph import GraphStoreInterface, Node
     from mcs.core.plugin_manager import PluginContext
 
 
@@ -25,7 +25,7 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         cfg = config or {}
-        self.graph: GraphStore | None = None
+        self.graph: GraphStoreInterface | None = None
         self.llm: Any = None
         self.max_seeds: int = cfg.get("max_seeds", 10)
         self.max_depth: int = cfg.get("max_depth", 3)

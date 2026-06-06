@@ -21,7 +21,7 @@ from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import GraphStore, Node
+    from mcs.core.graph import GraphStoreInterface, Node
     from mcs.core.plugin_manager import PluginContext
 
 
@@ -64,7 +64,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
 
     # === CompactionPluginInterface ===
 
-    def should_run(self, changed_nodes: list[Node], graph: GraphStore) -> bool:
+    def should_run(self, changed_nodes: list[Node], graph: GraphStoreInterface) -> bool:
         """Check if there are dense communities to merge."""
         # Always check for communities after ingest
         return len(changed_nodes) > 0
@@ -72,7 +72,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
     def run(
         self,
         changed_nodes: list[Node],
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         llm_caller: Callable,
     ) -> None:
         """Detect and merge communities."""
@@ -111,7 +111,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
                 self._reorganize_community(node, hub, neighbors, graph)
                 merges_done += 1
 
-    def _find_community_centers(self, graph: GraphStore) -> list[tuple[Node, int]]:
+    def _find_community_centers(self, graph: GraphStoreInterface) -> list[tuple[Node, int]]:
         """Find nodes that could be community centers (high degree)."""
         candidates = []
         for node in graph.get_all_nodes():
@@ -123,7 +123,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
         return candidates
 
     def _calc_clustering_coefficient(
-        self, node_id: str, neighbors: list[Node], graph: GraphStore
+        self, node_id: str, neighbors: list[Node], graph: GraphStoreInterface
     ) -> float:
         """Calculate local clustering coefficient.
 
@@ -159,7 +159,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
         self,
         center: Node,
         neighbors: list[Node],
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         llm_caller: Callable,
     ) -> Node | None:
         """Create a hub node for the community.
@@ -206,7 +206,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
         return hub
 
     def _reorganize_community(
-        self, center: Node, hub: Node, members: list[Node], graph: GraphStore
+        self, center: Node, hub: Node, members: list[Node], graph: GraphStoreInterface
     ) -> None:
         """Reorganize community into star topology around hub."""
         # Connect center to hub

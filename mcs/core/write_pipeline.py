@@ -25,7 +25,7 @@ from mcs.core.errors import InvalidDecisionError, UnknownActionError
 
 if TYPE_CHECKING:
     from mcs.core.config import MCSConfig
-    from mcs.core.graph import GraphStore, Node
+    from mcs.core.graph import GraphStoreInterface, Node
     from mcs.core.plugin_manager import PluginManager
     from mcs.core.query_engine import QueryEngine
     from mcs.core.token_budget import TokenBudget
@@ -77,7 +77,7 @@ class WritePipeline:
 
     def __init__(
         self,
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         llm: LLMInterface,
         query_engine: QueryEngine,
         plugin_manager: PluginManager,

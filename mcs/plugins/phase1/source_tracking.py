@@ -21,7 +21,7 @@ from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStore, Node
+    from mcs.core.graph import GraphStoreInterface, Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.write_pipeline import WritePipeline
 
@@ -93,7 +93,7 @@ class SourceTrackingPlugin(
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.storage: Any = None
-        self.graph: GraphStore | None = None
+        self.graph: GraphStoreInterface | None = None
 
     # === Plugin 基类方法 ===
 
@@ -224,7 +224,7 @@ class SourceTrackingPlugin(
                     kept.append(s)
             slot["sources"] = kept
 
-    def purge_orphans(self, graph: GraphStore) -> list[str]:
+    def purge_orphans(self, graph: GraphStoreInterface) -> list[str]:
         """移除来源槽位为空的节点（无存活的证据）。
 
         必须在批量文档更新后显式调用。

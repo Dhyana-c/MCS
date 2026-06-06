@@ -16,7 +16,7 @@ from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import GraphStore, Node
+    from mcs.core.graph import GraphStoreInterface, Node
     from mcs.core.plugin_manager import PluginContext
 
 
@@ -45,14 +45,14 @@ class SummaryRegenPlugin(CompactionPluginInterface):
     # === CompactionPluginInterface ===
 
     def should_run(
-        self, changed_nodes: list[Node], graph: GraphStore
+        self, changed_nodes: list[Node], graph: GraphStoreInterface
     ) -> bool:
         return any(self._needs_summary(n) for n in changed_nodes)
 
     def run(
         self,
         changed_nodes: list[Node],
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         llm_caller: Callable,
     ) -> None:
         for node in changed_nodes:

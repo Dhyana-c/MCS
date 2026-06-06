@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStore, Node
+    from mcs.core.graph import GraphStoreInterface, Node
 
 
 class CompactionPluginInterface(Plugin):
@@ -39,7 +39,7 @@ class CompactionPluginInterface(Plugin):
             )
 
     @abstractmethod
-    def should_run(self, changed_nodes: list[Node], graph: GraphStore) -> bool:
+    def should_run(self, changed_nodes: list[Node], graph: GraphStoreInterface) -> bool:
         """如果当前状态需要运行此压缩，则返回 True。"""
         pass
 
@@ -47,7 +47,7 @@ class CompactionPluginInterface(Plugin):
     def run(
         self,
         changed_nodes: list[Node],
-        graph: GraphStore,
+        graph: GraphStoreInterface,
         llm_caller: Callable,
     ) -> None:
         """应用压缩。可以修改图并发出 LLM 调用。

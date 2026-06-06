@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStore, Node
+    from mcs.core.graph import GraphStoreInterface, Node
     from mcs.core.plugin_manager import PluginManager
     from mcs.core.token_budget import TokenBudget
     from mcs.interfaces.llm import LLMInterface
@@ -57,7 +57,7 @@ class QueryEngine:
 
     def __init__(
             self,
-            graph: GraphStore,
+            graph: GraphStoreInterface,
             llm: LLMInterface,
             plugin_manager: PluginManager,
             token_budget: TokenBudget,

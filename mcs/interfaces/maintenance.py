@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStore
+    from mcs.core.graph import GraphStoreInterface
 
 
 class MaintenanceInterface(Plugin):
@@ -25,7 +25,7 @@ class MaintenanceInterface(Plugin):
         return self.run(kwargs["graph"])
 
     @abstractmethod
-    def run(self, graph: GraphStore) -> None:
+    def run(self, graph: GraphStoreInterface) -> None:
         """执行维护任务。"""
         pass
 

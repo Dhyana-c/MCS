@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Edge, GraphStore, Node
+    from mcs.core.graph import Edge, GraphStoreInterface, Node
     from mcs.core.plugin_manager import PluginContext
 
 
@@ -39,12 +39,12 @@ class StorageInterface(Plugin):
         pass
 
     @abstractmethod
-    def save(self, graph: GraphStore) -> None:
+    def save(self, graph: GraphStoreInterface) -> None:
         """持久化整个图（冷快照）。"""
         pass
 
     @abstractmethod
-    def load(self) -> GraphStore:
+    def load(self) -> GraphStoreInterface:
         """从存储中加载图。"""
         pass
 
@@ -66,7 +66,7 @@ class StorageInterface(Plugin):
         """
         return None
 
-    def save_full(self, graph: GraphStore) -> None:
+    def save_full(self, graph: GraphStoreInterface) -> None:
         """全量重建持久化：使持久存储与当前内存图完全一致（含删除）。
 
         增量 save_node / save_edge 只 upsert、不删行，无法反映图手术（如分层

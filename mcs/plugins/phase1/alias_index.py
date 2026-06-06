@@ -19,7 +19,7 @@ from mcs.interfaces.node_extension import NodeExtensionInterface
 from mcs.utils.tokenizer import ChineseTokenizer
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStore, Node
+    from mcs.core.graph import GraphStoreInterface, Node
     from mcs.core.plugin_manager import PluginContext
 
 
@@ -34,7 +34,7 @@ class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):
         super().__init__(config)
         self.index: dict[str, set[str]] = {}
         self.tokenizer: ChineseTokenizer | None = None
-        self.graph: GraphStore | None = None
+        self.graph: GraphStoreInterface | None = None
 
     # === Plugin 基类方法 ===
 
@@ -74,7 +74,7 @@ class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):
 
     # === IndexInterface ===
 
-    def build(self, graph: GraphStore) -> None:
+    def build(self, graph: GraphStoreInterface) -> None:
         self.index.clear()
         for node in graph.get_all_nodes():
             self.add_entry(node)
@@ -132,7 +132,7 @@ class AliasEntryPlugin(EntryPluginInterface):
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.alias_index: AliasIndexPlugin | None = None
-        self.graph: GraphStore | None = None
+        self.graph: GraphStoreInterface | None = None
 
     # === Plugin 基类方法 ===
 

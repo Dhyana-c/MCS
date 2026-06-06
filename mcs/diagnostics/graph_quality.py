@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass, asdict
 from typing import TextIO
 
-from mcs.core.graph import GraphStore, Node, Edge
+from mcs.core.graph import GraphStoreInterface, Node, Edge
 
 
 @dataclass
@@ -80,7 +80,7 @@ def _get_node_doc_id(node: Node) -> str | None:
     return None
 
 
-def _compute_connected_components(graph: GraphStore) -> list[set[str]]:
+def _compute_connected_components(graph: GraphStoreInterface) -> list[set[str]]:
     """Find all connected components using BFS.
 
     Returns a list of sets, each set containing node IDs in one component.
@@ -116,11 +116,11 @@ def _compute_connected_components(graph: GraphStore) -> list[set[str]]:
     return components
 
 
-def diagnose_graph(graph: GraphStore) -> GraphQualityReport:
+def diagnose_graph(graph: GraphStoreInterface) -> GraphQualityReport:
     """Compute structural connectivity metrics for a graph.
 
     Args:
-        graph: The GraphStore to analyze
+        graph: The GraphStoreInterface to analyze
 
     Returns:
         GraphQualityReport with all computed metrics
@@ -198,9 +198,10 @@ def diagnose_from_db(db_path: str) -> GraphQualityReport:
     """
     import sqlite3
 
-    from mcs.core.graph import GraphStore, Node, Edge
+    from mcs.core.graph_store import InMemoryGraphStore
+    from mcs.core.graph import Node, Edge
 
-    graph = GraphStore()
+    graph = InMemoryGraphStore()
     conn = sqlite3.connect(db_path)
 
     # Load nodes
