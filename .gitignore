@@ -40,5 +40,13 @@ Thumbs.db
 *.log
 bench_output/
 multihop_*_output/
+
+# Bench outputs (keep .gitkeep)
+bench/*/outputs/
+!bench/*/outputs/.gitkeep
+
+# Bench data files (not committed)
+bench/*/data/*.json
+
 _debug_*.py
 _run_*.py

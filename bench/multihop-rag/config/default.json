@@ -1,0 +1,17 @@
+{
+  "corpus_path": "D:\\code\\hotpot\\MultiHopRAG\\multihoprag_corpus.json",
+  "queries_path": "D:\\code\\hotpot\\MultiHopRAG\\multihoprag_qa.json",
+  "corpus_subset": 200,
+  "llm_backend": "deepseek",
+  "token_budget": 8000,
+  "k_values": [2, 4, 10],
+  "max_chunks_per_doc": 8,
+  "whole_doc": false,
+  "resume": true,
+  "exclude_null": false,
+  "rerank": true,
+  "rerank_top_n": 50,
+  "rerank_min_score": 0.0,
+  "doc_rerank": false,
+  "doc_rerank_top_n": null
+}
