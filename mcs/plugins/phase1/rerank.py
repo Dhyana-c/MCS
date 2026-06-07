@@ -153,10 +153,6 @@ class RerankPlugin(PostprocessPluginInterface):
     def get_name(self) -> str:
         return "rerank"
 
-    @property
-    def position(self) -> str:
-        return "query_postprocess"
-
     # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:

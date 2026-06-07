@@ -14,13 +14,14 @@ from mcs.core.plugin import Plugin, PluginType
 class PostprocessPluginInterface(Plugin):
     """可链式处理器：process(input, ctx) -> Any。
 
-    挂载点：
-      - 读取流水线阶段 ⑤（仲裁后，输出类型不受约束）
-      - 写入流水线阶段 ①（作为预处理器，例如摘要生成、
-        幂等性检查；输入/输出均为 str 或携带状态）
+    专用于后置处理：
+      - 查询管线阶段 ⑤（仲裁后，输出类型不受约束）
+      - 写入管线阶段 ⑦（持久化后的后处理，如有）
 
     链中的插件串行执行；每个插件的输出成为下一个插件的输入。
     输入/输出类型不受约束，只需可链式连接即可。
+
+    注意：前置处理请使用 PreprocessPluginInterface。
     """
 
     def get_type(self) -> PluginType:
@@ -40,8 +41,3 @@ class PostprocessPluginInterface(Plugin):
         ctx 是 QueryContext / WriteContext 或兼容的状态对象。
         """
         pass
-
-    @property
-    def position(self) -> str:
-        """挂载位置。默认 query_postprocess。"""
-        return "query_postprocess"

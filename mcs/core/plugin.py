@@ -21,6 +21,7 @@ class PluginType(str, Enum):
     TRIM = "trim"
     ARBITRATION = "arbitration"
     POSTPROCESS = "postprocess"
+    PREPROCESS = "preprocess"
     COMPACTION = "compaction"
     INDEX = "index"
     LLM = "llm"

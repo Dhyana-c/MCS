@@ -118,17 +118,19 @@ class QueryEngine:
     # === 阶段辅助方法 ===
 
     def _run_preprocess(self, text: str, ctx: QueryContext) -> str:
-        """阶段 ①：将文本作为输入的串行 PostprocessPlugin 链。
+        """阶段 ①：将文本作为输入的串行 PreprocessPlugin 链。
 
         注意：读取管道预处理插件接收字符串并返回（可能转换的）字符串。
         不修改文本的插件应返回未更改的文本。
         """
-        plugins = self._read_chain_for_position("query_preprocess")
+        from mcs.core.plugin import PluginType
+
+        plugins = self.plugin_manager.get_all(PluginType.PREPROCESS)
         if not plugins:
             return text
         result: Any = text
         for plugin in plugins:
-            result = plugin.process(result, ctx)
+            result = plugin.preprocess(result, ctx)
         return result if isinstance(result, str) else text
 
     def _locate_seeds(self, query: str, ctx: QueryContext) -> list[Node]:
@@ -330,25 +332,15 @@ class QueryEngine:
 
     def _run_postprocess(self, selected: list[Node], ctx: QueryContext) -> Any:
         """阶段 ⑤：针对查询位置的串行 PostprocessPlugin 链。"""
-        plugins = self._read_chain_for_position("query_postprocess")
+        from mcs.core.plugin import PluginType
+
+        plugins = self.plugin_manager.get_all(PluginType.POSTPROCESS)
         if not plugins:
             return selected
         result: Any = selected
         for plugin in plugins:
             result = plugin.process(result, ctx)
         return result
-
-    def _read_chain_for_position(self, position: str) -> list:
-        """解析哪些 PostprocessPlugins 挂载在 ``position``。
-
-        第一阶段约定：插件属性 ``position`` (str) 选择挂载点
-        ("query_preprocess", "query_postprocess", "write_preprocess")。
-        没有该属性的插件默认为 "query_postprocess"。
-        """
-        from mcs.core.plugin import PluginType
-
-        plugins = self.plugin_manager.get_all(PluginType.POSTPROCESS)
-        return [p for p in plugins if getattr(p, "position", "query_postprocess") == position]
 
 
 def _summarize_for_prompt(nodes: list[Node]) -> str:

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from mcs.core.plugin import PluginType
 from mcs.interfaces.node_extension import NodeExtensionInterface
-from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
+from mcs.interfaces.preprocess_plugin import PreprocessPluginInterface
 from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
 
 if TYPE_CHECKING:
@@ -244,7 +244,7 @@ class SourceTrackingPlugin(
         return orphans
 
 
-class IdempotencyCheckPlugin(PostprocessPluginInterface):
+class IdempotencyCheckPlugin(PreprocessPluginInterface):
     """写入阶段 ① 的幂等性检查。
 
     计算内容哈希并查询存储的 ``document_chunks`` 表；如果该块
@@ -262,10 +262,6 @@ class IdempotencyCheckPlugin(PostprocessPluginInterface):
 
     def get_name(self) -> str:
         return "idempotency_check"
-
-    @property
-    def position(self) -> str:
-        return "write_preprocess"
 
     # === 插件生命周期 ===
 
@@ -286,10 +282,9 @@ class IdempotencyCheckPlugin(PostprocessPluginInterface):
     def shutdown(self) -> None:
         self.storage = None
 
-    # === PostprocessPluginInterface ===
+    # === PreprocessPluginInterface ===
 
-    def process(self, input: Any, ctx: Any) -> Any:
-        text = input if isinstance(input, str) else ""
+    def preprocess(self, text: str, ctx: Any) -> str:
         metadata = getattr(ctx, "metadata", {}) or {}
         doc_id = metadata.get("doc_id")
         chunk_id = metadata.get("chunk_id")

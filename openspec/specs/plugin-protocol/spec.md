@@ -61,6 +61,27 @@ The system SHALL define `ArbitrationPluginInterface` with abstract method `arbit
 
 ---
 
+### Requirement: 提供 PreprocessPluginInterface 用于前置处理
+
+The system SHALL define `PreprocessPluginInterface` inheriting `Plugin`, with abstract method `preprocess(text: str, ctx) -> str`. This interface MUST be used for both query and write pipeline stage ① (text preprocessing), separate from `PostprocessPluginInterface`.
+
+#### Scenario: 接口最小契约
+
+- **WHEN** 实现一个 PreprocessPlugin
+- **THEN** 子类 MUST 提供 `preprocess` 方法；`preprocess` MUST 返回 `str`；`get_type()` MUST 返回 `PluginType.PREPROCESS`
+
+#### Scenario: 链式调用语义
+
+- **WHEN** 配置多个 PreprocessPlugin [P1, P2]
+- **THEN** 框架 MUST 调用 P1(text) → P2(P1输出)；返回 P2 的输出
+
+#### Scenario: 按类型查找前置插件
+
+- **WHEN** 调用 `plugin_manager.get_all(PluginType.PREPROCESS)`
+- **THEN** 返回值 MUST 是所有注册的 PREPROCESS 类型插件
+
+---
+
 ### Requirement: 提供 PostprocessPluginInterface 用于后置处理
 
 The system SHALL define `PostprocessPluginInterface` with abstract method `process(input: Any, ctx) -> Any`. The interface MUST NOT constrain input/output type beyond being chainable.
@@ -75,10 +96,15 @@ The system SHALL define `PostprocessPluginInterface` with abstract method `proce
 - **WHEN** 配置中注册多个 PostprocessPlugin
 - **THEN** 框架 MUST 按注册顺序串行调用；前一个的输出作为后一个的输入
 
-#### Scenario: 复用于读流程 ⑤ 和写流程 ①
+#### Scenario: PostprocessPlugin 不再有 position 属性
 
-- **WHEN** 同一个 PostprocessPlugin 类既作读后置也作写前置
-- **THEN** 框架 MUST 允许同一个类的不同实例分别挂载在两处
+- **WHEN** 检查 `PostprocessPluginInterface` 定义
+- **THEN** MUST NOT 存在 `position` 属性或 `@property def position(self) -> str` 方法
+
+#### Scenario: 管线不依赖 position 筛选
+
+- **WHEN** 检查 `QueryEngine` 和 `WritePipeline` 的 `_run_preprocess` 方法
+- **THEN** 代码 MUST NOT 包含 `getattr(p, "position", ...)` 相关逻辑
 
 ---
 
@@ -115,7 +141,7 @@ The system SHALL NOT include `PipelineHookInterface` or `QueryHookInterface` (th
 #### Scenario: 迁移路径明确
 
 - **WHEN** 一个原本依赖旧 hook 的插件（如旧 SourceTrackingPlugin 使用 `on_ingest_start` 做幂等检查）需要重写
-- **THEN** 迁移路径 MUST 明确：幂等检查迁移到写前置 PostprocessPlugin；追加 source 迁移到 ⑤ 图更新后的压缩链或独立的 NodeExtension 钩子
+- **THEN** 迁移路径 MUST 明确：幂等检查迁移到写前置 PreprocessPluginInterface；追加 source 迁移到 ⑤ 图更新后的压缩链或独立的 NodeExtension 钩子
 
 ---
 
@@ -202,7 +228,7 @@ The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting 
 
 - **WHEN** 检查 `PluginType`
 - **THEN** MUST 继承 `str` 与 `Enum`
-- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE
+- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、PREPROCESS、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE
 
 #### Scenario: 管线按 PluginType 查找
 

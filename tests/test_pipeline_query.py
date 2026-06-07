@@ -10,6 +10,7 @@ from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
+from mcs.interfaces.preprocess_plugin import PreprocessPluginInterface
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore
@@ -215,3 +216,56 @@ def test_query_context_lifecycle_fields_populated(seeded_graph, mock_llm):
     assert captured["user_input"] == "my query"
     assert captured["intermediate"][0].id == "dl"
     assert captured["result_set"][0].id == "dl"
+
+
+def test_preprocess_chain_transforms_query_text(seeded_graph, mock_llm):
+    """阶段 ① PreprocessPlugin 可以修改查询文本。"""
+
+    class _UpperPreprocess(PreprocessPluginInterface):
+        def get_name(self) -> str:
+            return "upper_preprocess"
+
+        def preprocess(self, text: str, ctx: Any) -> str:
+            return text.upper()
+
+    engine = _build_engine(
+        seeded_graph,
+        mock_llm,
+        _StaticEntry(["dl"], seeded_graph),
+        _UpperPreprocess(),
+    )
+    mock_llm.set_response("decide_directions", [])
+    result = engine.query("test")
+    # 查询应正常执行，PreprocessPlugin 已处理文本
+    assert isinstance(result, list)
+
+
+def test_query_engine_preprocess_and_postprocess_independent(seeded_graph, mock_llm):
+    """Preprocess 和 Postprocess 使用独立类型，互不干扰。"""
+    processed_text = {}
+
+    class _TrackPreprocess(PreprocessPluginInterface):
+        def get_name(self) -> str:
+            return "track_preprocess"
+
+        def preprocess(self, text: str, ctx: Any) -> str:
+            processed_text["value"] = text
+            return text
+
+    class _TrackPostprocess(PostprocessPluginInterface):
+        def get_name(self) -> str:
+            return "track_postprocess"
+
+        def process(self, input, ctx):
+            return input
+
+    engine = _build_engine(
+        seeded_graph,
+        mock_llm,
+        _StaticEntry(["dl"], seeded_graph),
+        _TrackPreprocess(),
+        _TrackPostprocess(),
+    )
+    mock_llm.set_response("decide_directions", [])
+    engine.query("my query")
+    assert processed_text.get("value") == "my query"

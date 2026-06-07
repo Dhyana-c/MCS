@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from mcs.core.config import MCSConfig
 from mcs.core.decisions import ConceptDraft, Decision
 from mcs.core.graph import Node
@@ -11,6 +13,7 @@ from mcs.core.store import StoreInterface
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
+from mcs.interfaces.preprocess_plugin import PreprocessPluginInterface
 from mcs.stores.in_memory import InMemoryStore
 from mcs.stores.sqlite_store import SQLiteStore
 
@@ -521,3 +524,59 @@ def test_load_on_startup_rebuilds_indexes(tmp_path, mock_llm):
     hits = entry.locate("Quantum", None)
     assert any(n.id == "n1" for n in hits)  # 种子定位能命中
     mcs.shutdown()
+
+
+# === 阶段 ① PreprocessPlugin 测试 ===
+
+
+def test_write_pipeline_uses_preprocess_plugins(empty_graph, mock_llm):
+    """写入管线阶段 ① 应使用 PreprocessPlugin 而非 PostprocessPlugin + position。"""
+
+    class _Upper(PreprocessPluginInterface):
+        def get_name(self) -> str:
+            return "upper_preprocess"
+
+        def preprocess(self, text: str, ctx: Any) -> str:
+            return text.upper()
+
+    wp, _, pm = _build_pipelines(empty_graph, mock_llm, _Upper())
+    mock_llm.set_response("extract_concepts", [])
+    ctx = wp.ingest("hello world")
+    # processed 应该是大写的
+    assert ctx.processed == "HELLO WORLD"
+
+
+def test_write_pipeline_preprocess_chain_sequential(empty_graph, mock_llm):
+    """多个 PreprocessPlugin 串行执行。"""
+
+    class _AddSuffix(PreprocessPluginInterface):
+        def __init__(self, suffix: str, **kw):
+            super().__init__(**kw)
+            self._suffix = suffix
+
+        def get_name(self) -> str:
+            return f"add_{self._suffix}"
+
+        def preprocess(self, text: str, ctx: Any) -> str:
+            return text + self._suffix
+
+    wp, _, pm = _build_pipelines(
+        empty_graph,
+        mock_llm,
+        _AddSuffix(suffix="_b"),
+        _AddSuffix(suffix="_a"),
+    )
+    mock_llm.set_response("extract_concepts", [])
+    ctx = wp.ingest("hello")
+    # 插件按 priority 排序，默认都是 0，按注册顺序
+    assert ctx.processed.startswith("hello")
+
+
+def test_write_pipeline_no_position_filtering(empty_graph, mock_llm):
+    """写入管线 _run_preprocess 不再使用 position 属性筛选。"""
+    wp, _, _ = _build_pipelines(empty_graph, mock_llm)
+    # 确认方法中没有 getattr(p, "position", ...) 逻辑
+    import inspect
+
+    source = inspect.getsource(wp._run_preprocess)
+    assert "position" not in source

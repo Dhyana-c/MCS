@@ -24,6 +24,27 @@ The system SHALL implement ingest as a 7-stage pipeline in this fixed order: ①
 
 ---
 
+### Requirement: 阶段 ① 使用独立的 PreprocessPlugin 类型
+
+The system SHALL modify stage ① (前置插件链) to use `PluginType.PREPROCESS` for locating plugins, instead of filtering `PostprocessPlugin` by `position` attribute.
+
+#### Scenario: 写入前置插件类型独立
+
+- **WHEN** 写入管线执行阶段 ①
+- **THEN** 框架 MUST 通过 `plugin_manager.get_all(PluginType.PREPROCESS)` 获取前置插件链
+
+#### Scenario: 写入前置插件处理文本
+
+- **WHEN** 写入前置插件链执行
+- **THEN** 每个插件的输入和输出 MUST 是 `str` 类型
+
+#### Scenario: 幂等检查插件作为 PreprocessPlugin
+
+- **WHEN** `IdempotencyCheckPlugin` 迁移为 `PreprocessPluginInterface`
+- **THEN** 该插件 MUST 实现 `preprocess(text, ctx)` 方法，返回处理后的文本或触发 `ctx.skip = True`
+
+---
+
 ### Requirement: 关联节点定位通过复用读流程实现
 
 Stage ② SHALL invoke the query pipeline internally with `processed_text` (output of stage ①) as the query string. The returned `List[Node]` becomes `WriteContext.related` and feeds stages ③④.
