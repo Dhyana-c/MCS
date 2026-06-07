@@ -373,3 +373,46 @@ The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting 
 
 ---
 
+### Requirement: PluginManager 支持注销插件
+
+`PluginManager` SHALL 提供 `unregister(name: str) -> bool` 方法，用于移除已注册的插件。
+
+#### Scenario: unregister 成功移除插件
+
+- **WHEN** 调用 `manager.unregister("existing_plugin")` 且该插件已注册
+- **THEN** MUST 从 `manager._plugins` 中移除该插件
+- **AND** MUST 从 `manager._by_type` 的所有相关类型列表中移除该插件
+- **AND** MUST 返回 `True`
+
+#### Scenario: unregister 插件不存在
+
+- **WHEN** 调用 `manager.unregister("nonexistent")`
+- **THEN** MUST 返回 `False`
+- **AND** MUST NOT 抛出异常
+
+---
+
+### Requirement: MCS 支持定向插件注册与注销
+
+`MCS` 类 SHALL 提供 `register_plugin(plugin, target)`、`register_shared_plugin(plugin)` 和 `unregister_plugin(name, target)` 方法，支持向指定管线注册和注销插件。
+
+#### Scenario: register_plugin 指定目标管线
+
+- **WHEN** 调用 `mcs.register_plugin(plugin, target="writer")`
+- **THEN** 插件 MUST 只注册到 `write_manager`
+- **AND** `read_manager.get_by_name(plugin.get_name())` MUST 返回 `None`
+
+#### Scenario: register_shared_plugin 注册到两侧
+
+- **WHEN** 调用 `mcs.register_shared_plugin(plugin)`
+- **THEN** 插件 MUST 注册到 `write_manager` 和 `read_manager` 两侧
+- **AND** 同一实例 MUST 在两个 manager 中可查
+
+#### Scenario: unregister_plugin 从指定管线移除
+
+- **WHEN** 调用 `mcs.unregister_plugin("plugin_name", target="reader")`
+- **THEN** 只从 `read_manager` 移除插件
+- **AND** 若同名插件存在于 `write_manager`，MUST NOT 受影响
+
+---
+

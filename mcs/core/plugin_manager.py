@@ -67,6 +67,26 @@ class PluginManager:
         for plugin_type in types:
             self._by_type.setdefault(plugin_type, []).append(plugin)
 
+    def unregister(self, name: str) -> bool:
+        """移除已注册的插件。
+
+        Args:
+            name: 插件名称
+
+        Returns:
+            True 如果成功移除，False 如果插件不存在
+        """
+        if name not in self._plugins:
+            return False
+        plugin = self._plugins.pop(name)
+        for plugin_type in plugin.get_types():
+            if plugin_type in self._by_type:
+                try:
+                    self._by_type[plugin_type].remove(plugin)
+                except ValueError:
+                    pass  # 已经不在列表中
+        return True
+
     def get(self, plugin_type: PluginType) -> Plugin | None:
         """返回指定类型的第一个插件（按 priority 降序）。"""
         plugins = self.get_all(plugin_type)

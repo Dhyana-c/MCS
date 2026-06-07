@@ -49,22 +49,27 @@ MCSConfig SHALL 提供 `auto_persist: bool` 字段，默认值为 True。WritePi
 
 ### Requirement: MCS 启动时自动加载已有数据
 
-MCS.initialize() SHALL 在所有插件初始化完成后检查 StorageInterface。若存在且 GraphStore 中无节点，则调用 `storage.load()` 填充 graph。
+`MCSBuilder.build()` SHALL 在所有插件初始化完成后检查 StorageInterface。若存在且 Store 中无节点，则调用 `storage.load()` 填充 store。
 
 #### Scenario: 图为空时自动加载
 
-- **WHEN** MCS.initialize() 完成插件初始化，graph.get_all_nodes() 返回空列表，且 StorageInterface 已注册
-- **THEN** 框架 MUST 调用 storage.load() 并将返回的 GraphStore 内容合并到 self.graph
+- **WHEN** `MCSBuilder.build()` 完成插件初始化，store.get_all_nodes() 返回空列表，且 StorageInterface 已注册
+- **THEN** 框架 MUST 调用 storage.load() 并将返回的数据加载到 store
 
 #### Scenario: 图已有数据时不加载
 
-- **WHEN** MCS.initialize() 时 graph 已有节点（如手动 pre-populated）
+- **WHEN** `MCSBuilder.build()` 时 store 已有节点（如手动 pre-populated）
 - **THEN** 框架 MUST 不调用 storage.load()，保留现有内存数据
 
-#### Scenario: 加载失败时继续初始化
+#### Scenario: 加载失败时继续构建
 
 - **WHEN** storage.load() 抛出异常（如文件不存在、损坏）
-- **THEN** 框架 MUST 捕获异常并记录警告；initialize MUST 正常完成（不抛异常）
+- **THEN** 框架 MUST 捕获异常并记录警告；build MUST 正常完成（不抛异常）
+
+#### Scenario: 加载后重建索引
+
+- **WHEN** storage.load() 成功加载节点
+- **THEN** 框架 MUST 对所有注册的 IndexPlugin 调用 `build(store)` 重建索引
 
 ---
 

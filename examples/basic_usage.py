@@ -64,8 +64,9 @@ QUERY = "什么是深度学习？"
 
 def build_mock_mcs() -> MCS:
     """使用脚本化 MockLLM 构建 MCS（无网络，无需 API 密钥）。"""
+    from mcs.core.builder import MCSBuilder
+    from mcs.core.config import MCSConfig
     from tests.conftest import MockLLM
-    from mcs.presets import get_phase1_plugin_registry
 
     config = MCSConfig(
         mode="example_mock",
@@ -83,11 +84,8 @@ def build_mock_mcs() -> MCS:
         write_llm="mock_llm",
         read_llm="mock_llm",
     )
-    # 合并 mock_llm 到插件注册表
-    registry = get_phase1_plugin_registry()
-    registry["mock_llm"] = MockLLM
 
-    mcs = MCS(config, plugin_registry=registry)
+    # 创建 mock_llm 实例并脚本化
     mock_llm = MockLLM()
 
     # 脚本化 mock，使每次 ingest 创建一个新概念节点。
@@ -115,8 +113,31 @@ def build_mock_mcs() -> MCS:
     mock_llm.set_response("decide_directions", [])  # 此演示不扩展
     mock_llm.set_response("synthesize", "（mock 模式，未合成自然语言答案）")
 
-    mcs.register_plugin(mock_llm)
-    mcs.initialize()
+    # 使用 Builder 构建 MCS
+    from mcs.presets import get_phase1_plugin_registry
+
+    registry = get_phase1_plugin_registry()
+    registry["mock_llm"] = MockLLM
+
+    class _MockBuilder(MCSBuilder):
+        def __init__(self, config, mock_llm):
+            super().__init__(config)
+            self._mock_llm = mock_llm
+            self._registry = registry
+
+        def get_plugin_class(self, name: str):
+            return self._registry.get(name)
+
+    builder = _MockBuilder(config, mock_llm)
+    mcs = builder.build()
+
+    # 将 mock_llm 实例注册到两侧（覆盖 Builder 实例化的版本）
+    # 注意：Builder 已通过 registry 实例化了一个 mock_llm，
+    # 但我们需要使用脚本化的那个实例
+    mcs.unregister_plugin("mock_llm", target="writer")
+    mcs.unregister_plugin("mock_llm", target="reader")
+    mcs.register_shared_plugin(mock_llm)
+
     return mcs
 
 

@@ -374,13 +374,13 @@ def build_shared_graph(
         # 周期性全量重建持久化：反映分层归纳产生的边删除/重挂（增量持久化只 upsert）
         if di % 25 == 0:
             try:
-                mcs.persist_full()
+                mcs.store.save_full()
             except Exception:
-                logger.warning("persist_full 失败 @doc %d，继续", di)
+                logger.warning("save_full 失败 @doc %d，继续", di)
     try:
-        mcs.persist_full()  # 收尾：使持久图与内存图完全一致
+        mcs.store.save_full()  # 收尾：使持久图与内存图完全一致
     except Exception:
-        logger.warning("最终 persist_full 失败")
+        logger.warning("最终 save_full 失败")
     return mcs
 
 

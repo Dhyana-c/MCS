@@ -61,8 +61,9 @@ WIKI_CHUNKS = [
 
 
 def build_mock_mcs() -> MCS:
+    from mcs.core.builder import MCSBuilder
+    from mcs.core.config import MCSConfig
     from tests.conftest import MockLLM
-    from mcs.presets import get_phase1_plugin_registry
 
     config = MCSConfig(
         mode="example_mock",
@@ -80,11 +81,7 @@ def build_mock_mcs() -> MCS:
         write_llm="mock_llm",
         read_llm="mock_llm",
     )
-    # 合并 mock_llm 到插件注册表
-    registry = get_phase1_plugin_registry()
-    registry["mock_llm"] = MockLLM
 
-    mcs = MCS(config, plugin_registry=registry)
     mock_llm = MockLLM()
 
     counter = {"i": 0}
@@ -106,8 +103,30 @@ def build_mock_mcs() -> MCS:
     mock_llm.set_response("extract_concepts", _extract)
     mock_llm.set_response("judge_relations", _judge)
     mock_llm.set_response("decide_directions", [])
-    mcs.register_plugin(mock_llm)
-    mcs.initialize()
+
+    # 使用 Builder 构建 MCS
+    from mcs.presets import get_phase1_plugin_registry
+
+    registry = get_phase1_plugin_registry()
+    registry["mock_llm"] = MockLLM
+
+    class _MockBuilder(MCSBuilder):
+        def __init__(self, config, mock_llm):
+            super().__init__(config)
+            self._mock_llm = mock_llm
+            self._registry = registry
+
+        def get_plugin_class(self, name: str):
+            return self._registry.get(name)
+
+    builder = _MockBuilder(config, mock_llm)
+    mcs = builder.build()
+
+    # 使用脚本化的 mock_llm
+    mcs.unregister_plugin("mock_llm", target="writer")
+    mcs.unregister_plugin("mock_llm", target="reader")
+    mcs.register_shared_plugin(mock_llm)
+
     return mcs
 
 

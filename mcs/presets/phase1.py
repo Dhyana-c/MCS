@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from mcs.core.config import MCSConfig
     from mcs.core.plugin import Plugin
 
 
@@ -67,9 +68,10 @@ def get_phase1_plugin_registry() -> dict[str, type["Plugin"]]:
 
 
 class Phase1Builder:
-    """Phase1 构建器 — 继承 MCSBuilder 抽象类。
+    """Phase1 构建器 — 使用 MCSBuilder 的全量组装逻辑。
 
     实现 `get_plugin_class()` 方法，从 Phase1 插件注册表查找插件类。
+    构建逻辑委托给 MCSBuilder.build()。
 
     用法：
         from mcs.presets import Phase1Builder
@@ -103,47 +105,24 @@ class Phase1Builder:
         return self._registry.get(name)
 
     def build(self) -> "MCS":
-        """构建并初始化 MCS 实例。
+        """构建并返回即用的 MCS 实例。
 
         Returns:
-            已完成 ``initialize()`` 的 MCS 实例
+            已完成初始化、可直接使用的 MCS 实例
         """
-        from mcs.core.mcs import MCS
+        # 使用动态创建的 MCSBuilder 子类来执行 build()
+        from mcs.core.builder import MCSBuilder
 
-        registry = self._collect_registry()
-        mcs = MCS(self.config, plugin_registry=registry)
-        mcs.initialize()
-        return mcs
+        class _Phase1MCSBuilder(MCSBuilder):
+            def __init__(self, config, outer):
+                super().__init__(config)
+                self._outer = outer
 
-    def _collect_registry(self) -> dict[str, type["Plugin"]]:
-        """从配置收集插件注册表。"""
-        all_names: list[str] = []
-        seen: set[str] = set()
+            def get_plugin_class(self, name: str) -> type["Plugin"] | None:
+                return self._outer.get_plugin_class(name)
 
-        for name in (
-            self.config.shared_plugins +
-            self.config.write_plugins +
-            self.config.read_plugins
-        ):
-            if name not in seen:
-                all_names.append(name)
-                seen.add(name)
-
-        for llm in [self.config.write_llm, self.config.read_llm]:
-            if llm and llm not in seen:
-                all_names.append(llm)
-                seen.add(llm)
-
-        if self._registry is None:
-            self._registry = get_phase1_plugin_registry()
-
-        registry: dict[str, type["Plugin"]] = {}
-        for name in all_names:
-            cls = self._registry.get(name)
-            if cls is not None:
-                registry[name] = cls
-
-        return registry
+        builder = _Phase1MCSBuilder(self.config, self)
+        return builder.build()
 
 
 def create_mcs(
@@ -206,5 +185,4 @@ def create_mcs(
 
 # 类型提示的延迟导入
 if TYPE_CHECKING:
-    from mcs.core.config import MCSConfig
     from mcs.core.mcs import MCS

@@ -1,7 +1,8 @@
 # mcs-builder Specification
 
 ## Purpose
-TBD - created by archiving change mcs-builder-abstraction. Update Purpose after archive.
+
+定义 MCS 实例的构建契约：Builder 全量组装、MCS 瘦门面、双 PluginManager 架构、插件注册/注销 API。
 
 ## Requirements
 
@@ -11,17 +12,17 @@ TBD - created by archiving change mcs-builder-abstraction. Update Purpose after 
 
 #### Scenario: shared_plugins 注册到两个 manager
 
-- **WHEN** `MCS.initialize()` 处理 `config.shared_plugins`
+- **WHEN** `MCSBuilder.build()` 处理 `config.shared_plugins`
 - **THEN** 每个共享插件 MUST 以同一实例注册到 `write_manager` 和 `read_manager`
 
 #### Scenario: write_plugins 只注册到 write_manager
 
-- **WHEN** `MCS.initialize()` 处理 `config.write_plugins`
+- **WHEN** `MCSBuilder.build()` 处理 `config.write_plugins`
 - **THEN** 每个写入插件 MUST 只注册到 `write_manager`，MUST NOT 注册到 `read_manager`
 
 #### Scenario: read_plugins 只注册到 read_manager
 
-- **WHEN** `MCS.initialize()` 处理 `config.read_plugins`
+- **WHEN** `MCSBuilder.build()` 处理 `config.read_plugins`
 - **THEN** 每个读取插件 MUST 只注册到 `read_manager`，MUST NOT 注册到 `write_manager`
 
 #### Scenario: LLM 分离
@@ -38,17 +39,18 @@ TBD - created by archiving change mcs-builder-abstraction. Update Purpose after 
 
 ### Requirement: MCSBuilder 抽象基类定义构建契约
 
-`MCSBuilder` SHALL 作为抽象基类定义在 `mcs/core/builder.py`，只依赖 `MCSConfig` 和 `Plugin` 类型。它 SHALL 提供 `build() -> MCS` 方法，封装从配置到初始化完成的整个构建流程。
+`MCSBuilder` SHALL 作为抽象基类定义在 `mcs/core/builder.py`，只依赖 `MCSConfig` 和 `Plugin` 类型。它 SHALL 提供 `build() -> MCS` 方法，封装从配置到完成态 MCS 的完整构建流程（不再委托 `MCS.initialize()`）。
 
 #### Scenario: Builder 只依赖 core 类型
 
 - **WHEN** 检查 `mcs/core/builder.py` 的非 TYPE_CHECKING 导入
 - **THEN** MUST 只导入 `mcs/core/` 下的模块，MUST NOT 导入 `mcs/plugins/` 或 `mcs/presets/`
 
-#### Scenario: Builder 构建完整 MCS 实例
+#### Scenario: Builder 构建完成态 MCS 实例
 
 - **WHEN** 调用 `builder.build()` 返回 MCS 实例
-- **THEN** 返回的实例 MUST 已完成 `initialize()`，可直接调用 `ingest()` 和 `query()`
+- **THEN** 返回的实例 MUST 已完成全部初始化，可直接调用 `ingest()` 和 `query()`
+- **AND** MUST NOT 有 `initialize()` 方法可调用
 
 #### Scenario: Builder 从 shared/write/read 收集注册表
 
@@ -57,9 +59,48 @@ TBD - created by archiving change mcs-builder-abstraction. Update Purpose after 
 
 ---
 
+### Requirement: Builder 执行完整组装流程
+
+`MCSBuilder.build()` SHALL 执行以下完整流程并返回即用的 MCS 实例：
+
+1. 实例化 Store（根据 config）
+2. 实例化 TokenBudget
+3. 实例化双 PluginManager（write_manager / read_manager）
+4. 按 shared/write/read 分类实例化并注册插件
+5. 处理 LLM 分离逻辑
+6. 初始化 SQLiteStore（schema_extensions + node_extensions）
+7. 创建 ContextRenderer（传入 read_manager，用于 PluginContext）
+8. 构建 PluginContext 并初始化所有插件
+9. 应用 prompt_overrides 到 LLM
+10. 构建 QueryEngine（read_manager + read_llm）
+11. 构建 WritePipeline（write_manager + write_llm + query_engine）
+12. 构建 MCS（传入已组装好的所有组件）
+13. 执行 load-on-startup（若 Store 为空且 SQLiteStore 可用）
+14. 返回 MCS 实例
+
+#### Scenario: build 返回的 MCS 可直接使用
+
+- **WHEN** 调用 `builder.build()` 返回 MCS 实例
+- **THEN** 返回的实例 MUST 可直接调用 `ingest()` 和 `query()`
+- **AND** MUST NOT 需要额外调用 `initialize()`
+
+#### Scenario: build 中共享插件双注册
+
+- **WHEN** config.shared_plugins 包含插件名称
+- **THEN** Builder MUST 以同一实例注册到 write_manager 和 read_manager
+- **AND** `write_manager.get_by_name(name) is read_manager.get_by_name(name)` MUST 为 True
+
+#### Scenario: build 中 load-on-startup
+
+- **WHEN** Store 为空且 SQLiteStore 有持久化数据
+- **THEN** Builder MUST 从 SQLite 加载已有数据
+- **AND** MUST 重建所有 Index 插件
+
+---
+
 ### Requirement: MCSBuilder 通过抽象方法查找插件类
 
-`MCSBuilder` SHALL 定义抽象方法 `get_plugin_class(name: str) -> type[Plugin] | None`，由子类实现具体插件查找逻辑。`build()` SHALL 通过此方法为每个插件名称查找对应插件类。
+`MCSBuilder` SHALL 定义抽象方法 `get_plugin_class(name: str) -> type[Plugin] | None`，由子类实现具体插件查找逻辑。
 
 #### Scenario: 插件类查找委托给子类
 
@@ -67,35 +108,154 @@ TBD - created by archiving change mcs-builder-abstraction. Update Purpose after 
 - **THEN** MUST 调用 `self.get_plugin_class(name)` 查找插件类
 - **AND** 返回 None 的名称 MUST 被跳过
 
+#### Scenario: 未知插件名不报错
+
+- **WHEN** `get_plugin_class("nonexistent")` 返回 None
+- **THEN** Builder MUST 跳过该插件名继续构建
+- **AND** MUST NOT 抛出异常
+
+---
+
+### Requirement: MCS 类瘦门面设计
+
+`MCS` 类 SHALL 只暴露以下公共方法：
+- `ingest(text: str, **metadata) -> WriteContext`：执行写入管线
+- `query(text: str, existing_context: list | None = None) -> Any`：执行查询管线
+- `show() -> str`：以 Markdown 流程图展示双管线插件注册与处理流程
+- `register_plugin(plugin: Plugin, target: Literal["writer", "reader"]) -> None`：向指定管线注册插件
+- `register_shared_plugin(plugin: Plugin) -> None`：将同一插件实例注册到双管线
+- `unregister_plugin(name: str, target: Literal["writer", "reader"]) -> None`：从指定管线注销插件
+- `shutdown() -> None`：关闭所有插件和存储资源
+
+MCS MUST NOT 持有 `MCSConfig` 实例，MUST NOT 有 `initialize()` 方法，MUST NOT 有 `persist_full()` 方法。
+
+#### Scenario: MCS 构造不接受 Config
+
+- **WHEN** 检查 `MCS.__init__` 的参数签名
+- **THEN** MUST NOT 包含 `config: MCSConfig` 参数
+- **AND** MUST 接受 `write_pipeline`, `query_engine`, `store`, `write_manager`, `read_manager` 参数
+
+#### Scenario: ingest 调用写入管线
+
+- **WHEN** 调用 `mcs.ingest("some text")`
+- **THEN** MUST 委托给内部的 `write_pipeline.ingest()`
+- **AND** 返回 `WriteContext`
+
+#### Scenario: query 调用查询管线
+
+- **WHEN** 调用 `mcs.query("some query")`
+- **THEN** MUST 委托给内部的 `query_engine.query()`
+- **AND** 返回 `List[Node]` 或后处理链的输出类型
+
 ---
 
 ### Requirement: MCS 类双 PluginManager 架构
 
-`MCS` 类 SHALL 维护 `write_manager` 和 `read_manager` 两个 `PluginManager`，按 `MCSConfig` 的 shared/write/read 分类注册插件。
+`MCS` 类 SHALL 维护 `write_manager` 和 `read_manager` 两个 `PluginManager`。插件注册/注销 MUST 通过 `register_plugin(plugin, target)` / `unregister_plugin(name, target)` 方法指定目标管线，MUST NOT 支持隐式双注册。
 
-#### Scenario: 共享插件同实例双注册
+#### Scenario: 共享插件由 Builder 在构建时双注册
 
-- **WHEN** `MCS.initialize()` 注册共享插件
+- **WHEN** Builder 处理 `config.shared_plugins`
 - **THEN** 共享插件 MUST 以同一 Python 对象实例注册到 `write_manager` 和 `read_manager`
 - **AND** `write_manager.get_by_name(name) is read_manager.get_by_name(name)` MUST 为 True
 
-#### Scenario: 专用插件单侧注册
+#### Scenario: 运行时注册必须指定目标管线
 
-- **WHEN** `MCS.initialize()` 注册写入专用插件
-- **THEN** `write_manager.get_by_name(name)` MUST 返回该插件
-- **AND** `read_manager.get_by_name(name)` MUST 返回 None
+- **WHEN** 调用 `mcs.register_plugin(plugin, target="writer")`
+- **THEN** 插件 MUST 只注册到 `write_manager`
+- **AND** `read_manager.get_by_name(plugin.get_name())` MUST 返回 `None`
 
 #### Scenario: QueryEngine 使用 read_manager
 
-- **WHEN** `MCS.initialize()` 创建 `QueryEngine`
+- **WHEN** MCS 持有 QueryEngine
 - **THEN** QueryEngine MUST 使用 `read_manager` 和 `read_llm`
 
 #### Scenario: WritePipeline 使用 write_manager 但 query_engine 用读取的
 
-- **WHEN** `MCS.initialize()` 创建 `WritePipeline`
+- **WHEN** MCS 持有 WritePipeline
 - **THEN** WritePipeline 的 `plugin_manager` MUST 是 `write_manager`
 - **AND** WritePipeline 的 `llm` MUST 是 `write_llm`
 - **AND** WritePipeline 的 `query_engine` MUST 是使用 `read_manager` 的 QueryEngine
+
+---
+
+### Requirement: 插件注册必须指定目标管线
+
+`register_plugin()` 和 `unregister_plugin()` 方法 SHALL 接受 `target` 参数，值为 `"writer"` 或 `"reader"`。
+
+#### Scenario: 向 writer 注册插件
+
+- **WHEN** 调用 `mcs.register_plugin(plugin, target="writer")`
+- **THEN** 插件 MUST 只注册到 `write_manager`
+- **AND** `read_manager.get_by_name(plugin.get_name())` MUST 返回 `None`
+
+#### Scenario: 向 reader 注册插件
+
+- **WHEN** 调用 `mcs.register_plugin(plugin, target="reader")`
+- **THEN** 插件 MUST 只注册到 `read_manager`
+- **AND** `write_manager.get_by_name(plugin.get_name())` MUST 返回 `None`
+
+#### Scenario: 注销插件需指定管线
+
+- **WHEN** 调用 `mcs.unregister_plugin("alias_entry", target="reader")`
+- **THEN** 只从 `read_manager` 移除插件
+- **AND** 若同名插件存在于 `write_manager`，MUST NOT 受影响
+
+---
+
+### Requirement: 共享插件便捷注册
+
+`register_shared_plugin()` 方法 SHALL 将同一插件实例注册到 `write_manager` 和 `read_manager` 两侧。
+
+#### Scenario: 共享插件注册到两侧
+
+- **WHEN** 调用 `mcs.register_shared_plugin(plugin)`
+- **THEN** 插件 MUST 注册到 `write_manager`
+- **AND** 插件 MUST 注册到 `read_manager`
+- **AND** `write_manager.get_by_name(plugin.get_name()) is read_manager.get_by_name(plugin.get_name())` MUST 为 True
+
+#### Scenario: 共享插件不触发跨 manager 重复检查
+
+- **WHEN** 同一插件实例通过 `register_shared_plugin()` 注册
+- **THEN** MUST NOT 抛出 ValueError（跨 manager 的同名注册是允许的）
+- **AND** 若同一 manager 内已有同名插件，MUST 抛出 ValueError（单 manager 内去重）
+
+---
+
+### Requirement: shutdown 去重关闭共享插件
+
+`shutdown()` 方法 SHALL 确保共享插件实例只被关闭一次。
+
+#### Scenario: 共享插件只 shutdown 一次
+
+- **WHEN** 插件 P 同时注册在 `write_manager` 和 `read_manager`（同一实例）
+- **AND** 调用 `mcs.shutdown()`
+- **THEN** P 的 `shutdown()` 方法 MUST 只被调用一次
+
+#### Scenario: 非共享插件各关闭一次
+
+- **WHEN** 插件 A 只在 `write_manager`，插件 B 只在 `read_manager`
+- **AND** 调用 `mcs.shutdown()`
+- **THEN** A 和 B 的 `shutdown()` 方法 MUST 各被调用一次
+
+---
+
+### Requirement: show 方法以 Markdown 流程图展示双管线
+
+`show()` 方法 SHALL 返回 Markdown 格式字符串，包含 writer 和 reader 两条管线的处理阶段和已注册插件。
+
+#### Scenario: show 返回 Mermaid 流程图
+
+- **WHEN** 调用 `mcs.show()`
+- **THEN** 返回的字符串 MUST 包含 Mermaid `flowchart TD` 代码块
+- **AND** 包含 writer 管线的 7 个阶段
+- **AND** 包含 reader 管线的 5 个阶段
+
+#### Scenario: show 列出各管线已注册插件
+
+- **WHEN** 调用 `mcs.show()`
+- **THEN** 返回的字符串 MUST 列出 write_manager 中注册的所有插件名称和类型
+- **AND** MUST 列出 read_manager 中注册的所有插件名称和类型
 
 ---
 

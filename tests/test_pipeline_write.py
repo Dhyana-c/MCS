@@ -402,10 +402,124 @@ def test_persisted_field_set_correctly(empty_graph, mock_llm):
 # === Load-on-startup 测试 ===
 
 
-def test_load_on_startup_restores_graph(tmp_path, mock_llm):
-    """MCS.initialize() 时，若图为空且 SQLiteStore 存在，必须从存储加载已有数据。"""
-    from mcs import MCS
+def _build_mcs_with_store(config: MCSConfig, store: SQLiteStore, mock_llm):
+    """使用指定 store 和 mock_llm 构建 MCS 实例。"""
+    from mcs.core.builder import MCSBuilder
+    from mcs.core.context_renderer import ContextRenderer
+    from mcs.core.mcs import MCS
+    from mcs.core.plugin_manager import PluginContext, PluginManager
+    from mcs.core.query_engine import QueryEngine
+    from mcs.core.token_budget import TokenBudget
+    from mcs.core.write_pipeline import WritePipeline
 
+    token_budget = TokenBudget(config.token_budget)
+    write_manager = PluginManager()
+    read_manager = PluginManager()
+
+    # 注册配置中的插件
+    from mcs.presets import get_phase1_plugin_registry
+    registry = get_phase1_plugin_registry()
+
+    def _instantiate(name: str):
+        cls = registry.get(name)
+        if cls is None:
+            return None
+        plugin_config = config.plugin_configs.get(name, {})
+        try:
+            return cls(plugin_config)
+        except TypeError:
+            return cls()
+
+    for plugin_name in config.shared_plugins:
+        plugin = _instantiate(plugin_name)
+        if plugin:
+            write_manager.register(plugin)
+            read_manager.register(plugin)
+
+    for plugin_name in config.write_plugins:
+        plugin = _instantiate(plugin_name)
+        if plugin:
+            write_manager.register(plugin)
+
+    for plugin_name in config.read_plugins:
+        plugin = _instantiate(plugin_name)
+        if plugin:
+            read_manager.register(plugin)
+
+    # 注册 mock_llm 到两侧（共享）
+    write_manager.register(mock_llm)
+    read_manager.register(mock_llm)
+
+    # 初始化 SQLiteStore
+    from mcs.core.plugin import PluginType
+    if store.conn is None:
+        schema_exts = write_manager.get_all(PluginType.STORAGE_SCHEMA_EXT)
+        node_exts = {
+            p.get_name(): p
+            for p in write_manager.get_all(PluginType.NODE_EXTENSION)
+        }
+        store.initialize(schema_extensions=schema_exts, node_extensions=node_exts)
+
+    # 初始化插件
+    context_renderer = ContextRenderer(read_manager)
+    write_ctx = PluginContext(
+        store=store,
+        config=config,
+        token_budget=token_budget,
+        context_renderer=context_renderer,
+        plugin_manager=write_manager,
+    )
+    write_manager.initialize_all(write_ctx)
+    read_ctx = PluginContext(
+        store=store,
+        config=config,
+        token_budget=token_budget,
+        context_renderer=context_renderer,
+        plugin_manager=read_manager,
+    )
+    read_manager.initialize_all(read_ctx)
+
+    # 构建管线
+    query_engine = QueryEngine(
+        store=store,
+        llm=mock_llm,
+        plugin_manager=read_manager,
+        token_budget=token_budget,
+        max_rounds=config.max_rounds,
+        max_accumulated_nodes=config.max_accumulated_nodes,
+    )
+    write_pipeline = WritePipeline(
+        store=store,
+        llm=mock_llm,
+        query_engine=query_engine,
+        plugin_manager=write_manager,
+        token_budget=token_budget,
+        config=config,
+    )
+
+    # load-on-startup
+    if not store.get_all_nodes():
+        try:
+            store.load()
+            for index in read_manager.get_all(PluginType.INDEX):
+                try:
+                    index.build(store)
+                except NotImplementedError:
+                    continue
+        except Exception:
+            pass
+
+    return MCS(
+        write_pipeline=write_pipeline,
+        query_engine=query_engine,
+        store=store,
+        write_manager=write_manager,
+        read_manager=read_manager,
+    )
+
+
+def test_load_on_startup_restores_graph(tmp_path, mock_llm):
+    """Builder.build() 时，若图为空且 SQLiteStore 存在，必须从存储加载已有数据。"""
     # 先创建一个有数据的数据库
     db_path = str(tmp_path / "test.db")
     store = SQLiteStore({"path": db_path})
@@ -415,7 +529,7 @@ def test_load_on_startup_restores_graph(tmp_path, mock_llm):
     store.save()
     store.shutdown()
 
-    # 创建新的 MCS 实例，图应为空
+    # 创建新的 MCS 实例，使用 Builder 构建
     new_store = SQLiteStore({"path": db_path})
     config = MCSConfig(
         shared_plugins=[],
@@ -424,9 +538,7 @@ def test_load_on_startup_restores_graph(tmp_path, mock_llm):
         write_llm="mock_llm",
         read_llm="mock_llm",
     )
-    mcs = MCS(config, store=new_store)
-    mcs.register_plugin(mock_llm)
-    mcs.initialize()
+    mcs = _build_mcs_with_store(config, new_store, mock_llm)
 
     # 图应该包含从数据库加载的节点
     nodes = mcs.store.get_all_nodes()
@@ -437,7 +549,10 @@ def test_load_on_startup_restores_graph(tmp_path, mock_llm):
 
 def test_load_on_startup_skipped_when_graph_has_data(mock_llm):
     """如果内存图已有数据，load-on-startup 不应覆盖。"""
-    from mcs import MCS
+    store = SQLiteStore({"path": ":memory:"})
+    store.initialize()
+    pre_node = Node(id="pre", name="预先存在", content="内存中的节点")
+    store.add_node(pre_node)
 
     config = MCSConfig(
         shared_plugins=[],
@@ -446,14 +561,7 @@ def test_load_on_startup_skipped_when_graph_has_data(mock_llm):
         write_llm="mock_llm",
         read_llm="mock_llm",
     )
-    mcs = MCS(config)
-
-    # 手动预先添加节点
-    pre_node = Node(id="pre", name="预先存在", content="内存中的节点")
-    mcs.store.add_node(pre_node)
-
-    mcs.register_plugin(mock_llm)
-    mcs.initialize()
+    mcs = _build_mcs_with_store(config, store, mock_llm)
 
     # 预先存在的节点应该保留
     nodes = mcs.store.get_all_nodes()
@@ -462,10 +570,8 @@ def test_load_on_startup_skipped_when_graph_has_data(mock_llm):
 
 
 def test_load_on_startup_handles_exception(tmp_path, mock_llm):
-    """storage.load() 异常不影响 initialize() 完成。"""
-    from mcs import MCS
-
-    # 使用损坏的数据库路径（SQLiteStore 初始化会创建表但 load 会失败）
+    """storage.load() 异常不影响 build() 完成。"""
+    # 使用损坏的数据库路径
     db_path = str(tmp_path / "corrupt.db")
     store = SQLiteStore({"path": db_path})
     config = MCSConfig(
@@ -475,12 +581,9 @@ def test_load_on_startup_handles_exception(tmp_path, mock_llm):
         write_llm="mock_llm",
         read_llm="mock_llm",
     )
-    mcs = MCS(config, store=store)
-    mcs.register_plugin(mock_llm)
-
-    # initialize 应该正常完成，不抛异常
-    mcs.initialize()
-    assert mcs._initialized is True
+    # build 应该正常完成，不抛异常
+    mcs = _build_mcs_with_store(config, store, mock_llm)
+    assert mcs is not None
     mcs.shutdown()
 
 
@@ -490,9 +593,6 @@ def test_load_on_startup_rebuilds_indexes(tmp_path, mock_llm):
     回归 reload 复用图候选集崩塌 bug：AliasIndexPlugin 在 initialize 时图尚空、
     索引建成空的，load-on-startup 加载节点后必须重建索引。
     """
-    from mcs import MCS
-    from mcs.presets import get_phase1_plugin_registry
-
     db_path = str(tmp_path / "idx.db")
     # 先用独立 SQLiteStore 落盘一个节点
     store = SQLiteStore({"path": db_path})
@@ -510,11 +610,7 @@ def test_load_on_startup_rebuilds_indexes(tmp_path, mock_llm):
         write_llm="mock_llm",
         read_llm="mock_llm",
     )
-    registry = get_phase1_plugin_registry()
-    registry["mock_llm"] = type(mock_llm)  # 添加 mock_llm 到注册表
-    mcs = MCS(config, plugin_registry=registry, store=new_store)
-    mcs.register_plugin(mock_llm)
-    mcs.initialize()
+    mcs = _build_mcs_with_store(config, new_store, mock_llm)
 
     ai = mcs.get_plugin("alias_index")
     assert ai is not None

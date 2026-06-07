@@ -153,20 +153,131 @@ def default_config() -> MCSConfig:
     )
 
 
+class _MockLLMBuilder:
+    """构建使用 MockLLM 的 MCS 实例。"""
+
+    def __init__(self, config: MCSConfig, mock_llm: MockLLM):
+        self.config = config
+        self._mock_llm = mock_llm
+        self._registry: dict[str, type] | None = None
+
+    def get_plugin_class(self, name: str) -> type | None:
+        if self._registry is None:
+            from mcs.presets import get_phase1_plugin_registry
+            self._registry = get_phase1_plugin_registry()
+            self._registry["mock_llm"] = MockLLM
+        return self._registry.get(name)
+
+    def build(self) -> "MCS":
+        """构建 MCS 实例，将 mock_llm 注册为共享插件。"""
+        from mcs.core.builder import MCSBuilder
+
+        class _MockBuilder(MCSBuilder):
+            def __init__(self, config, outer):
+                super().__init__(config)
+                self._outer = outer
+
+            def get_plugin_class(self, name: str) -> type | None:
+                return self._outer.get_plugin_class(name)
+
+        builder = _MockBuilder(self.config, self)
+
+        # 构建基本 MCS（不含 mock_llm）
+        from mcs.core.context_renderer import ContextRenderer
+        from mcs.core.mcs import MCS
+        from mcs.core.plugin_manager import PluginContext, PluginManager
+        from mcs.core.query_engine import QueryEngine
+        from mcs.core.token_budget import TokenBudget
+        from mcs.core.write_pipeline import WritePipeline
+        from mcs.stores.in_memory import InMemoryStore
+
+        store = InMemoryStore()
+        token_budget = TokenBudget(self.config.token_budget)
+        write_manager = PluginManager()
+        read_manager = PluginManager()
+
+        # 注册配置中的插件（不含 LLM）
+        for plugin_name in self.config.shared_plugins:
+            plugin = self._instantiate_plugin(plugin_name)
+            if plugin:
+                write_manager.register(plugin)
+                read_manager.register(plugin)
+
+        for plugin_name in self.config.write_plugins:
+            plugin = self._instantiate_plugin(plugin_name)
+            if plugin:
+                write_manager.register(plugin)
+
+        for plugin_name in self.config.read_plugins:
+            plugin = self._instantiate_plugin(plugin_name)
+            if plugin:
+                read_manager.register(plugin)
+
+        # 注册 mock_llm 到两侧（共享）
+        write_manager.register(self._mock_llm)
+        read_manager.register(self._mock_llm)
+
+        # 初始化插件
+        context_renderer = ContextRenderer(read_manager)
+        write_ctx = PluginContext(
+            store=store,
+            config=self.config,
+            token_budget=token_budget,
+            context_renderer=context_renderer,
+            plugin_manager=write_manager,
+        )
+        write_manager.initialize_all(write_ctx)
+        read_ctx = PluginContext(
+            store=store,
+            config=self.config,
+            token_budget=token_budget,
+            context_renderer=context_renderer,
+            plugin_manager=read_manager,
+        )
+        read_manager.initialize_all(read_ctx)
+
+        # 构建管线
+        query_engine = QueryEngine(
+            store=store,
+            llm=self._mock_llm,
+            plugin_manager=read_manager,
+            token_budget=token_budget,
+            max_rounds=self.config.max_rounds,
+            max_accumulated_nodes=self.config.max_accumulated_nodes,
+        )
+        write_pipeline = WritePipeline(
+            store=store,
+            llm=self._mock_llm,
+            query_engine=query_engine,
+            plugin_manager=write_manager,
+            token_budget=token_budget,
+            config=self.config,
+        )
+
+        return MCS(
+            write_pipeline=write_pipeline,
+            query_engine=query_engine,
+            store=store,
+            write_manager=write_manager,
+            read_manager=read_manager,
+        )
+
+    def _instantiate_plugin(self, name: str):
+        cls = self.get_plugin_class(name)
+        if cls is None:
+            return None
+        plugin_config = self.config.plugin_configs.get(name, {})
+        try:
+            return cls(plugin_config)
+        except TypeError:
+            return cls()
+
+
 @pytest.fixture
 def mcs_with_mock_llm(default_config: MCSConfig, mock_llm: MockLLM):
     """使用 mock LLM 的已初始化 MCS 实例（无需真实 API 密钥）。"""
-    from mcs import MCS
-    from mcs.presets import get_phase1_plugin_registry
-
-    # 合并 mock_llm 到插件注册表
-    registry = get_phase1_plugin_registry()
-    registry["mock_llm"] = MockLLM
-
-    mcs = MCS(default_config, plugin_registry=registry)
-    mcs.register_plugin(mock_llm)  # 直接注册 mock_llm 实例
-    mcs.initialize()
-    return mcs
+    builder = _MockLLMBuilder(default_config, mock_llm)
+    return builder.build()
 
 
 __all__ = [
