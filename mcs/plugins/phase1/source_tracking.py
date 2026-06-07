@@ -17,14 +17,14 @@ from typing import TYPE_CHECKING, Any
 
 from mcs.core.plugin import PluginType
 from mcs.interfaces.node_extension import NodeExtensionInterface
-from mcs.interfaces.preprocess_plugin import PreprocessPluginInterface
 from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
+from mcs.interfaces.write_preprocess_plugin import WritePreprocessPluginInterface
 
 if TYPE_CHECKING:
     from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.store import StoreInterface
-    from mcs.core.write_pipeline import WritePipeline
+    from mcs.core.write_pipeline import WriteContext
 
 
 @dataclass
@@ -244,7 +244,7 @@ class SourceTrackingPlugin(
         return orphans
 
 
-class IdempotencyCheckPlugin(PreprocessPluginInterface):
+class IdempotencyCheckPlugin(WritePreprocessPluginInterface):
     """写入阶段 ① 的幂等性检查。
 
     计算内容哈希并查询存储的 ``document_chunks`` 表；如果该块
@@ -282,10 +282,10 @@ class IdempotencyCheckPlugin(PreprocessPluginInterface):
     def shutdown(self) -> None:
         self.storage = None
 
-    # === PreprocessPluginInterface ===
+    # === WritePreprocessPluginInterface ===
 
-    def preprocess(self, text: str, ctx: Any) -> str:
-        metadata = getattr(ctx, "metadata", {}) or {}
+    def preprocess(self, text: str, ctx: WriteContext) -> str:
+        metadata = ctx.metadata
         doc_id = metadata.get("doc_id")
         chunk_id = metadata.get("chunk_id")
         if not (doc_id and chunk_id):

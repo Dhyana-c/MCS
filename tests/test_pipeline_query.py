@@ -10,7 +10,7 @@ from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
-from mcs.interfaces.preprocess_plugin import PreprocessPluginInterface
+from mcs.interfaces.query_preprocess_plugin import QueryPreprocessPluginInterface
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore
@@ -251,13 +251,13 @@ def test_query_context_lifecycle_fields_populated(seeded_graph, mock_llm):
 
 
 def test_preprocess_chain_transforms_query_text(seeded_graph, mock_llm):
-    """阶段 ① PreprocessPlugin 可以修改查询文本。"""
+    """阶段 ① QueryPreprocessPlugin 可以修改查询文本。"""
 
-    class _UpperPreprocess(PreprocessPluginInterface):
+    class _UpperPreprocess(QueryPreprocessPluginInterface):
         def get_name(self) -> str:
             return "upper_preprocess"
 
-        def preprocess(self, text: str, ctx: Any) -> str:
+        def preprocess(self, text: str, ctx) -> str:
             return text.upper()
 
     engine = _build_engine(
@@ -268,19 +268,19 @@ def test_preprocess_chain_transforms_query_text(seeded_graph, mock_llm):
     )
     mock_llm.set_response("select_nodes", [])
     result = engine.query("test")
-    # 查询应正常执行，PreprocessPlugin 已处理文本
+    # 查询应正常执行，QueryPreprocessPlugin 已处理文本
     assert isinstance(result, list)
 
 
 def test_query_engine_preprocess_and_postprocess_independent(seeded_graph, mock_llm):
-    """Preprocess 和 Postprocess 使用独立类型，互不干扰。"""
+    """QueryPreprocess 和 Postprocess 使用独立类型，互不干扰。"""
     processed_text = {}
 
-    class _TrackPreprocess(PreprocessPluginInterface):
+    class _TrackPreprocess(QueryPreprocessPluginInterface):
         def get_name(self) -> str:
             return "track_preprocess"
 
-        def preprocess(self, text: str, ctx: Any) -> str:
+        def preprocess(self, text: str, ctx) -> str:
             processed_text["value"] = text
             return text
 

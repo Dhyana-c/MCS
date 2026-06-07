@@ -15,13 +15,22 @@ class PluginType(str, Enum):
     - 可作为 dict key（str 可哈希）
     - 支持字符串比较：PluginType.ENTRY == "entry"
     - 支持枚举语法：PluginType.ENTRY
+
+    注意：PREPROCESS 已废弃，请使用 WRITE_PREPROCESS 或 QUERY_PREPROCESS。
     """
 
     ENTRY = "entry"
     TRIM = "trim"
     ARBITRATION = "arbitration"
     POSTPROCESS = "postprocess"
-    PREPROCESS = "preprocess"
+
+    # 前置处理类型（拆分后）
+    WRITE_PREPROCESS = "write_preprocess"  # 写入管线阶段 ①
+    QUERY_PREPROCESS = "query_preprocess"  # 查询管线阶段 ①
+
+    # 废弃别名（一个版本后移除）
+    PREPROCESS = "write_preprocess"  # 兼容旧代码，指向 WRITE_PREPROCESS
+
     COMPACTION = "compaction"
     INDEX = "index"
     LLM = "llm"

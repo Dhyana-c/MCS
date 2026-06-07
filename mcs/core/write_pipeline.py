@@ -177,7 +177,7 @@ class WritePipeline:
 
         from mcs.core.plugin import PluginType
 
-        for plugin in self.plugin_manager.get_all(PluginType.PREPROCESS):
+        for plugin in self.plugin_manager.get_all(PluginType.WRITE_PREPROCESS):
             recorder = getattr(plugin, "record_ingested", None)
             if callable(recorder):
                 recorder(source.doc_id, source.chunk_id, source.content_hash)
@@ -212,10 +212,10 @@ class WritePipeline:
     # === 阶段辅助方法 ===
 
     def _run_preprocess(self, text: str, ctx: WriteContext) -> str:
-        """阶段 ①：串行 PreprocessPlugin 链。"""
+        """阶段 ①：串行 WritePreprocessPlugin 链。"""
         from mcs.core.plugin import PluginType
 
-        plugins = self.plugin_manager.get_all(PluginType.PREPROCESS)
+        plugins = self.plugin_manager.get_all(PluginType.WRITE_PREPROCESS)
         result: Any = text
         for plugin in plugins:
             result = plugin.preprocess(result, ctx)

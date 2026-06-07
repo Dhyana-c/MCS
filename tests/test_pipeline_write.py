@@ -13,7 +13,7 @@ from mcs.core.store import StoreInterface
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
-from mcs.interfaces.preprocess_plugin import PreprocessPluginInterface
+from mcs.interfaces.write_preprocess_plugin import WritePreprocessPluginInterface
 from mcs.stores.in_memory import InMemoryStore
 from mcs.stores.sqlite_store import SQLiteStore
 
@@ -529,14 +529,14 @@ def test_load_on_startup_rebuilds_indexes(tmp_path, mock_llm):
 # === 阶段 ① PreprocessPlugin 测试 ===
 
 
-def test_write_pipeline_uses_preprocess_plugins(empty_graph, mock_llm):
-    """写入管线阶段 ① 应使用 PreprocessPlugin 而非 PostprocessPlugin + position。"""
+def test_write_pipeline_uses_write_preprocess_plugins(empty_graph, mock_llm):
+    """写入管线阶段 ① 应使用 WritePreprocessPlugin。"""
 
-    class _Upper(PreprocessPluginInterface):
+    class _Upper(WritePreprocessPluginInterface):
         def get_name(self) -> str:
             return "upper_preprocess"
 
-        def preprocess(self, text: str, ctx: Any) -> str:
+        def preprocess(self, text: str, ctx) -> str:
             return text.upper()
 
     wp, _, pm = _build_pipelines(empty_graph, mock_llm, _Upper())
@@ -547,9 +547,9 @@ def test_write_pipeline_uses_preprocess_plugins(empty_graph, mock_llm):
 
 
 def test_write_pipeline_preprocess_chain_sequential(empty_graph, mock_llm):
-    """多个 PreprocessPlugin 串行执行。"""
+    """多个 WritePreprocessPlugin 串行执行。"""
 
-    class _AddSuffix(PreprocessPluginInterface):
+    class _AddSuffix(WritePreprocessPluginInterface):
         def __init__(self, suffix: str, **kw):
             super().__init__(**kw)
             self._suffix = suffix
@@ -557,7 +557,7 @@ def test_write_pipeline_preprocess_chain_sequential(empty_graph, mock_llm):
         def get_name(self) -> str:
             return f"add_{self._suffix}"
 
-        def preprocess(self, text: str, ctx: Any) -> str:
+        def preprocess(self, text: str, ctx) -> str:
             return text + self._suffix
 
     wp, _, pm = _build_pipelines(

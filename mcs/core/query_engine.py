@@ -112,14 +112,14 @@ class QueryEngine:
     # === 阶段辅助方法 ===
 
     def _run_preprocess(self, text: str, ctx: QueryContext) -> str:
-        """阶段 ①：将文本作为输入的串行 PreprocessPlugin 链。
+        """阶段 ①：将文本作为输入的串行 QueryPreprocessPlugin 链。
 
         注意：读取管道预处理插件接收字符串并返回（可能转换的）字符串。
         不修改文本的插件应返回未更改的文本。
         """
         from mcs.core.plugin import PluginType
 
-        plugins = self.plugin_manager.get_all(PluginType.PREPROCESS)
+        plugins = self.plugin_manager.get_all(PluginType.QUERY_PREPROCESS)
         if not plugins:
             return text
         result: Any = text

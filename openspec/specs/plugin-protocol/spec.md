@@ -82,24 +82,71 @@ The system SHALL define `ArbitrationPluginInterface` with abstract method `arbit
 
 ---
 
-### Requirement: 提供 PreprocessPluginInterface 用于前置处理
+### Requirement: 提供 WritePreprocessPluginInterface 用于写入管线前置处理
 
-The system SHALL define `PreprocessPluginInterface` inheriting `Plugin`, with abstract method `preprocess(text: str, ctx) -> str`. This interface MUST be used for both query and write pipeline stage ① (text preprocessing), separate from `PostprocessPluginInterface`.
+The system SHALL define `WritePreprocessPluginInterface` inheriting `Plugin`, with abstract method `preprocess(text: str, ctx: WriteContext) -> str`. This interface MUST be used for write pipeline stage ① (text preprocessing such as idempotency checks, summarization, text cleaning). `get_type()` MUST return `PluginType.WRITE_PREPROCESS`.
 
 #### Scenario: 接口最小契约
 
-- **WHEN** 实现一个 PreprocessPlugin
-- **THEN** 子类 MUST 提供 `preprocess` 方法；`preprocess` MUST 返回 `str`；`get_type()` MUST 返回 `PluginType.PREPROCESS`
+- **WHEN** 实现一个 WritePreprocessPlugin
+- **THEN** 子类 MUST 提供 `preprocess` 方法；`preprocess` MUST 返回 `str`；`get_type()` MUST 返回 `PluginType.WRITE_PREPROCESS`
 
 #### Scenario: 链式调用语义
 
-- **WHEN** 配置多个 PreprocessPlugin [P1, P2]
+- **WHEN** 配置多个 WritePreprocessPlugin [P1, P2]
 - **THEN** 框架 MUST 调用 P1(text) → P2(P1输出)；返回 P2 的输出
 
-#### Scenario: 按类型查找前置插件
+#### Scenario: 短路语义
 
-- **WHEN** 调用 `plugin_manager.get_all(PluginType.PREPROCESS)`
-- **THEN** 返回值 MUST 是所有注册的 PREPROCESS 类型插件
+- **WHEN** WritePreprocessPlugin 设置 `ctx.skip = True`
+- **THEN** 框架 MUST 终止整个 ingest 流程
+
+#### Scenario: 按类型查找写入前置插件
+
+- **WHEN** 调用 `plugin_manager.get_all(PluginType.WRITE_PREPROCESS)`
+- **THEN** 返回值 MUST 是所有注册的 WRITE_PREPROCESS 类型插件
+
+---
+
+### Requirement: 提供 QueryPreprocessPluginInterface 用于查询管线前置处理
+
+The system SHALL define `QueryPreprocessPluginInterface` inheriting `Plugin`, with abstract method `preprocess(text: str, ctx: QueryContext) -> str`. This interface MUST be used for query pipeline stage ① (query rewriting, synonym expansion, intent recognition). `get_type()` MUST return `PluginType.QUERY_PREPROCESS`.
+
+#### Scenario: 接口最小契约
+
+- **WHEN** 实现一个 QueryPreprocessPlugin
+- **THEN** 子类 MUST 提供 `preprocess` 方法；`preprocess` MUST 返回 `str`；`get_type()` MUST 返回 `PluginType.QUERY_PREPROCESS`
+
+#### Scenario: 链式调用语义
+
+- **WHEN** 配置多个 QueryPreprocessPlugin [P1, P2]
+- **THEN** 框架 MUST 调用 P1(text) → P2(P1输出)；返回 P2 的输出
+
+#### Scenario: 按类型查找查询前置插件
+
+- **WHEN** 调用 `plugin_manager.get_all(PluginType.QUERY_PREPROCESS)`
+- **THEN** 返回值 MUST 是所有注册的 QUERY_PREPROCESS 类型插件
+
+---
+
+### Requirement: 废弃 PreprocessPluginInterface
+
+`PreprocessPluginInterface` SHALL be deprecated in favor of `WritePreprocessPluginInterface` and `QueryPreprocessPluginInterface`. It SHALL remain as an alias for `WritePreprocessPluginInterface` with a `DeprecationWarning` on import. It SHALL be removed after one version.
+
+#### Scenario: 废弃别名仍可用
+
+- **WHEN** 旧代码导入 `PreprocessPluginInterface`
+- **THEN** MUST 得到 `WritePreprocessPluginInterface` 的别名
+
+#### Scenario: 导入时发出警告
+
+- **WHEN** 导入 `PreprocessPluginInterface`
+- **THEN** MUST 发出 `DeprecationWarning`
+
+#### Scenario: PREPROCESS 枚举值指向 WRITE_PREPROCESS
+
+- **WHEN** 使用 `PluginType.PREPROCESS`
+- **THEN** MUST 等价于 `PluginType.WRITE_PREPROCESS`
 
 ---
 
@@ -249,7 +296,8 @@ The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting 
 
 - **WHEN** 检查 `PluginType`
 - **THEN** MUST 继承 `str` 与 `Enum`
-- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、PREPROCESS、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE、SEED_SELECTOR
+- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、WRITE_PREPROCESS、QUERY_PREPROCESS、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE、SEED_SELECTOR
+- **AND** MAY 含废弃值 PREPROCESS（指向 WRITE_PREPROCESS）
 
 #### Scenario: 管线按 PluginType 查找
 

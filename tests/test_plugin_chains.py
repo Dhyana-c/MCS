@@ -12,7 +12,8 @@ from mcs.core.plugin_manager import PluginManager
 from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
-from mcs.interfaces.preprocess_plugin import PreprocessPluginInterface
+from mcs.interfaces.query_preprocess_plugin import QueryPreprocessPluginInterface
+from mcs.interfaces.write_preprocess_plugin import WritePreprocessPluginInterface
 from mcs.core.plugin import PluginType
 
 # === EntryPlugin 优先级排序 ===
@@ -137,27 +138,87 @@ def test_postprocess_can_return_arbitrary_type():
 # === Preprocess 插件类型 ===
 
 
-def test_preprocess_plugin_type_registered_and_found():
-    """PreprocessPlugin 注册后可通过 PluginType.PREPROCESS 查找到。"""
+def test_write_preprocess_plugin_type_registered_and_found():
+    """WritePreprocessPlugin 注册后可通过 PluginType.WRITE_PREPROCESS 查找到。"""
 
-    class _Upper(PreprocessPluginInterface):
+    class _Upper(WritePreprocessPluginInterface):
         def get_name(self) -> str:
             return "upper"
 
-        def preprocess(self, text: str, ctx: Any) -> str:
+        def preprocess(self, text: str, ctx) -> str:
             return text.upper()
 
     pm = PluginManager()
     pm.register(_Upper())
-    plugins = pm.get_all(PluginType.PREPROCESS)
+    plugins = pm.get_all(PluginType.WRITE_PREPROCESS)
     assert len(plugins) == 1
     assert plugins[0].get_name() == "upper"
 
 
-def test_preprocess_chain_is_sequential():
-    """多个 PreprocessPlugin 串行执行，前一个输出是后一个输入。"""
+def test_query_preprocess_plugin_type_registered_and_found():
+    """QueryPreprocessPlugin 注册后可通过 PluginType.QUERY_PREPROCESS 查找到。"""
 
-    class _Prefix(PreprocessPluginInterface):
+    class _Lower(QueryPreprocessPluginInterface):
+        def get_name(self) -> str:
+            return "lower"
+
+        def preprocess(self, text: str, ctx) -> str:
+            return text.lower()
+
+    pm = PluginManager()
+    pm.register(_Lower())
+    plugins = pm.get_all(PluginType.QUERY_PREPROCESS)
+    assert len(plugins) == 1
+    assert plugins[0].get_name() == "lower"
+
+
+def test_write_and_query_preprocess_are_separate_types():
+    """WRITE_PREPROCESS 和 QUERY_PREPROCESS 是独立类型，互不干扰。"""
+
+    class _Upper(WritePreprocessPluginInterface):
+        def get_name(self) -> str:
+            return "upper"
+
+        def preprocess(self, text: str, ctx) -> str:
+            return text.upper()
+
+    class _Lower(QueryPreprocessPluginInterface):
+        def get_name(self) -> str:
+            return "lower"
+
+        def preprocess(self, text: str, ctx) -> str:
+            return text.lower()
+
+    pm = PluginManager()
+    pm.register(_Upper())
+    pm.register(_Lower())
+
+    assert len(pm.get_all(PluginType.WRITE_PREPROCESS)) == 1
+    assert len(pm.get_all(PluginType.QUERY_PREPROCESS)) == 1
+    assert pm.get_all(PluginType.WRITE_PREPROCESS)[0].get_name() == "upper"
+    assert pm.get_all(PluginType.QUERY_PREPROCESS)[0].get_name() == "lower"
+
+
+def test_deprecated_preprocess_alias_emits_warning():
+    """导入废弃的 PreprocessPluginInterface 应发出 DeprecationWarning。"""
+    import warnings
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        # 重新导入以触发警告
+        import importlib
+        import mcs.interfaces.preprocess_plugin as pp
+        importlib.reload(pp)
+
+        assert len(w) == 1
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert "deprecated" in str(w[0].message).lower()
+
+
+def test_write_preprocess_chain_is_sequential():
+    """多个 WritePreprocessPlugin 串行执行，前一个输出是后一个输入。"""
+
+    class _Prefix(WritePreprocessPluginInterface):
         def __init__(self, prefix: str, **kw):
             super().__init__(**kw)
             self._prefix = prefix
@@ -168,7 +229,7 @@ def test_preprocess_chain_is_sequential():
         def get_priority(self) -> int:
             return 0
 
-        def preprocess(self, text: str, ctx: Any) -> str:
+        def preprocess(self, text: str, ctx) -> str:
             return f"{self._prefix}{text}"
 
     pm = PluginManager()
@@ -180,7 +241,7 @@ def test_preprocess_chain_is_sequential():
     pm.register(_Prefix(prefix="A:", config={"priority": 10}))
     pm.register(_Prefix(prefix="B:"))
 
-    plugins = pm.get_all(PluginType.PREPROCESS)
+    plugins = pm.get_all(PluginType.WRITE_PREPROCESS)
     result = "hello"
     for p in plugins:
         result = p.preprocess(result, None)
@@ -190,11 +251,11 @@ def test_preprocess_chain_is_sequential():
 def test_preprocess_and_postprocess_are_separate_types():
     """Preprocess 和 Postprocess 是独立类型，互不干扰。"""
 
-    class _Upper(PreprocessPluginInterface):
+    class _Upper(WritePreprocessPluginInterface):
         def get_name(self) -> str:
             return "upper"
 
-        def preprocess(self, text: str, ctx: Any) -> str:
+        def preprocess(self, text: str, ctx) -> str:
             return text.upper()
 
     class _Len(PostprocessPluginInterface):
@@ -208,9 +269,9 @@ def test_preprocess_and_postprocess_are_separate_types():
     pm.register(_Upper())
     pm.register(_Len())
 
-    assert len(pm.get_all(PluginType.PREPROCESS)) == 1
+    assert len(pm.get_all(PluginType.WRITE_PREPROCESS)) == 1
     assert len(pm.get_all(PluginType.POSTPROCESS)) == 1
-    assert pm.get_all(PluginType.PREPROCESS)[0].get_name() == "upper"
+    assert pm.get_all(PluginType.WRITE_PREPROCESS)[0].get_name() == "upper"
     assert pm.get_all(PluginType.POSTPROCESS)[0].get_name() == "len"
 
 
