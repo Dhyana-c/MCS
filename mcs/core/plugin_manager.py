@@ -14,7 +14,7 @@ from mcs.core.plugin import Plugin, PluginType
 if TYPE_CHECKING:
     from mcs.core.config import MCSConfig
     from mcs.core.context_renderer import ContextRenderer
-    from mcs.core.graph import GraphStoreInterface
+    from mcs.core.store import StoreInterface
     from mcs.core.token_budget import TokenBudget
 
 
@@ -25,7 +25,7 @@ class PluginContext:
     插件使用此上下文访问核心引擎对象并发现其他插件。
     """
 
-    graph: GraphStoreInterface
+    store: StoreInterface
     config: MCSConfig
     token_budget: TokenBudget
     context_renderer: ContextRenderer

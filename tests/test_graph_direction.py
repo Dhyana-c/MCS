@@ -7,8 +7,11 @@ from __future__ import annotations
 
 import tempfile
 
-from mcs.core.graph import Edge, GraphStore, Node
-from mcs.plugins.phase1.sqlite_storage import SQLiteStoragePlugin
+from mcs.core.graph import Edge, Node
+from mcs.stores.in_memory import InMemoryStore
+from mcs.stores.sqlite_store import SQLiteStore
+
+GraphStore = InMemoryStore
 
 
 def test_add_edge_out_is_unidirectional():
@@ -79,24 +82,20 @@ def test_save_load_roundtrip_preserves_out_direction():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
-    g = GraphStore()
-    g.add_node(Node(id="a", name="A", content=""))
-    g.add_node(Node(id="b", name="B", content=""))
-    g.add_node(Node(id="c", name="C", content=""))
-    g.add_edge("a", "b", direction="out")
-    g.add_edge("b", "c", direction="bidirectional")
+    storage = SQLiteStore({"path": db_path})
+    storage.initialize()
+    storage.add_node(Node(id="a", name="A", content=""))
+    storage.add_node(Node(id="b", name="B", content=""))
+    storage.add_node(Node(id="c", name="C", content=""))
+    storage.add_edge("a", "b", direction="out")
+    storage.add_edge("b", "c", direction="bidirectional")
 
-    storage = SQLiteStoragePlugin({"path": db_path})
-    storage.conn = None  # 先 shutdown
-    # 手动初始化（模拟 initialize）
-    import sqlite3
-    storage.conn = sqlite3.connect(db_path)
-    storage._create_tables([])
+    storage.save_full()
 
-    storage.save_full(g)
-    storage.commit()
-
-    loaded = storage.load()
+    # 加载到新 store 验证
+    loaded = SQLiteStore({"path": db_path})
+    loaded.initialize()
+    loaded.load()
 
     # out 边 a→b 方向保真
     edge_ab = loaded.get_edge("a", "b")
@@ -114,6 +113,7 @@ def test_save_load_roundtrip_preserves_out_direction():
     assert {n.id for n in loaded.get_neighbors("c")} == {"b"}
 
     storage.shutdown()
+    loaded.shutdown()
 
     import os
     os.unlink(db_path)
@@ -170,25 +170,23 @@ def test_same_pair_dual_edge_roundtrip():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
-    g = GraphStore()
-    g.add_node(Node(id="a", name="A", content=""))
-    g.add_node(Node(id="b", name="B", content=""))
-    g.add_edge("a", "b", direction="bidirectional")
-    g.add_edge("a", "b", direction="out")
+    storage = SQLiteStore({"path": db_path})
+    storage.initialize()
+    storage.add_node(Node(id="a", name="A", content=""))
+    storage.add_node(Node(id="b", name="B", content=""))
+    storage.add_edge("a", "b", direction="bidirectional")
+    storage.add_edge("a", "b", direction="out")
+    storage.save_full()
 
-    import sqlite3
-    storage = SQLiteStoragePlugin({"path": db_path})
-    storage.conn = sqlite3.connect(db_path)
-    storage._create_tables([])
-    storage.save_full(g)
-    storage.commit()
-
-    loaded = storage.load()
+    loaded = SQLiteStore({"path": db_path})
+    loaded.initialize()
+    loaded.load()
     triples = {(e.source_id, e.target_id, e.direction) for e in loaded.get_all_edges()}
     assert ("a", "b", "bidirectional") in triples
     assert ("a", "b", "out") in triples
     assert len(loaded.get_all_edges()) == 2
 
     storage.shutdown()
+    loaded.shutdown()
     import os
     os.unlink(db_path)

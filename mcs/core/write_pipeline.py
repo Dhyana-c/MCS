@@ -8,7 +8,7 @@
     ④ 关系判定           (LLM: judge_relations → DecisionList)
     ⑤ 图更新             (无 LLM；原子地应用 DecisionList)
     ⑥ 压缩判定插件链     (CompactionPlugin chain, 条件性)
-    ⑦ 自动落盘           (StorageInterface 增量持久化)
+    ⑦ 自动落盘           (SQLiteStore 增量持久化)
 
 阶段 ④ 产生一个 ``DecisionList``（纯数据）；阶段 ⑤ 应用它。
 """
@@ -25,9 +25,10 @@ from mcs.core.errors import InvalidDecisionError, UnknownActionError
 
 if TYPE_CHECKING:
     from mcs.core.config import MCSConfig
-    from mcs.core.graph import GraphStoreInterface, Node
+    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginManager
     from mcs.core.query_engine import QueryEngine
+    from mcs.core.store import StoreInterface
     from mcs.core.token_budget import TokenBudget
     from mcs.interfaces.llm import LLMInterface
 
@@ -77,7 +78,7 @@ class WritePipeline:
 
     def __init__(
         self,
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         llm: LLMInterface,
         query_engine: QueryEngine,
         plugin_manager: PluginManager,
@@ -85,7 +86,7 @@ class WritePipeline:
         config: MCSConfig | None = None,
         system_prompt: str = "",
     ):
-        self.graph = graph
+        self.store = store
         self.llm = llm
         self.query_engine = query_engine
         self.plugin_manager = plugin_manager
@@ -264,7 +265,7 @@ class WritePipeline:
                 if decision.target_id is None:
                     raise InvalidDecisionError("merge without target_id")
                 self._dispatch_merge(decision)
-                node = self.graph.get_node(decision.target_id)
+                node = self.store.get_node(decision.target_id)
                 if node is not None:
                     changed.append(node)
                 if cname:
@@ -280,7 +281,7 @@ class WritePipeline:
                 if decision.target_id is None:
                     raise InvalidDecisionError("attach_statement without target_id")
                 self._dispatch_attach(decision)
-                node = self.graph.get_node(decision.target_id)
+                node = self.store.get_node(decision.target_id)
                 if node is not None:
                     changed.append(node)
                 if cname:
@@ -295,7 +296,7 @@ class WritePipeline:
             for nm in names:
                 target_id = name_to_id.get(nm)
                 if target_id:
-                    self.graph.add_edge(source_id, target_id)
+                    self.store.add_edge(source_id, target_id)
         return changed
 
     def _dispatch_merge(self, decision: Decision) -> None:
@@ -306,7 +307,7 @@ class WritePipeline:
         ``_dispatch_attach`` 同风格）；写完后 ``_notify_indexes`` 会重新索引
         该节点，使新别名立即可被 AliasEntry 查到。
         """
-        node = self.graph.get_node(decision.target_id)  # type: ignore[arg-type]
+        node = self.store.get_node(decision.target_id)  # type: ignore[arg-type]
         if node is None:
             return
         # 1) 别名并入 extensions["alias_index"]["aliases"]（AliasIndexPlugin 读取的槽）
@@ -337,9 +338,9 @@ class WritePipeline:
             content=c.content,
             role="concept",
         )
-        self.graph.add_node(node)
+        self.store.add_node(node)
         for anchor_id in decision.edges_to or []:
-            self.graph.add_edge(node.id, anchor_id)
+            self.store.add_edge(node.id, anchor_id)
         # 初始陈述成为新节点上的附加陈述
         if decision.initial_statements:
             # 第一阶段将陈述保留在 extensions 中；第二阶段将其包装为属性节点
@@ -352,7 +353,7 @@ class WritePipeline:
         """将陈述附加到属性节点（第一阶段简单列表）。"""
         if not decision.statement:
             return
-        node = self.graph.get_node(decision.target_id)  # type: ignore[arg-type]
+        node = self.store.get_node(decision.target_id)  # type: ignore[arg-type]
         if node is None:
             return
         slot = node.extensions.setdefault("statements", {"items": []})
@@ -380,7 +381,7 @@ class WritePipeline:
         # 收集需检查的节点：root + changed
         nodes_to_check: list[Node] = []
         seen: set[str] = set()
-        root = self.graph.get_node(SEED_ROOT_ID)
+        root = self.store.get_node(SEED_ROOT_ID)
         if root is not None and root.id not in seen:
             nodes_to_check.append(root)
             seen.add(root.id)
@@ -391,9 +392,9 @@ class WritePipeline:
 
         # 对每个超预算节点立即触发裂变
         for node in nodes_to_check:
-            neighbors = self.graph.get_neighbors(node.id)
+            neighbors = self.store.get_neighbors(node.id)
             if fanout_plugin._exceeds_budget(node, neighbors):
-                fanout_plugin._compact_node(node, self.graph, self.llm.call)
+                fanout_plugin._compact_node(node, self.store, self.llm.call)
 
     def _run_compaction(self, changed_nodes: list[Node]) -> None:
         """阶段 ⑥：每个 CompactionPlugin 检查 should_run，然后运行。"""
@@ -401,17 +402,15 @@ class WritePipeline:
 
         plugins = self.plugin_manager.get_all(PluginType.COMPACTION)
         for plugin in plugins:
-            if plugin.should_run(changed_nodes, self.graph):
-                plugin.run(changed_nodes, self.graph, self.llm.call)
+            if plugin.should_run(changed_nodes, self.store):
+                plugin.run(changed_nodes, self.store, self.llm.call)
 
     def _run_persist(self, ctx: WriteContext) -> None:
-        """阶段 ⑦：将 ctx.changed 中的节点及关联边增量持久化到 StorageInterface。
+        """阶段 ⑦：将 ctx.changed 中的节点及关联边增量持久化。
 
-        检查 config.auto_persist 开关；无 StorageInterface 或 changed 为空时跳过。
+        检查 config.auto_persist 开关；无 SQLiteStore 或 changed 为空时跳过。
         存储异常被捕获并记录警告，不影响 ingest 返回。
         """
-        from mcs.core.plugin import PluginType
-
         if not ctx.changed:
             return
 
@@ -419,8 +418,10 @@ class WritePipeline:
         if not auto_persist:
             return
 
-        storage = self.plugin_manager.get(PluginType.STORAGE)
-        if storage is None:
+        # 仅 SQLiteStore 支持增量持久化
+        from mcs.stores.sqlite_store import SQLiteStore
+
+        if not isinstance(self.store, SQLiteStore) or self.store.conn is None:
             return
 
         try:
@@ -428,22 +429,22 @@ class WritePipeline:
             persisted_edges: set[tuple[str, str]] = set()
 
             for node in ctx.changed:
-                storage.save_node(node)
+                self.store._save_node(node)
 
             for node in ctx.changed:
-                for neighbor in self.graph.get_neighbors(node.id):
-                    edge = self.graph.get_edge(node.id, neighbor.id)
+                for neighbor in self.store.get_neighbors(node.id):
+                    edge = self.store.get_edge(node.id, neighbor.id)
                     if edge is None:
                         continue
                     key = (edge.source_id, edge.target_id)
                     if key in persisted_edges:
                         continue
                     if neighbor.id in changed_ids or node.id in changed_ids:
-                        storage.save_edge(edge)
+                        self.store._save_edge(edge)
                         persisted_edges.add(key)
 
             # 每次 ingest 落盘后显式提交：消除"滞后一块 + shutdown 丢最后一块"。
-            storage.commit()
+            self.store.commit()
             ctx.persisted = True
         except Exception:
             import logging

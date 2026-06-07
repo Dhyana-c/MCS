@@ -9,10 +9,13 @@ import logging
 
 from mcs.core.config import MCSConfig
 from mcs.core.decisions import Community, MultiHubDecision
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.token_budget import TokenBudget
 from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 def _fanout_with_root(graph, token_budget, mock_llm, **extra_cfg):
@@ -23,7 +26,7 @@ def _fanout_with_root(graph, token_budget, mock_llm, **extra_cfg):
     pm.register(fr)
     pm.initialize_all(
         PluginContext(
-            graph=graph,
+            store=graph,
             config=MCSConfig(seed_graph_bounding=True),
             token_budget=token_budget,
             context_renderer=None,  # type: ignore[arg-type]
@@ -181,7 +184,7 @@ def test_max_reorg_warning_logged(mock_llm, caplog):
     pm.register(fr)
     pm.initialize_all(
         PluginContext(
-            graph=g,
+            store=g,
             config=MCSConfig(seed_graph_bounding=True),
             token_budget=TokenBudget(500),
             context_renderer=None,  # type: ignore[arg-type]

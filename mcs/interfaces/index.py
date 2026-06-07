@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStore, Node
+    from mcs.stores.in_memory import InMemoryStore as GraphStore
+    from mcs.core.graph import Node
 
 
 class IndexInterface(Plugin):

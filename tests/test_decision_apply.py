@@ -6,20 +6,21 @@ import pytest
 
 from mcs.core.decisions import ConceptDraft, Decision
 from mcs.core.errors import InvalidDecisionError, UnknownActionError
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginManager
 from mcs.core.query_engine import QueryEngine
+from mcs.core.store import StoreInterface
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
 
 
-def _make_pipeline(graph: GraphStore, mock_llm) -> WritePipeline:
+def _make_pipeline(store: StoreInterface, mock_llm) -> WritePipeline:
     pm = PluginManager()
     pm.register(mock_llm)
     tb = TokenBudget(8000)
-    qe = QueryEngine(graph=graph, llm=mock_llm, plugin_manager=pm, token_budget=tb)
+    qe = QueryEngine(store=store, llm=mock_llm, plugin_manager=pm, token_budget=tb)
     return WritePipeline(
-        graph=graph,
+        store=store,
         llm=mock_llm,
         query_engine=qe,
         plugin_manager=pm,

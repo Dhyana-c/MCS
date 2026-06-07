@@ -1,8 +1,11 @@
 """Unit tests for CommunityMerger plugin."""
 
 import pytest
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.plugins.phase1.community_merger import CommunityMergerPlugin
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 def create_dense_community_graph() -> GraphStore:

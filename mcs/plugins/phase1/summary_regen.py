@@ -16,8 +16,9 @@ from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import GraphStoreInterface, Node
+    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
+    from mcs.core.store import StoreInterface
 
 
 class SummaryRegenPlugin(CompactionPluginInterface):
@@ -45,14 +46,14 @@ class SummaryRegenPlugin(CompactionPluginInterface):
     # === CompactionPluginInterface ===
 
     def should_run(
-        self, changed_nodes: list[Node], graph: GraphStoreInterface
+        self, changed_nodes: list[Node], store: StoreInterface
     ) -> bool:
         return any(self._needs_summary(n) for n in changed_nodes)
 
     def run(
         self,
         changed_nodes: list[Node],
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         llm_caller: Callable,
     ) -> None:
         for node in changed_nodes:
@@ -76,7 +77,7 @@ class SummaryRegenPlugin(CompactionPluginInterface):
                 datetime.now(timezone.utc).isoformat()
             )
             slot["_content_len"] = len(node.content or "")
-            graph.update_node(node.id, {"extensions": node.extensions})
+            store.update_node(node.id, {"extensions": node.extensions})
 
     def _needs_summary(self, node: Node) -> bool:
         slot = (node.extensions or {}).get("summary", {})

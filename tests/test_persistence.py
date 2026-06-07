@@ -10,7 +10,7 @@ import sqlite3
 
 from mcs.core.config import MCSConfig
 from mcs.core.decisions import ConceptDraft, Decision
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
@@ -21,77 +21,87 @@ from mcs.plugins.phase1.source_tracking import (
     SourceTrackingPlugin,
     _coerce_source,
 )
-from mcs.plugins.phase1.sqlite_storage import SQLiteStoragePlugin
+from mcs.stores.in_memory import InMemoryStore
+from mcs.stores.sqlite_store import SQLiteStore
+
+GraphStore = InMemoryStore
 
 # ─── 测试装配 ─────────────────────────────────────────────────────────────────
 
 
 def _storage_with_source_tracking(db_path: str):
-    """SQLiteStoragePlugin + SourceTrackingPlugin，已 initialize。"""
+    """SQLiteStore + SourceTrackingPlugin，已 initialize。"""
     pm = PluginManager()
-    storage = SQLiteStoragePlugin({"path": db_path})
+    store = SQLiteStore({"path": db_path})
     st = SourceTrackingPlugin()
-    pm.register(storage)
     pm.register(st)
+    store.initialize(
+        schema_extensions=[st],  # SourceTrackingPlugin 实现 StorageSchemaExtensionInterface
+        node_extensions={"source_tracking": st},
+    )
     ctx = PluginContext(
-        graph=GraphStore(),
+        store=store,
         config=MCSConfig(),
         token_budget=TokenBudget(8000),
         context_renderer=None,  # type: ignore[arg-type]
         plugin_manager=pm,
     )
     pm.initialize_all(ctx)
-    return storage, st, pm
+    return store, st, pm
 
 
 def test_save_full_reflects_edge_deletion(tmp_path):
     """save_full 全量重建：被删除的边在持久化后消失（增量 save 做不到）。"""
     db = str(tmp_path / "sf.db")
-    storage, _st, _pm = _storage_with_source_tracking(db)
-    g = GraphStore()
-    g.add_node(Node(id="a", name="A", content=""))
-    g.add_node(Node(id="b", name="B", content=""))
-    g.add_edge("a", "b")
-    storage.save(g)              # 增量存：a、b、边 a-b
-    g.delete_edge("a", "b")     # 内存删边
-    storage.save_full(g)        # 全量重建应反映删除
+    store, _st, _pm = _storage_with_source_tracking(db)
+    store.add_node(Node(id="a", name="A", content=""))
+    store.add_node(Node(id="b", name="B", content=""))
+    store.add_edge("a", "b")
+    store.save()              # 增量存：a、b、边 a-b
+    store.delete_edge("a", "b")     # 内存删边
+    store.save_full()        # 全量重建应反映删除
 
-    loaded = storage.load()
-    assert loaded.get_node("a") is not None
-    assert loaded.get_node("b") is not None
-    assert loaded.get_edge("a", "b") is None  # 边已不在持久存储
+    store2 = SQLiteStore({"path": db})
+    store2.initialize()
+    store2.load()
+    assert store2.get_node("a") is not None
+    assert store2.get_node("b") is not None
+    assert store2.get_edge("a", "b") is None  # 边已不在持久存储
 
 
 def test_incremental_save_does_not_delete_edge(tmp_path):
     """对照：增量 save 只 upsert、不删行 —— 这正是需要 save_full 的原因。"""
     db = str(tmp_path / "sf2.db")
-    storage, _st, _pm = _storage_with_source_tracking(db)
-    g = GraphStore()
-    g.add_node(Node(id="a", name="A", content=""))
-    g.add_node(Node(id="b", name="B", content=""))
-    g.add_edge("a", "b")
-    storage.save(g)
-    g.delete_edge("a", "b")
-    storage.save(g)             # 增量再存：不会删除旧边
+    store, _st, _pm = _storage_with_source_tracking(db)
+    store.add_node(Node(id="a", name="A", content=""))
+    store.add_node(Node(id="b", name="B", content=""))
+    store.add_edge("a", "b")
+    store.save()
+    store.delete_edge("a", "b")
+    store.save()             # 增量再存：不会删除旧边
 
-    loaded = storage.load()
-    assert loaded.get_edge("a", "b") is not None  # 旧边仍在 → 故需 save_full
+    store2 = SQLiteStore({"path": db})
+    store2.initialize()
+    store2.load()
+    assert store2.get_edge("a", "b") is not None  # 旧边仍在 → 故需 save_full
 
 
 def _full_pipeline(db_path: str, mock_llm):
-    """完整写入管线：sqlite + source_tracking + idempotency + mock LLM。"""
-    graph = GraphStore()
+    """完整写入管线：SQLiteStore + source_tracking + idempotency + mock LLM。"""
+    store = SQLiteStore({"path": db_path})
     pm = PluginManager()
-    storage = SQLiteStoragePlugin({"path": db_path})
     st = SourceTrackingPlugin()
     idem = IdempotencyCheckPlugin()
     pm.register(mock_llm)
-    pm.register(storage)
     pm.register(st)
     pm.register(idem)
     config = MCSConfig(auto_persist=True)
+    store.initialize(
+        schema_extensions=[st],  # SourceTrackingPlugin 实现 StorageSchemaExtensionInterface
+        node_extensions={"source_tracking": st},
+    )
     ctx = PluginContext(
-        graph=graph,
+        store=store,
         config=config,
         token_budget=TokenBudget(8000),
         context_renderer=None,  # type: ignore[arg-type]
@@ -99,7 +109,7 @@ def _full_pipeline(db_path: str, mock_llm):
     )
     pm.initialize_all(ctx)
     qe = QueryEngine(
-        graph=graph,
+        store=store,
         llm=mock_llm,
         plugin_manager=pm,
         token_budget=TokenBudget(8000),
@@ -107,14 +117,14 @@ def _full_pipeline(db_path: str, mock_llm):
         max_picked=20,
     )
     wp = WritePipeline(
-        graph=graph,
+        store=store,
         llm=mock_llm,
         query_engine=qe,
         plugin_manager=pm,
         token_budget=TokenBudget(8000),
         config=config,
     )
-    return wp, storage, idem, pm
+    return wp, store, idem, pm
 
 
 def _set_create_decision(mock_llm, name: str):
@@ -130,7 +140,7 @@ def _set_create_decision(mock_llm, name: str):
 
 
 def test_roundtrip_source_is_structured_not_string(tmp_path):
-    storage, _st, _pm = _storage_with_source_tracking(str(tmp_path / "g.db"))
+    store, _st, _pm = _storage_with_source_tracking(str(tmp_path / "g.db"))
     node = Node(
         id="n1",
         name="N",
@@ -148,10 +158,14 @@ def test_roundtrip_source_is_structured_not_string(tmp_path):
             }
         },
     )
-    storage.save_node(node)
-    storage.commit()
+    store.add_node(node)
+    store._save_node(node)
+    store.commit()
 
-    loaded = storage.load().get_node("n1")
+    store2 = SQLiteStore({"path": str(tmp_path / "g.db")})
+    store2.initialize()
+    store2.load()
+    loaded = store2.get_node("n1")
     sources = loaded.extensions["source_tracking"]["sources"]
     assert sources
     s0 = sources[0]
@@ -162,7 +176,7 @@ def test_roundtrip_source_is_structured_not_string(tmp_path):
 
 def test_roundtrip_dump_contains_dict_not_repr(tmp_path):
     """落盘的 extensions_json 中 source 是 dict，而非 default=str 的 repr 字符串。"""
-    storage, _st, _pm = _storage_with_source_tracking(str(tmp_path / "g.db"))
+    store, _st, _pm = _storage_with_source_tracking(str(tmp_path / "g.db"))
     node = Node(
         id="n1",
         name="N",
@@ -173,9 +187,10 @@ def test_roundtrip_dump_contains_dict_not_repr(tmp_path):
             }
         },
     )
-    storage.save_node(node)
-    storage.commit()
-    raw = storage.conn.execute(
+    store.add_node(node)
+    store._save_node(node)
+    store.commit()
+    raw = store.conn.execute(
         "SELECT extensions_json FROM nodes WHERE id='n1'"
     ).fetchone()[0]
     parsed = json.loads(raw)
@@ -206,7 +221,8 @@ def test_coerce_stringified_source_with_apostrophe_title():
 
 def test_load_tolerates_legacy_stringified_source(tmp_path):
     """load() 遇到历史字符串化 source 仍能还原 doc_id（既有 db 无需重建）。"""
-    storage, _st, _pm = _storage_with_source_tracking(str(tmp_path / "g.db"))
+    db_path = str(tmp_path / "g.db")
+    store, _st, _pm = _storage_with_source_tracking(db_path)
     legacy = {
         "source_tracking": {
             "sources": [
@@ -214,14 +230,22 @@ def test_load_tolerates_legacy_stringified_source(tmp_path):
             ]
         }
     }
-    storage.conn.execute(
+    store.conn.execute(
         "INSERT OR REPLACE INTO nodes (id, name, content, role, extensions_json) "
         "VALUES (?, ?, ?, ?, ?)",
         ("old1", "Old", "c", "concept", json.dumps(legacy)),
     )
-    storage.commit()
+    store.commit()
 
-    s0 = storage.load().get_node("old1").extensions["source_tracking"]["sources"][0]
+    # 新 store 需要 SourceTrackingPlugin 作为 node_extension 才能反序列化
+    st2 = SourceTrackingPlugin()
+    store2 = SQLiteStore({"path": db_path})
+    store2.initialize(
+        schema_extensions=[st2],
+        node_extensions={"source_tracking": st2},
+    )
+    store2.load()
+    s0 = store2.get_node("old1").extensions["source_tracking"]["sources"][0]
     doc_id = s0.doc_id if hasattr(s0, "doc_id") else s0["doc_id"]
     assert doc_id == "OldDoc"
 
@@ -231,9 +255,10 @@ def test_load_tolerates_legacy_stringified_source(tmp_path):
 
 def test_commit_visible_to_independent_connection(tmp_path):
     db = str(tmp_path / "g.db")
-    storage, _st, _pm = _storage_with_source_tracking(db)
-    storage.save_node(Node(id="n1", name="N", content="c"))
-    storage.commit()
+    store, _st, _pm = _storage_with_source_tracking(db)
+    store.add_node(Node(id="n1", name="N", content="c"))
+    store._save_node(store.get_node("n1"))
+    store.commit()
 
     other = sqlite3.connect(db)
     row = other.execute("SELECT id FROM nodes WHERE id='n1'").fetchone()
@@ -244,7 +269,7 @@ def test_commit_visible_to_independent_connection(tmp_path):
 def test_ingest_commits_so_independent_reader_sees_node(tmp_path, mock_llm):
     """每次 ingest 后提交：另一个独立连接能读到刚摄入的节点。"""
     db = str(tmp_path / "g.db")
-    wp, _storage, _idem, _pm = _full_pipeline(db, mock_llm)
+    wp, _store, _idem, _pm = _full_pipeline(db, mock_llm)
     _set_create_decision(mock_llm, "FreshNode")
     ctx = wp.ingest("text", doc_id="D1", chunk_id="0")
     assert ctx.persisted is True
@@ -258,13 +283,15 @@ def test_ingest_commits_so_independent_reader_sees_node(tmp_path, mock_llm):
 def test_shutdown_does_not_lose_last_chunk(tmp_path, mock_llm):
     """连续 ingest 后 shutdown，最后一块的节点仍已提交持久化。"""
     db = str(tmp_path / "g.db")
-    wp, _storage, _idem, pm = _full_pipeline(db, mock_llm)
+    wp, store, _idem, pm = _full_pipeline(db, mock_llm)
     _set_create_decision(mock_llm, "LastChunkNode")
     wp.ingest("text", doc_id="D1", chunk_id="0")
     pm.shutdown_all()  # 关闭连接
+    store.shutdown()
 
-    storage2, _st2, _pm2 = _storage_with_source_tracking(db)
-    names = [n.name for n in storage2.load().get_all_nodes()]
+    store2, _st2, _pm2 = _storage_with_source_tracking(db)
+    store2.load()
+    names = [n.name for n in store2.get_all_nodes()]
     assert "LastChunkNode" in names
 
 
@@ -273,12 +300,12 @@ def test_shutdown_does_not_lose_last_chunk(tmp_path, mock_llm):
 
 def test_success_marks_chunk_and_second_ingest_skips(tmp_path, mock_llm):
     db = str(tmp_path / "g.db")
-    wp, storage, _idem, _pm = _full_pipeline(db, mock_llm)
+    wp, store, _idem, _pm = _full_pipeline(db, mock_llm)
     _set_create_decision(mock_llm, "X")
 
     ctx = wp.ingest("text", doc_id="D1", chunk_id="0")
     assert ctx.persisted is True
-    row = storage.conn.execute(
+    row = store.conn.execute(
         "SELECT content_hash FROM document_chunks WHERE doc_id='D1' AND chunk_id='0'"
     ).fetchone()
     assert row is not None  # 成功落盘后才标记
@@ -289,29 +316,29 @@ def test_success_marks_chunk_and_second_ingest_skips(tmp_path, mock_llm):
 
 def test_failed_persist_not_marked_and_retried(tmp_path, mock_llm):
     db = str(tmp_path / "g.db")
-    wp, storage, _idem, _pm = _full_pipeline(db, mock_llm)
+    wp, store, _idem, _pm = _full_pipeline(db, mock_llm)
     _set_create_decision(mock_llm, "X")
 
     # 模拟落盘失败：save_node 抛异常
-    orig_save = storage.save_node
+    orig_save = store._save_node
 
     def boom(node):
         raise RuntimeError("disk full")
 
-    storage.save_node = boom  # type: ignore[method-assign]
+    store._save_node = boom  # type: ignore[method-assign]
     ctx = wp.ingest("text", doc_id="D1", chunk_id="0")
     assert ctx.persisted is False
-    row = storage.conn.execute(
+    row = store.conn.execute(
         "SELECT * FROM document_chunks WHERE doc_id='D1' AND chunk_id='0'"
     ).fetchone()
     assert row is None  # 出错的块未被标记
 
     # 恢复存储 → 续跑应重试该块（不被跳过），这次成功落盘并标记
-    storage.save_node = orig_save  # type: ignore[method-assign]
+    store._save_node = orig_save  # type: ignore[method-assign]
     ctx2 = wp.ingest("text", doc_id="D1", chunk_id="0")
     assert ctx2.skip is False
     assert ctx2.persisted is True
-    row2 = storage.conn.execute(
+    row2 = store.conn.execute(
         "SELECT * FROM document_chunks WHERE doc_id='D1' AND chunk_id='0'"
     ).fetchone()
     assert row2 is not None

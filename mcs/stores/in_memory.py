@@ -1,105 +1,26 @@
-"""图存储接口与内存实现。
+"""基于 dict 的内存图存储。
 
-``GraphStoreInterface`` 是图操作的抽象基类（读写一体化），
-``InMemoryGraphStore`` 是基于 dict 的默认实现。
-数据类（Node / Edge / Subgraph）定义在 ``graph.py``。
+``InMemoryStore`` 是 ``StoreInterface`` 的默认实现，
+邻接关系存储为以节点 id 为键的对称字典集合。
+持久化钩子（save/load/commit/save_full）为空操作。
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
+
+from mcs.core.store import StoreInterface
 
 if TYPE_CHECKING:
     from mcs.core.graph import Edge, Node, Subgraph
     from mcs.core.token_budget import TokenBudget
 
 
-class GraphStoreInterface(ABC):
-    """图存储抽象基类。
-
-    定义全部图操作方法（节点/边 CRUD + 查询），供消费者依赖。
-    具体实现（InMemoryGraphStore、SQLiteGraphStore 等）继承此类。
-    """
-
-    # === 节点 CRUD ===
-
-    @abstractmethod
-    def add_node(self, node: Node) -> str:
-        """添加节点，返回节点 id。"""
-        ...
-
-    @abstractmethod
-    def get_node(self, node_id: str) -> Node | None:
-        """按 id 获取节点，不存在返回 None。"""
-        ...
-
-    @abstractmethod
-    def update_node(self, node_id: str, updates: dict) -> None:
-        """更新节点属性。"""
-        ...
-
-    @abstractmethod
-    def delete_node(self, node_id: str) -> None:
-        """删除节点及其关联边。"""
-        ...
-
-    # === 边 CRUD ===
-
-    @abstractmethod
-    def add_edge(
-        self,
-        source_id: str,
-        target_id: str,
-        direction: str = "bidirectional",
-    ) -> None:
-        """添加边。direction 为 'bidirectional' 或 'out'。"""
-        ...
-
-    @abstractmethod
-    def get_edge(self, source_id: str, target_id: str) -> Edge | None:
-        """获取两个节点之间的边，不存在返回 None。"""
-        ...
-
-    @abstractmethod
-    def delete_edge(self, source_id: str, target_id: str) -> None:
-        """删除两个节点之间的边。"""
-        ...
-
-    # === 查询 ===
-
-    @abstractmethod
-    def get_neighbors(self, node_id: str) -> list[Node]:
-        """获取全部邻居（bidirectional 两端 + out 边 source 端的 target）。"""
-        ...
-
-    @abstractmethod
-    def get_out_neighbors(self, node_id: str) -> list[Node]:
-        """获取 out 邻居：仅 direction=out 的边目标。"""
-        ...
-
-    @abstractmethod
-    def get_subgraph(
-        self, node_id: str, token_budget: TokenBudget | None = None
-    ) -> Subgraph:
-        """从焦点节点贪婪 BFS 扩展，在预算耗尽时停止。"""
-        ...
-
-    @abstractmethod
-    def get_all_nodes(self) -> list[Node]:
-        """返回全部节点。"""
-        ...
-
-    @abstractmethod
-    def get_all_edges(self) -> list[Edge]:
-        """返回全部边。"""
-        ...
-
-
-class InMemoryGraphStore(GraphStoreInterface):
+class InMemoryStore(StoreInterface):
     """基于 dict 的内存图存储。
 
     邻接关系存储为以节点 id 为键的对称字典集合。
+    持久化钩子为空操作（不报错，不持久化）。
     """
 
     def __init__(self) -> None:
@@ -248,7 +169,3 @@ class InMemoryGraphStore(GraphStoreInterface):
             )
             return (a, b, "bidirectional")
         return (source_id, target_id, "out")
-
-
-# 向后兼容别名
-GraphStore = InMemoryGraphStore

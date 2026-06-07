@@ -5,7 +5,8 @@ from collections import defaultdict
 from dataclasses import dataclass, asdict
 from typing import TextIO
 
-from mcs.core.graph import GraphStoreInterface, Node, Edge
+from mcs.core.graph import Node, Edge
+from mcs.core.store import StoreInterface
 
 
 @dataclass
@@ -80,7 +81,7 @@ def _get_node_doc_id(node: Node) -> str | None:
     return None
 
 
-def _compute_connected_components(graph: GraphStoreInterface) -> list[set[str]]:
+def _compute_connected_components(store: StoreInterface) -> list[set[str]]:
     """Find all connected components using BFS.
 
     Returns a list of sets, each set containing node IDs in one component.
@@ -88,7 +89,7 @@ def _compute_connected_components(graph: GraphStoreInterface) -> list[set[str]]:
     visited = set()
     components = []
 
-    for node in graph.get_all_nodes():
+    for node in store.get_all_nodes():
         if node.id in visited:
             continue
 
@@ -105,7 +106,7 @@ def _compute_connected_components(graph: GraphStoreInterface) -> list[set[str]]:
             component.add(current_id)
 
             # Add all neighbors to queue
-            neighbors = graph.get_neighbors(current_id)
+            neighbors = store.get_neighbors(current_id)
             for neighbor in neighbors:
                 if neighbor.id not in visited:
                     queue.append(neighbor.id)
@@ -116,17 +117,17 @@ def _compute_connected_components(graph: GraphStoreInterface) -> list[set[str]]:
     return components
 
 
-def diagnose_graph(graph: GraphStoreInterface) -> GraphQualityReport:
+def diagnose_graph(store: StoreInterface) -> GraphQualityReport:
     """Compute structural connectivity metrics for a graph.
 
     Args:
-        graph: The GraphStoreInterface to analyze
+        store: The StoreInterface to analyze
 
     Returns:
         GraphQualityReport with all computed metrics
     """
-    nodes = graph.get_all_nodes()
-    edges = graph.get_all_edges()
+    nodes = store.get_all_nodes()
+    edges = store.get_all_edges()
 
     node_count = len(nodes)
     edge_count = len(edges)
@@ -145,7 +146,7 @@ def diagnose_graph(graph: GraphStoreInterface) -> GraphQualityReport:
     isolated_node_rate = isolated_node_count / node_count if node_count > 0 else 0.0
 
     # Connected components
-    components = _compute_connected_components(graph)
+    components = _compute_connected_components(store)
     connected_component_count = len(components)
 
     # Largest component
@@ -198,10 +199,10 @@ def diagnose_from_db(db_path: str) -> GraphQualityReport:
     """
     import sqlite3
 
-    from mcs.core.graph_store import InMemoryGraphStore
+    from mcs.stores.in_memory import InMemoryStore
     from mcs.core.graph import Node, Edge
 
-    graph = InMemoryGraphStore()
+    graph = InMemoryStore()
     conn = sqlite3.connect(db_path)
 
     # Load nodes

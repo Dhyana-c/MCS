@@ -9,11 +9,14 @@ import tempfile
 
 from mcs.core.config import MCSConfig
 from mcs.core.decisions import Community, MultiHubDecision
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.token_budget import TokenBudget
 from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID, FanoutReducerPlugin
-from mcs.plugins.phase1.sqlite_storage import SQLiteStoragePlugin
+from mcs.stores.in_memory import InMemoryStore
+from mcs.stores.sqlite_store import SQLiteStore
+
+GraphStore = InMemoryStore
 
 
 def _group_response(nodes_in, free_args):
@@ -31,7 +34,7 @@ def _fanout_with_root(graph, token_budget, mock_llm):
     pm.register(fr)
     pm.initialize_all(
         PluginContext(
-            graph=graph,
+            store=graph,
             config=MCSConfig(seed_graph_bounding=True),
             token_budget=token_budget,
             context_renderer=None,  # type: ignore[arg-type]
@@ -150,27 +153,25 @@ def test_directed_hierarchy_persisted_via_save_full(mock_llm):
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
-    g = GraphStore()
+    storage = SQLiteStore({"path": db_path})
+    storage.initialize()
     concepts = []
     for i in range(20):
         n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400, role="concept")
-        g.add_node(n)
+        storage.add_node(n)
         concepts.append(n)
     mock_llm.set_response("decide_hub", _group_response)
-    fr = _fanout_with_root(g, TokenBudget(500), mock_llm)
+    fr = _fanout_with_root(storage, TokenBudget(500), mock_llm)
     changed = list(concepts)
-    fr.run(changed, g, mock_llm.call)
+    fr.run(changed, storage, mock_llm.call)
 
     # 保存
-    storage = SQLiteStoragePlugin({"path": db_path})
-    import sqlite3
-    storage.conn = sqlite3.connect(db_path)
-    storage._create_tables([])
-    storage.save_full(g)
-    storage.commit()
+    storage.save_full()
 
     # 加载并验证方向
-    loaded = storage.load()
+    loaded = SQLiteStore({"path": db_path})
+    loaded.initialize()
+    loaded.load()
     for edge in loaded.get_all_edges():
         if edge.source_id == SEED_ROOT_ID:
             assert edge.direction == "out"
@@ -184,6 +185,7 @@ def test_directed_hierarchy_persisted_via_save_full(mock_llm):
     assert out_nb.issubset(all_nb)
 
     storage.shutdown()
+    loaded.shutdown()
     import os
     os.unlink(db_path)
 

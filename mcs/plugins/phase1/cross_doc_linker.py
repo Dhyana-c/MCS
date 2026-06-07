@@ -12,7 +12,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from mcs.core.graph import GraphStore, Node, Edge
+from mcs.core.graph import Node, Edge
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 @dataclass

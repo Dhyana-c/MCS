@@ -21,8 +21,9 @@ from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStoreInterface, Node
+    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
+    from mcs.core.store import StoreInterface
     from mcs.core.write_pipeline import WritePipeline
 
 
@@ -93,7 +94,7 @@ class SourceTrackingPlugin(
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.storage: Any = None
-        self.graph: GraphStoreInterface | None = None
+        self.store: StoreInterface | None = None
 
     # === Plugin 基类方法 ===
 
@@ -111,10 +112,14 @@ class SourceTrackingPlugin(
     # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
-        from mcs.core.plugin import PluginType
+        from mcs.stores.sqlite_store import SQLiteStore
 
-        self.graph = context.graph
-        self.storage = context.plugin_manager.get(PluginType.STORAGE)
+        self.store = context.store
+        # 获取 SQLiteStore 的 conn 用于 idempotency 检查
+        if isinstance(self.store, SQLiteStore):
+            self.storage = self.store
+        else:
+            self.storage = None
 
     def shutdown(self) -> None:
         self.storage = None
@@ -208,9 +213,9 @@ class SourceTrackingPlugin(
             new_keys.add((doc_id, chunk_id))
 
         # 删除新版本中不再存在的块的来源。
-        if self.graph is None:
+        if self.store is None:
             return
-        for node in self.graph.get_all_nodes():
+        for node in self.store.get_all_nodes():
             slot = (node.extensions or {}).get(self.get_name(), {})
             sources = slot.get("sources", [])
             if not sources:
@@ -224,18 +229,18 @@ class SourceTrackingPlugin(
                     kept.append(s)
             slot["sources"] = kept
 
-    def purge_orphans(self, graph: GraphStoreInterface) -> list[str]:
+    def purge_orphans(self, store: StoreInterface) -> list[str]:
         """移除来源槽位为空的节点（无存活的证据）。
 
         必须在批量文档更新后显式调用。
         """
         orphans: list[str] = []
-        for node in graph.get_all_nodes():
+        for node in store.get_all_nodes():
             slot = (node.extensions or {}).get(self.get_name(), {})
             if not slot.get("sources"):
                 orphans.append(node.id)
         for nid in orphans:
-            graph.delete_node(nid)
+            store.delete_node(nid)
         return orphans
 
 
@@ -266,8 +271,12 @@ class IdempotencyCheckPlugin(PostprocessPluginInterface):
 
     def initialize(self, context: PluginContext) -> None:
         from mcs.core.plugin import PluginType
+        from mcs.stores.sqlite_store import SQLiteStore
 
-        self.storage = context.plugin_manager.get(PluginType.STORAGE)
+        if isinstance(context.store, SQLiteStore):
+            self.storage = context.store
+        else:
+            self.storage = None
         # 通过接口定位 SourceTracking 插件
         for p in context.plugin_manager.get_all(PluginType.NODE_EXTENSION):
             if isinstance(p, SourceTrackingPlugin):

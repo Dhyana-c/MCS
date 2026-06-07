@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.diagnostics.graph_quality import diagnose_graph
 from mcs.plugins.phase1.cross_doc_linker import (
     cross_doc_link_pass,
@@ -15,6 +15,9 @@ from mcs.plugins.phase1.cross_doc_linker import (
     load_graph_from_db,
     persist_new_edges,
 )
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 def _node(node_id: str, name: str, doc_id: str, aliases=None) -> Node:

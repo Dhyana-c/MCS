@@ -21,8 +21,9 @@ from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import GraphStoreInterface, Node
+    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
+    from mcs.core.store import StoreInterface
 
 
 class CommunityMergerPlugin(CompactionPluginInterface):
@@ -64,7 +65,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
 
     # === CompactionPluginInterface ===
 
-    def should_run(self, changed_nodes: list[Node], graph: GraphStoreInterface) -> bool:
+    def should_run(self, changed_nodes: list[Node], store: StoreInterface) -> bool:
         """Check if there are dense communities to merge."""
         # Always check for communities after ingest
         return len(changed_nodes) > 0
@@ -72,12 +73,12 @@ class CommunityMergerPlugin(CompactionPluginInterface):
     def run(
         self,
         changed_nodes: list[Node],
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         llm_caller: Callable,
     ) -> None:
         """Detect and merge communities."""
         # Find all nodes with high degree
-        candidates = self._find_community_centers(graph)
+        candidates = self._find_community_centers(store)
 
         if not candidates:
             return
@@ -90,12 +91,12 @@ class CommunityMergerPlugin(CompactionPluginInterface):
             if merges_done >= self.max_merges:
                 break
 
-            neighbors = graph.get_neighbors(node.id)
+            neighbors = store.get_neighbors(node.id)
             if len(neighbors) < self.min_degree:
                 continue
 
             # Calculate clustering coefficient
-            clustering = self._calc_clustering_coefficient(node.id, neighbors, graph)
+            clustering = self._calc_clustering_coefficient(node.id, neighbors, store)
             if clustering < self.min_clustering:
                 continue
 
@@ -106,24 +107,24 @@ class CommunityMergerPlugin(CompactionPluginInterface):
                     continue  # Not cross-document
 
             # Create hub and reorganize
-            hub = self._create_hub(node, neighbors, graph, llm_caller)
+            hub = self._create_hub(node, neighbors, store, llm_caller)
             if hub:
-                self._reorganize_community(node, hub, neighbors, graph)
+                self._reorganize_community(node, hub, neighbors, store)
                 merges_done += 1
 
-    def _find_community_centers(self, graph: GraphStoreInterface) -> list[tuple[Node, int]]:
+    def _find_community_centers(self, store: StoreInterface) -> list[tuple[Node, int]]:
         """Find nodes that could be community centers (high degree)."""
         candidates = []
-        for node in graph.get_all_nodes():
+        for node in store.get_all_nodes():
             if node.role == "hub":
                 continue  # Skip existing hubs
-            neighbors = graph.get_neighbors(node.id)
+            neighbors = store.get_neighbors(node.id)
             if len(neighbors) >= self.min_degree:
                 candidates.append((node, len(neighbors)))
         return candidates
 
     def _calc_clustering_coefficient(
-        self, node_id: str, neighbors: list[Node], graph: GraphStoreInterface
+        self, node_id: str, neighbors: list[Node], store: StoreInterface
     ) -> float:
         """Calculate local clustering coefficient.
 
@@ -139,7 +140,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
         actual_edges = 0
 
         for neighbor in neighbors:
-            for n2 in graph.get_neighbors(neighbor.id):
+            for n2 in store.get_neighbors(neighbor.id):
                 if n2.id in neighbor_ids and n2.id > neighbor.id:
                     actual_edges += 1
 
@@ -159,7 +160,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
         self,
         center: Node,
         neighbors: list[Node],
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         llm_caller: Callable,
     ) -> Node | None:
         """Create a hub node for the community.
@@ -177,10 +178,10 @@ class CommunityMergerPlugin(CompactionPluginInterface):
             )
             if decision:
                 hub_id = getattr(decision, "hub_id", None)
-                if hub_id and graph.get_node(hub_id):
+                if hub_id and store.get_node(hub_id):
                     # Use existing node as hub
-                    graph.update_node(hub_id, {"role": "hub"})
-                    return graph.get_node(hub_id)
+                    store.update_node(hub_id, {"role": "hub"})
+                    return store.get_node(hub_id)
 
                 summary = getattr(decision, "synthetic_hub_summary", None)
                 if summary:
@@ -190,7 +191,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
                         content=summary,
                         role="hub",
                     )
-                    graph.add_node(hub)
+                    store.add_node(hub)
                     return hub
         except Exception:
             pass
@@ -202,21 +203,21 @@ class CommunityMergerPlugin(CompactionPluginInterface):
             content=f"Community hub for nodes related to {center.name}",
             role="hub",
         )
-        graph.add_node(hub)
+        store.add_node(hub)
         return hub
 
     def _reorganize_community(
-        self, center: Node, hub: Node, members: list[Node], graph: GraphStoreInterface
+        self, center: Node, hub: Node, members: list[Node], store: StoreInterface
     ) -> None:
         """Reorganize community into star topology around hub."""
         # Connect center to hub
-        graph.add_edge(center.id, hub.id)
+        store.add_edge(center.id, hub.id)
 
         # Connect members to hub (but keep some edges to center for connectivity)
         for member in members:
             if member.id == hub.id:
                 continue
             # Add edge to hub
-            graph.add_edge(hub.id, member.id)
+            store.add_edge(hub.id, member.id)
             # Optionally keep edge to center (for redundancy)
             # graph.add_edge(center.id, member.id)  # Uncomment to keep

@@ -3,8 +3,8 @@
 提供：
 
 - ``mock_llm``：可编程的 LLMInterface 实现
-- ``empty_graph``：空的 GraphStore
-- ``seeded_graph``：预填充小型拓扑的 GraphStore
+- ``empty_graph``：空的 InMemoryStore
+- ``seeded_graph``：预填充小型拓扑的 InMemoryStore
 - ``default_config``：MCSConfig.knowledge_graph() 并替换为 mock_llm
 - ``mcs_with_mock_llm``：使用 mock LLM 的完全初始化的 MCS 实例
 """
@@ -18,8 +18,12 @@ import pytest
 
 from mcs.core.config import MCSConfig
 from mcs.core.decisions import ConceptDraft, Decision, MultiHubDecision
-from mcs.core.graph import Edge, GraphStore, Node
+from mcs.core.graph import Edge, Node
 from mcs.interfaces.llm import LLMInterface
+from mcs.stores.in_memory import InMemoryStore
+
+# Backward compatibility alias for tests
+GraphStore = InMemoryStore
 
 
 def _default_for_purpose(purpose: str) -> Any:
@@ -92,12 +96,12 @@ def mock_llm() -> MockLLM:
 
 
 @pytest.fixture
-def empty_graph() -> GraphStore:
-    return GraphStore()
+def empty_graph() -> InMemoryStore:
+    return InMemoryStore()
 
 
 @pytest.fixture
-def seeded_graph() -> GraphStore:
+def seeded_graph() -> InMemoryStore:
     """一个小型图：
 
         deep_learning (概念)
@@ -107,7 +111,7 @@ def seeded_graph() -> GraphStore:
 
     适合遍历测试。
     """
-    g = GraphStore()
+    g = InMemoryStore()
     nodes = [
         Node(id="dl", name="深度学习", content="一种使用多层神经网络的机器学习方法。"),
         Node(id="nn", name="神经网络", content="由互连节点组成的计算模型。"),

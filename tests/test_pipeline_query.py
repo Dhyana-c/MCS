@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 class _StaticEntry(EntryPluginInterface):
@@ -41,7 +44,7 @@ def _build_engine(
     for p in extra_plugins:
         pm.register(p)
     ctx = PluginContext(
-        graph=graph,
+        store=graph,
         config=None,  # type: ignore[arg-type]
         token_budget=TokenBudget(8000),
         context_renderer=None,  # type: ignore[arg-type]
@@ -49,7 +52,7 @@ def _build_engine(
     )
     pm.initialize_all(ctx)
     return QueryEngine(
-        graph=graph,
+        store=graph,
         llm=mock_llm,  # type: ignore[arg-type]
         plugin_manager=pm,
         token_budget=TokenBudget(8000),

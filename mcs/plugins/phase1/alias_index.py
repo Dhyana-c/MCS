@@ -19,8 +19,9 @@ from mcs.interfaces.node_extension import NodeExtensionInterface
 from mcs.utils.tokenizer import ChineseTokenizer
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStoreInterface, Node
+    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
+    from mcs.core.store import StoreInterface
 
 
 class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):
@@ -34,7 +35,7 @@ class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):
         super().__init__(config)
         self.index: dict[str, set[str]] = {}
         self.tokenizer: ChineseTokenizer | None = None
-        self.graph: GraphStoreInterface | None = None
+        self.store: StoreInterface | None = None
 
     # === Plugin 基类方法 ===
 
@@ -52,8 +53,8 @@ class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):
 
     def initialize(self, context: PluginContext) -> None:
         self.tokenizer = ChineseTokenizer()
-        self.graph = context.graph
-        self.build(context.graph)
+        self.store = context.store
+        self.build(context.store)
 
     def shutdown(self) -> None:
         self.index.clear()
@@ -74,9 +75,9 @@ class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):
 
     # === IndexInterface ===
 
-    def build(self, graph: GraphStoreInterface) -> None:
+    def build(self, store: StoreInterface) -> None:
         self.index.clear()
-        for node in graph.get_all_nodes():
+        for node in store.get_all_nodes():
             self.add_entry(node)
 
     def lookup(self, query: str) -> list[str]:
@@ -132,7 +133,7 @@ class AliasEntryPlugin(EntryPluginInterface):
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.alias_index: AliasIndexPlugin | None = None
-        self.graph: GraphStoreInterface | None = None
+        self.store: StoreInterface | None = None
 
     # === Plugin 基类方法 ===
 
@@ -149,7 +150,7 @@ class AliasEntryPlugin(EntryPluginInterface):
     # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
-        self.graph = context.graph
+        self.store = context.store
         from mcs.core.plugin import PluginType
 
         idx = context.plugin_manager.get(PluginType.INDEX)
@@ -162,12 +163,12 @@ class AliasEntryPlugin(EntryPluginInterface):
     # === EntryPluginInterface ===
 
     def locate(self, query: str, ctx: Any) -> list[Node]:
-        if self.alias_index is None or self.graph is None:
+        if self.alias_index is None or self.store is None:
             return []
         node_ids = self.alias_index.lookup(query)
         nodes: list[Node] = []
         for nid in node_ids:
-            node = self.graph.get_node(nid)
+            node = self.store.get_node(nid)
             if node is not None:
                 nodes.append(node)
         return nodes

@@ -19,8 +19,9 @@ from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import Edge, GraphStoreInterface, Node
+    from mcs.core.graph import Edge, Node
     from mcs.core.plugin_manager import PluginContext
+    from mcs.core.store import StoreInterface
 
 logger = logging.getLogger(__name__)
 
@@ -85,31 +86,31 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     # === CompactionPluginInterface ===
 
     def should_run(
-        self, changed_nodes: list[Node], graph: GraphStoreInterface
+        self, changed_nodes: list[Node], store: StoreInterface
     ) -> bool:
         # 1. root 始终检查（不变量含虚拟根）
-        root = graph.get_node(SEED_ROOT_ID)
+        root = store.get_node(SEED_ROOT_ID)
         if root is not None:
-            if self._exceeds_budget(root, graph.get_neighbors(root.id)):
+            if self._exceeds_budget(root, store.get_neighbors(root.id)):
                 return True
 
         # 2. changed_nodes 检查
         for node in changed_nodes:
-            if self._exceeds_budget(node, graph.get_neighbors(node.id)):
+            if self._exceeds_budget(node, store.get_neighbors(node.id)):
                 return True
 
         # 3. 受影响节点检查（与 changed_nodes 有边的节点）
         changed_ids = {n.id for n in changed_nodes}
         affected_ids: set[str] = set()
         for node in changed_nodes:
-            for neighbor in graph.get_neighbors(node.id):
+            for neighbor in store.get_neighbors(node.id):
                 if neighbor.id not in changed_ids:
                     affected_ids.add(neighbor.id)
 
         for nid in affected_ids:
-            node = graph.get_node(nid)
+            node = store.get_node(nid)
             if node is not None:
-                if self._exceeds_budget(node, graph.get_neighbors(nid)):
+                if self._exceeds_budget(node, store.get_neighbors(nid)):
                     return True
 
         return False
@@ -117,31 +118,31 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def run(
         self,
         changed_nodes: list[Node],
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         llm_caller: Callable,
     ) -> None:
         # 收集需检查的完整节点集：changed + 受影响 + root
-        nodes_to_check = self._collect_all_affected(changed_nodes, graph)
+        nodes_to_check = self._collect_all_affected(changed_nodes, store)
 
         # 收集所有新 hub，用于后续递归守门检查
         all_new_hubs: list[Node] = []
 
         for node in nodes_to_check:
             all_new_hubs.extend(
-                self._compact_node(node, graph, llm_caller)
+                self._compact_node(node, store, llm_caller)
             )
 
         # 对新 hub 递归守门检查（不限于 maintain_root 模式）
-        self._guard_new_hubs(all_new_hubs, graph, llm_caller)
+        self._guard_new_hubs(all_new_hubs, store, llm_caller)
 
         # hub 复用（边吸收）
-        self._absorb_hub_edges(graph)
+        self._absorb_hub_edges(store)
 
         if self.maintain_root:
-            self._maintain_seed_root(changed_nodes, graph, llm_caller)
+            self._maintain_seed_root(changed_nodes, store, llm_caller)
 
     def _collect_all_affected(
-        self, changed_nodes: list[Node], graph: GraphStoreInterface
+        self, changed_nodes: list[Node], store: StoreInterface
     ) -> list[Node]:
         """收集所有需守门检查的节点：changed + 受影响 + root。
 
@@ -153,13 +154,13 @@ class FanoutReducerPlugin(CompactionPluginInterface):
 
         # 受影响节点（与 changed 有边）
         for node in changed_nodes:
-            for neighbor in graph.get_neighbors(node.id):
+            for neighbor in store.get_neighbors(node.id):
                 if neighbor.id not in seen:
                     seen.add(neighbor.id)
                     result.append(neighbor)
 
         # root（始终检查）
-        root = graph.get_node(SEED_ROOT_ID)
+        root = store.get_node(SEED_ROOT_ID)
         if root is not None and root.id not in seen:
             result.append(root)
 
@@ -168,7 +169,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def _compact_node(
         self,
         node: Node,
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         llm_caller: Callable,
     ) -> list[Node]:
         """对单个节点执行守门 + 裂变，不变量违反时分批循环处理。
@@ -180,7 +181,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         new_hubs: list[Node] = []
         reorgs = 0
         while reorgs < self.max_reorg:
-            neighbors = graph.get_neighbors(node.id)
+            neighbors = store.get_neighbors(node.id)
             if not self._exceeds_budget(node, neighbors):
                 break
             before_neighbor_count = len(neighbors)
@@ -201,14 +202,14 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 break
             if decision is None:
                 break
-            batch_hubs = self._reorganize_multi(node, decision, batch, graph)
+            batch_hubs = self._reorganize_multi(node, decision, batch, store)
             new_hubs.extend(batch_hubs)
             reorgs += 1
             # 若本批未产出 hub，退出防死循环
             if not batch_hubs:
                 break
             # 进展检查：邻居数必须下降
-            after_neighbor_count = len(graph.get_neighbors(node.id))
+            after_neighbor_count = len(store.get_neighbors(node.id))
             if after_neighbor_count >= before_neighbor_count:
                 logger.warning(
                     "节点 '%s' 本轮重组未减少邻居数（%d → %d），退出防死循环",
@@ -225,7 +226,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def _guard_new_hubs(
         self,
         new_hubs: list[Node],
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         llm_caller: Callable,
     ) -> None:
         """对新 hub 递归守门检查：若新 hub 邻域仍超预算，继续裂变。
@@ -236,10 +237,10 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         queue: list[str] = [h.id for h in new_hubs]
         while queue and reorgs < self.max_reorg:
             nid = queue.pop()
-            node = graph.get_node(nid)
+            node = store.get_node(nid)
             if node is None:
                 continue
-            neighbors = graph.get_neighbors(nid)
+            neighbors = store.get_neighbors(nid)
             if not self._exceeds_budget(node, neighbors):
                 continue
             batch = self._select_batch(node, neighbors)
@@ -253,12 +254,12 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 continue
             if decision is None:
                 continue
-            before = len(graph.get_neighbors(nid))
-            new_hubs = self._reorganize_multi(node, decision, batch, graph)
+            before = len(store.get_neighbors(nid))
+            new_hubs = self._reorganize_multi(node, decision, batch, store)
             reorgs += 1
             for hub in new_hubs:
                 queue.append(hub.id)
-            if len(graph.get_neighbors(nid)) < before:
+            if len(store.get_neighbors(nid)) < before:
                 queue.append(nid)
 
         if reorgs >= self.max_reorg:
@@ -270,7 +271,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def _maintain_seed_root(
         self,
         changed_nodes: list[Node],
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         llm_caller: Callable,
     ) -> None:
         """维护持久虚拟根 + 递归分层种子图。
@@ -282,20 +283,20 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         """
         from mcs.core.graph import Node
 
-        root = graph.get_node(SEED_ROOT_ID)
+        root = store.get_node(SEED_ROOT_ID)
         if root is None:
             root = Node(
                 id=SEED_ROOT_ID, name=SEED_ROOT_NAME, content="", role="hub"
             )
-            graph.add_node(root)
+            store.add_node(root)
 
         # 新概念挂到根下（成为分层种子图的叶子；递归会把它们下推到合适的 hub）
         # 使用有向下行 root→concept（out）
         for n in list(changed_nodes):
             if n.id == root.id:
                 continue
-            if getattr(n, "role", "concept") == "concept" and graph.get_node(n.id):
-                graph.add_edge(root.id, n.id, direction="out")
+            if getattr(n, "role", "concept") == "concept" and store.get_node(n.id):
+                store.add_edge(root.id, n.id, direction="out")
 
         # 递归分层（自根向下；进展检查 + max_reorg 双重防死循环）
         affected: dict[str, Node] = {root.id: root}
@@ -303,10 +304,10 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         reorgs = 0
         while queue and reorgs < self.max_reorg:
             nid = queue.pop()
-            node = graph.get_node(nid)
+            node = store.get_node(nid)
             if node is None:
                 continue
-            neighbors = graph.get_neighbors(nid)
+            neighbors = store.get_neighbors(nid)
             if not self._exceeds_budget(node, neighbors):
                 continue
             batch = self._select_batch(node, neighbors)
@@ -321,13 +322,13 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             if decision is None:
                 continue
             # 一进多出重组
-            before = len(graph.get_neighbors(nid))
-            new_hubs = self._reorganize_multi(node, decision, batch, graph)
+            before = len(store.get_neighbors(nid))
+            new_hubs = self._reorganize_multi(node, decision, batch, store)
             reorgs += 1
             for hub in new_hubs:
                 affected[hub.id] = hub
                 queue.append(hub.id)  # 新 hub 自身可能超预算 → 继续分层
-            if len(graph.get_neighbors(nid)) < before:
+            if len(store.get_neighbors(nid)) < before:
                 queue.append(nid)  # 仍可能超预算，继续收敛
 
         if reorgs >= self.max_reorg:
@@ -340,7 +341,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             if nd not in changed_nodes:
                 changed_nodes.append(nd)
 
-    def _absorb_hub_edges(self, graph: GraphStoreInterface) -> None:
+    def _absorb_hub_edges(self, store: StoreInterface) -> None:
         """hub 复用（边吸收）：一跳子节点 ⊇ hub 全部成员的节点改连 hub。
 
         若某节点 X 的一跳子节点集合包含 hub H 的全部成员 M（M ⊆ children(X)），
@@ -355,11 +356,11 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         """
         # 一次遍历：节点 → out 子节点集合
         out_children: dict[str, set[str]] = {}
-        for edge in graph.get_all_edges():
+        for edge in store.get_all_edges():
             if edge.direction == "out":
                 out_children.setdefault(edge.source_id, set()).add(edge.target_id)
 
-        nodes = graph.get_all_nodes()
+        nodes = store.get_all_nodes()
         roles = {n.id: n.role for n in nodes}
         hubs = [n for n in nodes if n.role == "hub"]
 
@@ -381,8 +382,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                     continue
                 # 吸收：删 X→各成员，加 X→hub
                 for m_id in hub_members:
-                    graph.delete_edge(node.id, m_id)
-                graph.add_edge(node.id, hub.id, direction="out")
+                    store.delete_edge(node.id, m_id)
+                store.add_edge(node.id, hub.id, direction="out")
                 # 同步更新映射，供后续 hub 判定（node 不再直连这些成员，改连 hub）
                 children.difference_update(hub_members)
                 children.add(hub.id)
@@ -484,7 +485,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         return False
 
     def _find_similar_hub(
-        self, summary: str, graph: GraphStoreInterface, threshold: float = 0.7
+        self, summary: str, store: StoreInterface, threshold: float = 0.7
     ) -> Node | None:
         """查找与给定摘要近似的既有 hub（简单词重叠）。
 
@@ -493,7 +494,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         summary_words = set(summary.lower().split())
         if not summary_words:
             return None
-        for node in graph.get_all_nodes():
+        for node in store.get_all_nodes():
             if node.role != "hub" or node.id == SEED_ROOT_ID:
                 continue
             if not node.content:
@@ -508,7 +509,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         return None
 
     def _reorganize(
-        self, node: Node, hub: Node, members: list[Node], graph: GraphStoreInterface
+        self, node: Node, hub: Node, members: list[Node], store: StoreInterface
     ) -> None:
         """有向层级重组：把 ``members`` 从 ``node`` 改挂到 ``hub``，产出有向层级边。
 
@@ -525,19 +526,19 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             if m.id == hub.id:
                 continue
             # 把原双向/无向边 node↔member 改为有向上行 member→node
-            graph.delete_edge(node.id, m.id)
-            graph.add_edge(m.id, node.id, direction="out")
+            store.delete_edge(node.id, m.id)
+            store.add_edge(m.id, node.id, direction="out")
             # 新增有向下行 hub→member
-            graph.add_edge(hub.id, m.id, direction="out")
+            store.add_edge(hub.id, m.id, direction="out")
         # 新增有向下行 node→hub
-        graph.add_edge(node.id, hub.id, direction="out")
+        store.add_edge(node.id, hub.id, direction="out")
 
     def _reorganize_multi(
         self,
         node: Node,
         decision: Any,
         neighbors: list[Node],
-        graph: GraphStoreInterface,
+        store: StoreInterface,
     ) -> list[Node]:
         """一进多出重组：根据 MultiHubDecision 一次造多个 hub。
 
@@ -545,7 +546,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             node: 中心节点（超容量的节点）
             decision: MultiHubDecision（decide_hub.parse 的输出）
             neighbors: 全部一跳子节点
-            graph: 图存储
+            store: 图存储
 
         Returns:
             新建的 hub 节点列表
@@ -558,14 +559,14 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         rollback_state = {
             "nodes": {
                 n.id: dc_replace(n, extensions=dict(n.extensions or {}))
-                for n in graph.get_all_nodes()
+                for n in store.get_all_nodes()
             },
-            "edges": list(graph.get_all_edges()),
+            "edges": list(store.get_all_edges()),
         }
 
         # 记录重组前的总量
-        before_nodes = len(graph.get_all_nodes())
-        before_edges = len(graph.get_all_edges())
+        before_nodes = len(store.get_all_nodes())
+        before_edges = len(store.get_all_edges())
 
         # 计算重组前中心节点 + 一跳邻域的 token 总量
         before_token_total = None
@@ -585,23 +586,23 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         new_hubs: list[Node] = []
         for comm in decision.communities:
             strategy = getattr(comm, "strategy", "summarize")
-            hub = self._create_hub_from_community(comm, graph, neighbors)
+            hub = self._create_hub_from_community(comm, store, neighbors)
             if hub is None:
                 continue
             members = [n for n in neighbors if n.id in comm.member_ids]
             if strategy == "merge":
                 # 合并同义：真正合并节点，而非重挂
-                self._merge_synonyms(node, hub, members, graph)
+                self._merge_synonyms(node, hub, members, store)
             else:
                 # 重挂：members → hub
-                self._reorganize(node, hub, members, graph)
+                self._reorganize(node, hub, members, store)
             new_hubs.append(hub)
 
         # unassigned 成员保留在 node 下（确定性兜底，不丢）——它们原本就在 node 下
 
         # 校验：中心节点扇出应收敛（阻止性）
         if not self._validate_reorg(
-            before_nodes, before_edges, graph, rollback_state,
+            before_nodes, before_edges, store, rollback_state,
             center_node_id=node.id,
             before_token_total=before_token_total,
         ):
@@ -614,7 +615,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         node: Node,
         rep: Node,
         members: list[Node],
-        graph: GraphStoreInterface,
+        store: StoreInterface,
     ) -> None:
         """合并同义概念：把 members 的内容/边合并到 rep，删除 members。
 
@@ -645,19 +646,19 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 new_content += "\n" + "\n".join(merged_parts)
             else:
                 new_content = "\n".join(merged_parts)
-            graph.update_node(rep.id, {"content": new_content})
+            store.update_node(rep.id, {"content": new_content})
 
         # 迁移边 + 删除非代表成员
         for m in members:
             if m.id == rep.id:
                 continue
             # 迁移 m 的所有边到 rep
-            self._migrate_edges(m.id, rep.id, graph)
+            self._migrate_edges(m.id, rep.id, store)
             # 删除被合并的节点
-            graph.delete_node(m.id)
+            store.delete_node(m.id)
 
         # 建立层级边：node→rep（out）
-        graph.add_edge(node.id, rep.id, direction="out")
+        store.add_edge(node.id, rep.id, direction="out")
 
         logger.info(
             "合并同义：%d 个节点合并到 '%s'（id=%s）",
@@ -667,7 +668,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         )
 
     def _migrate_edges(
-        self, old_id: str, new_id: str, graph: GraphStoreInterface
+        self, old_id: str, new_id: str, store: StoreInterface
     ) -> None:
         """把 old_id 的所有边迁移到 new_id，避免悬空边。
 
@@ -676,7 +677,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         - 否则，创建新边（保持原方向），删除旧边
         """
         edges_to_migrate: list[Edge] = []
-        for edge in graph.get_all_edges():
+        for edge in store.get_all_edges():
             if edge.source_id == old_id or edge.target_id == old_id:
                 edges_to_migrate.append(edge)
 
@@ -692,19 +693,19 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             if new_source == new_target:
                 continue
             # 如果 new_id 与 other 之间已有同方向边，跳过
-            existing = graph.get_edge(new_source, new_target)
+            existing = store.get_edge(new_source, new_target)
             if existing is not None and existing.direction == edge.direction:
                 continue
 
             # 删旧边、建新边
-            graph.delete_edge(edge.source_id, edge.target_id)
-            graph.add_edge(new_source, new_target, direction=edge.direction)
+            store.delete_edge(edge.source_id, edge.target_id)
+            store.add_edge(new_source, new_target, direction=edge.direction)
 
     def _validate_reorg(
         self,
         before_nodes: int,
         before_edges: int,
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         rollback_state: dict | None = None,
         center_node_id: str | None = None,
         before_token_total: int | None = None,
@@ -719,7 +720,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         Args:
             before_nodes: 重组前节点数
             before_edges: 重组前边数
-            graph: 图存储
+            store: 图存储
             rollback_state: 回滚状态（可选，包含 nodes 和 edges 快照）
             center_node_id: 中心节点 id（用于检查扇出收敛）
             before_token_total: 重组前中心节点 + 一跳邻域的 token 总量
@@ -728,7 +729,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             True: 校验通过
             False: 校验失败（若提供 rollback_state 则已回滚）
         """
-        after_nodes = len(graph.get_all_nodes())
+        after_nodes = len(store.get_all_nodes())
 
         # 节点数允许小幅增加（新 hub）
         node_increase = after_nodes - before_nodes
@@ -740,10 +741,10 @@ class FanoutReducerPlugin(CompactionPluginInterface):
 
         # 核心判据 1：中心节点扇出（out 边数）应下降
         if center_node_id is not None:
-            center = graph.get_node(center_node_id)
+            center = store.get_node(center_node_id)
             if center is not None:
                 out_count = sum(
-                    1 for e in graph.get_all_edges()
+                    1 for e in store.get_all_edges()
                     if e.source_id == center_node_id and e.direction == "out"
                 )
                 # 扇出不应超过重组前的邻居数（不变量保证收敛）
@@ -754,15 +755,15 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                         center_node_id, out_count, before_edges,
                     )
                     if rollback_state is not None:
-                        self._rollback_reorg(graph, rollback_state)
+                        self._rollback_reorg(store, rollback_state)
                         logger.info("重组已回滚")
                     return False
 
         # 核心判据 2：token 总量应下降（优化判据）
         if before_token_total is not None and center_node_id is not None:
-            center = graph.get_node(center_node_id)
+            center = store.get_node(center_node_id)
             if center is not None and self.token_budget is not None:
-                neighbors = graph.get_neighbors(center_node_id)
+                neighbors = store.get_neighbors(center_node_id)
                 after_token_total = self.token_budget.estimate_node(center)
                 for nb in neighbors:
                     after_token_total += self.token_budget.estimate_node(nb)
@@ -776,29 +777,29 @@ class FanoutReducerPlugin(CompactionPluginInterface):
 
         return True
 
-    def _rollback_reorg(self, graph: GraphStoreInterface, state: dict) -> None:
+    def _rollback_reorg(self, store: StoreInterface, state: dict) -> None:
         """回滚重组操作。
 
         Args:
-            graph: 图存储
+            store: 图存储
             state: 回滚状态，包含 nodes 和 edges 快照
         """
         # 清空当前图
-        for n in list(graph.get_all_nodes()):
-            graph._nodes.pop(n.id, None)
-            graph._adjacency.pop(n.id, None)
-        graph._edges.clear()
+        for n in list(store.get_all_nodes()):
+            store._nodes.pop(n.id, None)
+            store._adjacency.pop(n.id, None)
+        store._edges.clear()
 
         # 恢复快照
         for n in state["nodes"].values():
-            graph.add_node(n)
+            store.add_node(n)
         for e in state["edges"]:
-            graph.add_edge(e.source_id, e.target_id, direction=e.direction)
+            store.add_edge(e.source_id, e.target_id, direction=e.direction)
 
     def _create_hub_from_community(
         self,
         community: Any,
-        graph: GraphStoreInterface,
+        store: StoreInterface,
         neighbors: list[Node],
     ) -> Node | None:
         """从社区信息创建/提拔 hub。
@@ -814,9 +815,9 @@ class FanoutReducerPlugin(CompactionPluginInterface):
 
         if strategy == "key_concept":
             key_id = getattr(community, "key_concept_id", None)
-            if key_id and graph.get_node(key_id):
-                graph.update_node(key_id, {"role": "hub"})
-                return graph.get_node(key_id)
+            if key_id and store.get_node(key_id):
+                store.update_node(key_id, {"role": "hub"})
+                return store.get_node(key_id)
             # key_id 无效 → 退化为 summarize
             strategy = "summarize"
 
@@ -825,9 +826,9 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             if not community.member_ids:
                 return None
             rep_id = community.member_ids[0]
-            if graph.get_node(rep_id):
-                graph.update_node(rep_id, {"role": "hub"})
-                return graph.get_node(rep_id)
+            if store.get_node(rep_id):
+                store.update_node(rep_id, {"role": "hub"})
+                return store.get_node(rep_id)
             return None
 
         # summarize：新建概括性 hub
@@ -838,7 +839,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         if self._is_overbroad_hub(summary, len(community.member_ids), len(neighbors)):
             return None
         # 去重
-        similar = self._find_similar_hub(summary, graph)
+        similar = self._find_similar_hub(summary, store)
         if similar:
             return similar
         hub = GraphNode(
@@ -847,7 +848,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             content=summary,
             role="hub",
         )
-        graph.add_node(hub)
+        store.add_node(hub)
         return hub
 
 

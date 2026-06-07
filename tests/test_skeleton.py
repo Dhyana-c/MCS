@@ -42,7 +42,6 @@ ALL_MODULES = [
     "mcs.interfaces.maintenance",
     "mcs.interfaces.node_extension",
     "mcs.interfaces.postprocess_plugin",
-    "mcs.interfaces.storage",
     "mcs.interfaces.storage_schema_ext",
     "mcs.interfaces.trim_plugin",
     # plugins
@@ -56,7 +55,6 @@ ALL_MODULES = [
     "mcs.plugins.phase1.hub_fallback",
     "mcs.plugins.phase1.priority_trim",
     "mcs.plugins.phase1.source_tracking",
-    "mcs.plugins.phase1.sqlite_storage",
     "mcs.plugins.phase1.summary",
     "mcs.plugins.phase1.summary_regen",
     "mcs.plugins.phase2",
@@ -105,9 +103,9 @@ def test_abc_interfaces_not_instantiable() -> None:
     from mcs.interfaces.maintenance import MaintenanceInterface
     from mcs.interfaces.node_extension import NodeExtensionInterface
     from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
-    from mcs.interfaces.storage import StorageInterface
     from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
     from mcs.interfaces.trim_plugin import TrimPluginInterface
+    from mcs.core.store import StoreInterface
 
     for interface_cls in [
         ArbitrationPluginInterface,
@@ -118,9 +116,9 @@ def test_abc_interfaces_not_instantiable() -> None:
         MaintenanceInterface,
         NodeExtensionInterface,
         PostprocessPluginInterface,
-        StorageInterface,
         StorageSchemaExtensionInterface,
         TrimPluginInterface,
+        StoreInterface,
     ]:
         with pytest.raises(TypeError):
             interface_cls()  # type: ignore[abstract]
@@ -160,7 +158,6 @@ def test_plugin_names_match_design() -> None:
         IdempotencyCheckPlugin,
         SourceTrackingPlugin,
     )
-    from mcs.plugins.phase1.sqlite_storage import SQLiteStoragePlugin
     from mcs.plugins.phase1.summary import SummaryPlugin
     from mcs.plugins.phase1.summary_regen import SummaryRegenPlugin
 
@@ -173,7 +170,6 @@ def test_plugin_names_match_design() -> None:
     assert IdempotencyCheckPlugin().get_name() == "idempotency_check"
     assert FanoutReducerPlugin().get_name() == "fanout_reducer"
     assert SummaryRegenPlugin().get_name() == "summary_regen"
-    assert SQLiteStoragePlugin().get_name() == "sqlite_storage"
     assert DeepSeekLLMPlugin().get_name() == "deepseek_llm"
     assert ClaudeLLMPlugin().get_name() == "claude_llm"
 

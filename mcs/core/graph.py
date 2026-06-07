@@ -1,6 +1,7 @@
 """核心图数据结构。
 
-提供 Node、Edge、Subgraph 数据类。图操作接口与实现在 graph_store.py。
+提供 Node、Edge、Subgraph 数据类。图操作接口定义在 store.py，
+具体实现在 mcs.stores 包中。
 """
 
 from __future__ import annotations
@@ -45,14 +46,17 @@ class Subgraph:
     edges: list[Edge] = field(default_factory=list)
 
 
-# Re-export from graph_store.py for backward compatibility
-from mcs.core.graph_store import GraphStore, GraphStoreInterface, InMemoryGraphStore  # noqa: E402
+# Re-export StoreInterface for convenience (core dependency)
+from mcs.core.store import StoreInterface  # noqa: E402
+
+# Backward compatibility aliases
+GraphStoreInterface = StoreInterface
 
 __all__ = [
     "Node",
     "Edge",
     "Subgraph",
+    "StoreInterface",
+    # Backward compatibility
     "GraphStoreInterface",
-    "InMemoryGraphStore",
-    "GraphStore",
 ]

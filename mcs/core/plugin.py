@@ -22,7 +22,6 @@ class PluginType(str, Enum):
     ARBITRATION = "arbitration"
     POSTPROCESS = "postprocess"
     COMPACTION = "compaction"
-    STORAGE = "storage"
     INDEX = "index"
     LLM = "llm"
     NODE_EXTENSION = "node_extension"

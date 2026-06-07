@@ -8,11 +8,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from mcs.core.config import PHASE1_DEFAULT_PLUGINS, MCSConfig
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.plugins.phase1.rerank import LexicalScorer, RerankPlugin
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 def _ctx(query: str) -> SimpleNamespace:
@@ -129,7 +132,7 @@ def _query_engine(mock_llm, *plugins):
     for p in plugins:
         pm.register(p)
     ctx = PluginContext(
-        graph=graph,
+        store=graph,
         config=MCSConfig(),
         token_budget=TokenBudget(8000),
         context_renderer=None,  # type: ignore[arg-type]
@@ -137,7 +140,7 @@ def _query_engine(mock_llm, *plugins):
     )
     pm.initialize_all(ctx)
     return QueryEngine(
-        graph=graph,
+        store=graph,
         llm=mock_llm,
         plugin_manager=pm,
         token_budget=TokenBudget(8000),

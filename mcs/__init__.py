@@ -23,16 +23,17 @@ from typing import Any
 
 from mcs.core.config import MCSConfig
 from mcs.core.context_renderer import ContextRenderer
-from mcs.core.graph import GraphStore
-from mcs.core.graph_store import GraphStoreInterface, InMemoryGraphStore
 from mcs.core.plugin import Plugin, PluginType
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
+from mcs.core.store import StoreInterface
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
+from mcs.stores.in_memory import InMemoryStore
+from mcs.stores.sqlite_store import SQLiteStore
 
 
-__all__ = ["MCS", "MCSConfig", "GraphStoreInterface", "InMemoryGraphStore"]
+__all__ = ["MCS", "MCSConfig", "StoreInterface", "InMemoryStore", "SQLiteStore"]
 
 
 # 将插件"名称"（出现在 MCSConfig.plugins 中）映射到其类。
@@ -57,7 +58,6 @@ def _default_plugin_registry() -> dict[str, type[Plugin]]:
         IdempotencyCheckPlugin,
         SourceTrackingPlugin,
     )
-    from mcs.plugins.phase1.sqlite_storage import SQLiteStoragePlugin
     from mcs.plugins.phase1.summary import SummaryPlugin
     from mcs.plugins.phase1.summary_regen import SummaryRegenPlugin
 
@@ -73,7 +73,6 @@ def _default_plugin_registry() -> dict[str, type[Plugin]]:
         "fanout_reducer": FanoutReducerPlugin,
         "community_merger": CommunityMergerPlugin,  # CompactionPlugin（opt-in，不入默认链）
         "summary_regen": SummaryRegenPlugin,
-        "sqlite_storage": SQLiteStoragePlugin,
         "deepseek_llm": DeepSeekLLMPlugin,
         "claude_llm": ClaudeLLMPlugin,
         "ollama_llm": OllamaLLMPlugin,
@@ -91,11 +90,12 @@ class MCS:
         self,
         config: MCSConfig | None = None,
         plugin_registry: dict[str, type[Plugin]] | None = None,
+        store: StoreInterface | None = None,
     ):
         self.config = config or MCSConfig.knowledge_graph()
         self._plugin_registry = plugin_registry or _default_plugin_registry()
 
-        self.graph: GraphStoreInterface = InMemoryGraphStore()
+        self.store: StoreInterface = store or InMemoryStore()
         self.token_budget: TokenBudget = TokenBudget(self.config.token_budget)
         self.plugin_manager: PluginManager = PluginManager()
         self.context_renderer: ContextRenderer = ContextRenderer(
@@ -141,9 +141,21 @@ class MCS:
             )
         self.llm = llm  # type: ignore[assignment]
 
+        # 初始化 SQLiteStore（若使用）
+        if isinstance(self.store, SQLiteStore) and self.store.conn is None:
+            schema_exts = self.plugin_manager.get_all(PluginType.STORAGE_SCHEMA_EXT)
+            node_exts = {
+                p.get_name(): p
+                for p in self.plugin_manager.get_all(PluginType.NODE_EXTENSION)
+            }
+            self.store.initialize(
+                schema_extensions=schema_exts,
+                node_extensions=node_exts,
+            )
+
         # 用 PluginContext 初始化插件
         ctx = PluginContext(
-            graph=self.graph,
+            store=self.store,
             config=self.config,
             token_budget=self.token_budget,
             context_renderer=self.context_renderer,
@@ -162,7 +174,7 @@ class MCS:
 
         # 构建管线（插件已激活）
         self.query_engine = QueryEngine(
-            graph=self.graph,
+            store=self.store,
             llm=self.llm,
             plugin_manager=self.plugin_manager,
             token_budget=self.token_budget,
@@ -171,7 +183,7 @@ class MCS:
             seed_bounding=getattr(self.config, "seed_graph_bounding", False),
         )
         self.write_pipeline = WritePipeline(
-            graph=self.graph,
+            store=self.store,
             llm=self.llm,
             query_engine=self.query_engine,
             plugin_manager=self.plugin_manager,
@@ -179,7 +191,7 @@ class MCS:
             config=self.config,
         )
 
-        # Load-on-startup: 若图为空且 StorageInterface 可用，从存储加载已有数据
+        # Load-on-startup: 若图为空且 SQLiteStore 可用，从存储加载已有数据
         self._try_load_from_storage()
 
         self._initialized = True
@@ -188,6 +200,9 @@ class MCS:
         if not self._initialized:
             return
         self.plugin_manager.shutdown_all()
+        # 关闭 SQLiteStore
+        if isinstance(self.store, SQLiteStore):
+            self.store.shutdown()
         self._initialized = False
 
     # === 公共 API ===
@@ -214,13 +229,11 @@ class MCS:
         """全量重建持久化：让存储与内存图完全一致（反映删除）。
 
         增量持久化只 upsert 不删行；分层归纳会重挂/删除边，需用本方法对齐快照。
-        建议在建图收尾（及周期性）调用。无 StorageInterface 时为 no-op。
+        建议在建图收尾（及周期性）调用。无 SQLiteStore 时为 no-op。
         """
         self._require_init()
-
-        storage = self.plugin_manager.get(PluginType.STORAGE)
-        if storage is not None:
-            storage.save_full(self.graph)
+        if isinstance(self.store, SQLiteStore):
+            self.store.save_full()
 
     def get_plugin(self, name: str) -> Plugin | None:
         """按名称查找插件实例。"""
@@ -229,25 +242,19 @@ class MCS:
     # === 内部方法 ===
 
     def _try_load_from_storage(self) -> None:
-        """若图为空且 StorageInterface 已注册，从存储加载已有数据。"""
-        if self.graph.get_all_nodes():
+        """若图为空且 SQLiteStore 可用，从存储加载已有数据。"""
+        if self.store.get_all_nodes():
             return
-        storage = self.plugin_manager.get(PluginType.STORAGE)
-        if storage is None:
+        if not isinstance(self.store, SQLiteStore):
             return
         try:
-            loaded = storage.load()
-            for node in loaded.get_all_nodes():
-                if node.id not in self.graph._nodes:
-                    self.graph.add_node(node)
-            for edge in loaded.get_all_edges():
-                self.graph.add_edge(edge.source_id, edge.target_id, direction=edge.direction)
+            self.store.load()
             # reload 后重建所有 IndexInterface 索引：插件 initialize 时图尚空、索引停留在
             # 空状态；此处用加载后的图重建，否则 alias 等种子定位全失效（reload 复用图时
             # 候选集会崩塌）。
             for index in self.plugin_manager.get_all(PluginType.INDEX):
                 try:
-                    index.build(self.graph)
+                    index.build(self.store)
                 except NotImplementedError:
                     continue
         except Exception:

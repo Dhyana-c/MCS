@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from mcs.core.config import MCSConfig
 from mcs.core.decisions import Community, MultiHubDecision
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID, FanoutReducerPlugin
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 def _engine(graph, mock_llm, token_budget, seed_bounding):
@@ -22,7 +25,7 @@ def _engine(graph, mock_llm, token_budget, seed_bounding):
     pm.register(FanoutReducerPlugin({"floor": 16}))
     pm.initialize_all(
         PluginContext(
-            graph=graph,
+            store=graph,
             config=MCSConfig(),
             token_budget=token_budget,
             context_renderer=None,  # type: ignore[arg-type]
@@ -30,7 +33,7 @@ def _engine(graph, mock_llm, token_budget, seed_bounding):
         )
     )
     return QueryEngine(
-        graph=graph,
+        store=graph,
         llm=mock_llm,
         plugin_manager=pm,
         token_budget=token_budget,
@@ -105,7 +108,7 @@ def _fanout_with_root(graph, token_budget, mock_llm):
     pm.register(fr)
     pm.initialize_all(
         PluginContext(
-            graph=graph,
+            store=graph,
             config=MCSConfig(seed_graph_bounding=True),  # 开启持久根维护
             token_budget=token_budget,
             context_renderer=None,  # type: ignore[arg-type]
@@ -151,7 +154,7 @@ def test_no_persistent_root_when_disabled(mock_llm):
     pm.register(fr)
     pm.initialize_all(
         PluginContext(
-            graph=g,
+            store=g,
             config=MCSConfig(seed_graph_bounding=False),  # 显式关闭
             token_budget=TokenBudget(8000),
             context_renderer=None,  # type: ignore[arg-type]

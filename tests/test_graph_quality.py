@@ -1,8 +1,11 @@
 """Unit tests for graph quality diagnostic."""
 
 import pytest
-from mcs.core.graph import GraphStore, Node, Edge
+from mcs.core.graph import Node, Edge
 from mcs.diagnostics.graph_quality import diagnose_graph, GraphQualityReport
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 def create_test_graph() -> GraphStore:

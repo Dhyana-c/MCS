@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.token_budget import TokenBudget
 from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 def _hub_graph() -> GraphStore:
@@ -28,7 +31,7 @@ def _init(plugin: HubFallbackEntryPlugin, graph: GraphStore, *plugins) -> None:
         pm.register(p)
     pm.register(plugin)
     ctx = PluginContext(
-        graph=graph,
+        store=graph,
         config=None,  # type: ignore[arg-type]
         token_budget=TokenBudget(8000),
         context_renderer=None,  # type: ignore[arg-type]

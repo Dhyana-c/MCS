@@ -19,8 +19,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStoreInterface, Node
+    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginManager
+    from mcs.core.store import StoreInterface
     from mcs.core.token_budget import TokenBudget
     from mcs.interfaces.llm import LLMInterface
 
@@ -57,7 +58,7 @@ class QueryEngine:
 
     def __init__(
             self,
-            graph: GraphStoreInterface,
+            store: StoreInterface,
             llm: LLMInterface,
             plugin_manager: PluginManager,
             token_budget: TokenBudget,
@@ -66,7 +67,7 @@ class QueryEngine:
             system_prompt: str = "",
             seed_bounding: bool = False,
     ):
-        self.graph = graph
+        self.store = store
         self.llm = llm
         self.plugin_manager = plugin_manager
         self.token_budget = token_budget
@@ -190,7 +191,7 @@ class QueryEngine:
 
         # 超预算：尝试从 root 导航收敛
         from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
-        root = self.graph.get_node(SEED_ROOT_ID)
+        root = self.store.get_node(SEED_ROOT_ID)
 
         if root is not None and self.llm is not None:
             try:
@@ -222,7 +223,7 @@ class QueryEngine:
         输出：预算内的相关 hub 子集
         """
         # 获取 root 的直接子节点（顶层 hub）
-        top_hubs = self.graph.get_out_neighbors(root.id)
+        top_hubs = self.store.get_out_neighbors(root.id)
         if not top_hubs:
             return seeds
 
@@ -233,7 +234,7 @@ class QueryEngine:
             free_args={"target": ctx.user_input},
         ) or []
 
-        selected = [self.graph.get_node(i) for i in selected_ids]
+        selected = [self.store.get_node(i) for i in selected_ids]
         selected = [n for n in selected if n is not None]
 
         # 从选中的 hub 继续下钻
@@ -246,7 +247,7 @@ class QueryEngine:
             visited.add(hub.id)
 
             # 获取 hub 的概念成员
-            members = self.graph.get_out_neighbors(hub.id)
+            members = self.store.get_out_neighbors(hub.id)
             for m in members:
                 if m.id in visited or m.role == "hub":
                     continue
@@ -281,7 +282,7 @@ class QueryEngine:
                 if len(accumulated) >= self.max_picked:
                     break
 
-                neighbors = self.graph.get_neighbors(node.id) or []
+                neighbors = self.store.get_neighbors(node.id) or []
                 if not neighbors:
                     continue
 

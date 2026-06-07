@@ -202,7 +202,7 @@ The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting 
 
 - **WHEN** 检查 `PluginType`
 - **THEN** MUST 继承 `str` 与 `Enum`
-- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、POSTPROCESS、COMPACTION、STORAGE、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE
+- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE
 
 #### Scenario: 管线按 PluginType 查找
 
@@ -259,6 +259,22 @@ The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting 
 - **WHEN** 检查 `core/plugin_manager.py`
 - **THEN** MUST NOT 含 `collect_schema_extensions()` / `collect_node_extensions()` 等按 interface 类 `isinstance` 筛选的方法
 - **AND** 此类收集 SHALL 由调用方用 `get_all(PluginType.X)` 完成
+
+---
+
+### Requirement: PluginContext 支持 StoreInterface
+
+`PluginContext` SHALL hold a `store: StoreInterface` attribute instead of `graph: GraphStoreInterface`. This allows plugins to access the unified storage interface.
+
+#### Scenario: PluginContext 持有 StoreInterface
+
+- **WHEN** `PluginContext` 初始化
+- **THEN** MUST 包含 `store: StoreInterface` 属性
+
+#### Scenario: 插件通过 context.store 访问存储
+
+- **WHEN** 插件通过 `context.store` 访问存储
+- **THEN** 类型 MUST 为 `StoreInterface`
 
 ---
 

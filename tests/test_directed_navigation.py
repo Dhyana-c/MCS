@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 from mcs.core.config import MCSConfig
-from mcs.core.graph import GraphStore, Node
+from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.token_budget import TokenBudget
 from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
 from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
+from mcs.stores.in_memory import InMemoryStore
+
+GraphStore = InMemoryStore
 
 
 def _init_plugin(plugin, graph, *extra_plugins):
@@ -19,7 +22,7 @@ def _init_plugin(plugin, graph, *extra_plugins):
         pm.register(p)
     pm.register(plugin)
     ctx = PluginContext(
-        graph=graph,
+        store=graph,
         config=MCSConfig(),
         token_budget=TokenBudget(8000),
         context_renderer=None,  # type: ignore[arg-type]

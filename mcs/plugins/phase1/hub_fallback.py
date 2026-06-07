@@ -15,8 +15,9 @@ from mcs.core.plugin import PluginType
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 
 if TYPE_CHECKING:
-    from mcs.core.graph import GraphStoreInterface, Node
+    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
+    from mcs.core.store import StoreInterface
 
 
 class HubFallbackEntryPlugin(EntryPluginInterface):
@@ -25,7 +26,7 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         cfg = config or {}
-        self.graph: GraphStoreInterface | None = None
+        self.store: StoreInterface | None = None
         self.llm: Any = None
         self.max_seeds: int = cfg.get("max_seeds", 10)
         self.max_depth: int = cfg.get("max_depth", 3)
@@ -48,31 +49,31 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
     def initialize(self, context: PluginContext) -> None:
         from mcs.core.plugin import PluginType
 
-        self.graph = context.graph
+        self.store = context.store
         self.llm = context.plugin_manager.get(PluginType.LLM)
 
     def shutdown(self) -> None:
-        self.graph = None
+        self.store = None
         self.llm = None
 
     # === EntryPluginInterface ===
 
     def locate(self, query: str, ctx: Any) -> list[Node]:
-        if self.graph is None:
+        if self.store is None:
             return []
         # 优先：从持久虚拟根自顶向下导航（其(递归)子节点即兜底种子）
         from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
 
-        root = self.graph.get_node(SEED_ROOT_ID)
+        root = self.store.get_node(SEED_ROOT_ID)
         if root is not None:
-            children = self.graph.get_neighbors(root.id)
+            children = self.store.get_neighbors(root.id)
             if self.llm is None or not self.use_llm_navigation:
                 return children[: self.max_seeds]
             landed = [n for n in self._navigate(query, [root]) if n.id != root.id]
             # 导航失败（只剩根）则回退为根的直接子节点；绝不把合成根当种子
             return (landed or children)[: self.max_seeds]
         # 回退：无持久根时用 role==hub 的旧行为
-        hubs = [n for n in self.graph.get_all_nodes() if n.role == "hub"]
+        hubs = [n for n in self.store.get_all_nodes() if n.role == "hub"]
         if not hubs:
             return []
         if self.llm is None or not self.use_llm_navigation:
@@ -90,7 +91,7 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
         **仅沿 out 边下钻**：取候选时用 get_out_neighbors，以区分"层级"与"语义"边、
         避免在双向/缠绕结构中成环。
         """
-        assert self.graph is not None
+        assert self.store is not None
         visited: set[str] = {n.id for n in roots}
         frontier: list[Node] = list(roots)
         landing: list[Node] = []
@@ -102,7 +103,7 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
             seen: set[str] = set()
             for node in frontier:
                 # 仅沿 out 边取候选（自顶向下下钻，不沿语义/上行边回退）
-                for neighbor in self.graph.get_out_neighbors(node.id):
+                for neighbor in self.store.get_out_neighbors(node.id):
                     if neighbor.id not in visited and neighbor.id not in seen:
                         seen.add(neighbor.id)
                         candidates.append(neighbor)
@@ -125,7 +126,7 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
 
             next_frontier: list[Node] = []
             for cid in drill_ids:
-                node = self.graph.get_node(cid)
+                node = self.store.get_node(cid)
                 if node is not None and cid in seen:  # 必须是本层提出的候选
                     landing.append(node)
                     next_frontier.append(node)
