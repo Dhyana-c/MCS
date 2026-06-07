@@ -37,9 +37,9 @@ _DEFAULT_MAX_HUB_SUMMARY_DOMAINS = 5
 class FanoutReducerPlugin(CompactionPluginInterface):
     """当节点的邻域溢出时提升枢纽。
 
-    ``maintain_root=True``（或 ``MCSConfig.seed_graph_bounding``）时，额外维护一个
-    持久虚拟根 ``__seed_root__``：把新概念挂到根下，并从根开始递归分层（任一节点扇出
-    超预算就提/建中间 hub 重分配），使每层扇出 ≤ 一个上下文窗口、根/hub/层级边落库。
+    ``maintain_root=True`` 时，额外维护一个持久虚拟根 ``__seed_root__``：
+    把新概念挂到根下，并从根开始递归分层（任一节点扇出超预算就提/建中间 hub 重分配），
+    使每层扇出 ≤ 一个上下文窗口、根/hub/层级边落库。
     """
 
     def __init__(self, config: dict | None = None) -> None:
@@ -76,9 +76,6 @@ class FanoutReducerPlugin(CompactionPluginInterface):
     def initialize(self, context: PluginContext) -> None:
         self.token_budget = context.token_budget
         self.renderer = getattr(context, "context_renderer", None)
-        cfg = getattr(context, "config", None)
-        if cfg is not None and getattr(cfg, "seed_graph_bounding", False):
-            self.maintain_root = True
 
     def shutdown(self) -> None:
         return None

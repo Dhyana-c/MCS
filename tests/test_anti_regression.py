@@ -27,7 +27,7 @@ def _fanout_with_root(graph, token_budget, mock_llm, **extra_cfg):
     pm.initialize_all(
         PluginContext(
             store=graph,
-            config=MCSConfig(seed_graph_bounding=True),
+            config=MCSConfig(),
             token_budget=token_budget,
             context_renderer=None,  # type: ignore[arg-type]
             plugin_manager=pm,
@@ -185,7 +185,7 @@ def test_max_reorg_warning_logged(mock_llm, caplog):
     pm.initialize_all(
         PluginContext(
             store=g,
-            config=MCSConfig(seed_graph_bounding=True),
+            config=MCSConfig(),
             token_budget=TokenBudget(500),
             context_renderer=None,  # type: ignore[arg-type]
             plugin_manager=pm,

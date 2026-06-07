@@ -68,7 +68,7 @@ def build_mock_mcs() -> MCS:
         mode="example_mock",
         token_budget=8000,
         max_rounds=2,
-        max_picked=20,
+        max_accumulated_nodes=20,
         shared_plugins=["summary"],
         write_plugins=[],
         read_plugins=[

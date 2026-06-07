@@ -31,6 +31,7 @@ def get_phase1_plugin_registry() -> dict[str, type["Plugin"]]:
     from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
     from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
     from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
+    from mcs.plugins.phase1.llm_seed_selector import LLMSeedSelectorPlugin
     from mcs.plugins.phase1.ollama_llm import OllamaLLMPlugin
     from mcs.plugins.phase1.priority_trim import PriorityTrimPlugin
     from mcs.plugins.phase1.rerank import RerankPlugin
@@ -54,6 +55,7 @@ def get_phase1_plugin_registry() -> dict[str, type["Plugin"]]:
         "alias_entry": AliasEntryPlugin,
         "hub_fallback": HubFallbackEntryPlugin,
         "priority_trim": PriorityTrimPlugin,
+        "llm_seed_selector": LLMSeedSelectorPlugin,
         # LLM
         "deepseek_llm": DeepSeekLLMPlugin,
         "claude_llm": ClaudeLLMPlugin,
@@ -151,7 +153,7 @@ def create_mcs(
     db_path: str = "mcs.db",
     token_budget: int = 8000,
     max_rounds: int = 5,
-    max_picked: int = 50,
+    max_accumulated_nodes: int = 1000,
     plugin_configs: dict | None = None,
     **kwargs,
 ) -> "MCS":
@@ -164,7 +166,7 @@ def create_mcs(
         db_path: SQLite 数据库路径
         token_budget: 核心 token 预算 T
         max_rounds: 查询遍历最大轮数
-        max_picked: 查询遍历累积节点上限
+        max_accumulated_nodes: 查询遍历累积节点硬上限
         plugin_configs: 额外的插件配置
         **kwargs: 传递给 MCSConfig 的其他参数
 
@@ -188,7 +190,7 @@ def create_mcs(
     config = MCSConfig.knowledge_graph(write_llm=write_llm, read_llm=read_llm)
     config.token_budget = token_budget
     config.max_rounds = max_rounds
-    config.max_picked = max_picked
+    config.max_accumulated_nodes = max_accumulated_nodes
 
     # 设置数据库路径
     config.plugin_configs.setdefault("sqlite_storage", {})["path"] = db_path

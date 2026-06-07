@@ -125,6 +125,22 @@ In stage ②, after entry plugin merge, seeds exceeding token budget T MUST be r
 
 ---
 
+### Requirement: 种子定位阶段增加 SeedSelectorPlugin 链
+
+In stage ②, after TrimPlugin, seeds MUST go through a SeedSelectorPlugin chain for semantic filtering. The chain SHALL execute serially, each plugin's output becoming the next's input. When no SeedSelectorPlugin is configured, the chain is skipped.
+
+#### Scenario: 执行顺序为 Entry → Trim → SeedSelector
+
+- **WHEN** 查询管线执行阶段 ②
+- **THEN** 执行顺序 MUST 是：EntryPlugin 链（合并）→ TrimPlugin（硬截断）→ SeedSelectorPlugin 链（语义筛选）
+
+#### Scenario: SeedSelector 链可空
+
+- **WHEN** 未配置任何 SeedSelectorPlugin
+- **THEN** 框架 MUST 跳过语义筛选，直接返回 TrimPlugin 输出
+
+---
+
 ### Requirement: 语义理解 Loop 为 BFS 且维护 visited 集合
 
 Stage ③ SHALL implement a breadth-first traversal. A `visited: set[node_id]` MUST be maintained throughout the loop to prevent revisits, because the concept graph allows cycles.
@@ -141,40 +157,55 @@ Stage ③ SHALL implement a breadth-first traversal. A `visited: set[node_id]` M
 
 ---
 
-### Requirement: 语义理解 Loop 的硬上限
+### Requirement: 语义理解 Loop 的安全阀
 
-Stage ③ SHALL enforce two hard limits: `max_rounds` (BFS rounds / hops) and `max_picked` (cumulative picked node count). The loop MUST terminate when either limit is reached, regardless of LLM judgment.
+Stage ③ SHALL enforce safety valves: `max_rounds` (BFS rounds / hops) and `max_accumulated_nodes` (hard node count limit). The loop MUST terminate when either limit is reached, regardless of LLM judgment. The primary termination condition is `token_budget.T` — when `accumulated` token sum exceeds T, the loop terminates.
 
 #### Scenario: 达到 max_rounds 强制终止
 
 - **WHEN** 第 `max_rounds` 轮完成，`frontier` 仍非空
 - **THEN** 框架 MUST 不再启动新一轮 BFS；`accumulated` 在该时刻定型
 
-#### Scenario: 达到 max_picked 强制终止
+#### Scenario: 达到 max_accumulated_nodes 强制终止
 
-- **WHEN** `accumulated` 节点数达到 `max_picked`
+- **WHEN** `accumulated` 节点数达到 `max_accumulated_nodes`
 - **THEN** 框架 MUST 立即终止 Loop（即使当前轮未完成）
+
+#### Scenario: token 预算超限终止
+
+- **WHEN** `accumulated` 的估算 token 总和 > `token_budget.T`
+- **THEN** 遍历 MUST 立即终止
 
 #### Scenario: LLM 自然收敛优先于硬上限
 
-- **WHEN** 某一轮所有节点的 `decide_directions` 都返回空选择，且尚未达到任何硬上限
+- **WHEN** 某一轮 LLM 筛选结果为空，且尚未达到任何硬上限
 - **THEN** `frontier` 为空，Loop MUST 自然终止；这是自然终点
 
 ---
 
-### Requirement: 语义理解 Loop 每次 LLM 调用判方向
+### Requirement: 语义理解 Loop 使用 select_nodes 篮选候选
 
-Within stage ③, for each unvisited node in `frontier`, the framework MUST issue ONE LLM call with `purpose = decide_directions`. The LLM SHALL judge "from this node, which neighbors lead toward the query target" — NOT "is this neighbor itself query-relevant".
+Within stage ③, for each round, the framework MUST issue ONE LLM call with `purpose = select_nodes`. The LLM SHALL select which frontier nodes are relevant to the query — only selected nodes are added to `accumulated` and `visited`.
 
-#### Scenario: 每节点一次 LLM 调用
+#### Scenario: 每轮一次 LLM 筛选
 
-- **WHEN** 一轮 BFS 有 K 个未访问节点
-- **THEN** 框架 MUST 发起 K 次 LLM 调用（不合批）；每次输入为该节点及其一跳邻域
+- **WHEN** 一轮 BFS 有 frontier 节点
+- **THEN** 框架 MUST 发起 LLM 调用（purpose="select_nodes"），筛选与查询相关的节点
 
-#### Scenario: LLM 输入包含 accumulated 摘要
+#### Scenario: 仅选中节点加入 accumulated 和 visited
 
-- **WHEN** 框架构造 `decide_directions` 调用的 `free_args`
-- **THEN** `free_args` MUST 含 `accumulated` 当前内容（用于"边际相关性"判断），避免重复拖入已有节点
+- **WHEN** LLM 选中某节点
+- **THEN** 该节点 MUST 被加入 `accumulated` 和 `visited`；未选中者 MUST NOT 加入 `visited`
+
+#### Scenario: 未选中节点可被后续轮次重新发现
+
+- **WHEN** LLM 未选中某候选节点
+- **THEN** 该节点 MUST NOT 加入 `visited`；后续轮次 MAY 重新发现该节点
+
+#### Scenario: 单轮候选超预算时分批调用
+
+- **WHEN** 单轮 frontier 的估算 token > `token_budget.T`
+- **THEN** 框架 MUST 将 frontier 按预算分批，逐批调用 LLM 筛选
 
 ---
 

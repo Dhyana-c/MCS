@@ -5,8 +5,10 @@
 
 from mcs.interfaces.preprocess_plugin import PreprocessPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
+from mcs.interfaces.seed_selector_plugin import SeedSelectorPluginInterface
 
 __all__ = [
     "PreprocessPluginInterface",
     "PostprocessPluginInterface",
+    "SeedSelectorPluginInterface",
 ]

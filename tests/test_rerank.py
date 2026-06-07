@@ -146,7 +146,7 @@ def _query_engine(mock_llm, *plugins):
         plugin_manager=pm,
         token_budget=TokenBudget(8000),
         max_rounds=1,
-        max_picked=20,
+        max_accumulated_nodes=20,
     )
 
 
@@ -157,6 +157,8 @@ def test_query_unchanged_without_rerank(mock_llm):
         _node("irrelevant", "weather", "rain"),
         _node("relevant", "Tesla Model 3", "Tesla Model 3 output"),
     ]
+    # select_nodes 选中所有种子
+    mock_llm.set_response("select_nodes", lambda nodes_in, _: [n.id for n in (nodes_in or [])])
     out = qe.query("Tesla Model 3", existing_context=seeds)
     assert [n.id for n in out] == ["irrelevant", "relevant"]  # 原顺序，未重排
 
@@ -168,5 +170,7 @@ def test_query_reranks_when_enabled(mock_llm):
         _node("irrelevant", "weather", "rain"),
         _node("relevant", "Tesla Model 3", "Tesla Model 3 output"),
     ]
+    # select_nodes 选中所有种子
+    mock_llm.set_response("select_nodes", lambda nodes_in, _: [n.id for n in (nodes_in or [])])
     out = qe.query("Tesla Model 3", existing_context=seeds)
     assert out[0].id == "relevant"

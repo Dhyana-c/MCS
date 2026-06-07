@@ -26,6 +26,7 @@ PHASE1_READ_PLUGINS: list[str] = [
     "alias_entry",         # Entry (priority=100)
     "hub_fallback",        # Entry (priority=0)
     "priority_trim",       # Trim
+    "llm_seed_selector",   # SeedSelector (priority=0, 默认兜底)
 ]
 
 # 旧名保留（向后兼容别名，供 openspec 等引用）
@@ -44,11 +45,8 @@ class MCSConfig:
     mode: str = "knowledge_graph"
     token_budget: int = 8000
     max_rounds: int = 5
-    max_picked: int = 50
+    max_accumulated_nodes: int = 1000
     auto_persist: bool = True
-    # subgraph-bounding：查询侧种子图归纳（虚拟根 + fanout reduce）
-    # 默认开启，保证默认配置下核心不变量（任意节点 + 一跳子节点 ≤ T）
-    seed_graph_bounding: bool = True
 
     # 分离配置（替代旧 plugins 字段）
     shared_plugins: list[str] = field(default_factory=list)   # Graph/Storage/NodeExtension
@@ -64,7 +62,7 @@ class MCSConfig:
 
     @classmethod
     def knowledge_graph(cls, write_llm: str = "deepseek", read_llm: str | None = None) -> MCSConfig:
-        """第一阶段默认配置：shared+write+read 插件分离，T=8000，max_rounds=5，max_picked=50。
+        """第一阶段默认配置：shared+write+read 插件分离，T=8000，max_rounds=5，max_accumulated_nodes=1000。
 
         ``write_llm`` / ``read_llm`` 选择厂商 LLM 后端：
 
@@ -106,7 +104,7 @@ class MCSConfig:
             mode="knowledge_graph",
             token_budget=8000,
             max_rounds=5,
-            max_picked=50,
+            max_accumulated_nodes=1000,
             shared_plugins=list(PHASE1_SHARED_PLUGINS),
             write_plugins=list(PHASE1_WRITE_PLUGINS),
             read_plugins=list(PHASE1_READ_PLUGINS),
@@ -124,7 +122,7 @@ class MCSConfig:
             mode="memory_system",
             token_budget=8000,
             max_rounds=5,
-            max_picked=50,
+            max_accumulated_nodes=1000,
             shared_plugins=list(PHASE1_SHARED_PLUGINS),
             write_plugins=list(PHASE1_WRITE_PLUGINS),
             read_plugins=list(PHASE1_READ_PLUGINS),

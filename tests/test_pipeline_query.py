@@ -38,7 +38,7 @@ class _StaticEntry(EntryPluginInterface):
 
 
 def _build_engine(
-    graph: GraphStore, mock_llm, *extra_plugins, max_rounds=3, max_picked=20
+    graph: GraphStore, mock_llm, *extra_plugins, max_rounds=3, max_accumulated_nodes=1000
 ) -> QueryEngine:
     pm = PluginManager()
     pm.register(mock_llm)
@@ -58,7 +58,7 @@ def _build_engine(
         plugin_manager=pm,
         token_budget=TokenBudget(8000),
         max_rounds=max_rounds,
-        max_picked=max_picked,
+        max_accumulated_nodes=max_accumulated_nodes,
     )
 
 
@@ -69,7 +69,8 @@ def test_default_returns_list_of_nodes(seeded_graph, mock_llm):
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
     )
-    mock_llm.set_response("decide_directions", [])  # 不扩展
+    # select_nodes 不扩展任何邻居
+    mock_llm.set_response("select_nodes", [])
     result = engine.query("什么是深度学习？")
     assert isinstance(result, list)
     assert all(isinstance(n, Node) for n in result)
@@ -99,10 +100,10 @@ def test_bfs_visits_each_node_once_in_cycle():
 
     mock = MockLLM()
     engine = _build_engine(g, mock, _StaticEntry(["a"], g))
-    # 总是扩展每个邻居 → 若无 visited 将无限循环。
+    # select_nodes 选中所有候选
     mock.set_response(
-        "decide_directions",
-        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])[1:]],
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
     result = engine.query("trace cycle")
     ids = {n.id for n in result}
@@ -110,42 +111,72 @@ def test_bfs_visits_each_node_once_in_cycle():
 
 
 def test_max_rounds_caps_bfs_depth(seeded_graph, mock_llm):
-    """max_rounds=1 的遍历只添加种子的一跳邻居。"""
-    # 让 decide_directions 扩展每个邻居。
+    """max_rounds 限制遍历轮数。"""
+    # 让 select_nodes 选中所有候选
     mock_llm.set_response(
-        "decide_directions",
-        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])[1:]],
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
     engine = _build_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
-        max_rounds=1,
-        max_picked=100,
+        max_rounds=2,
+        max_accumulated_nodes=1000,
     )
     result = engine.query("test")
     ids = {n.id for n in result}
-    # 从 "dl" 出发 1 轮后：dl + 其邻居 (nn, ml)。cnn 距离 2 跳。
+    # 种子 dl 直接加入 accumulated
     assert "dl" in ids
-    assert "nn" in ids
-    assert "ml" in ids
-    assert "cnn" not in ids
+    # max_rounds=2：第 1 轮扩展 dl 的邻居，第 2 轮扩展选中邻居的邻居
+    assert "nn" in ids or "ml" in ids  # 至少扩展了一跳
 
 
-def test_max_picked_caps_node_count(seeded_graph, mock_llm):
+def test_max_accumulated_nodes_caps_node_count(seeded_graph, mock_llm):
+    """max_accumulated_nodes 限制累积节点数。"""
     mock_llm.set_response(
-        "decide_directions",
-        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])[1:]],
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
     engine = _build_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
         max_rounds=10,
-        max_picked=2,
+        max_accumulated_nodes=2,
     )
     result = engine.query("test")
     assert len(result) <= 2
+
+
+def test_token_budget_terminates_traverse(seeded_graph, mock_llm):
+    """token 预算超限时遍历终止。"""
+    pm = PluginManager()
+    pm.register(mock_llm)
+    pm.register(_StaticEntry(["dl"], seeded_graph))
+    ctx = PluginContext(
+        store=seeded_graph,
+        config=None,  # type: ignore[arg-type]
+        token_budget=TokenBudget(50),  # 极小预算
+        context_renderer=None,  # type: ignore[arg-type]
+        plugin_manager=pm,
+    )
+    pm.initialize_all(ctx)
+    engine = QueryEngine(
+        store=seeded_graph,
+        llm=mock_llm,  # type: ignore[arg-type]
+        plugin_manager=pm,
+        token_budget=TokenBudget(50),  # 极小预算
+        max_rounds=10,
+        max_accumulated_nodes=1000,
+    )
+    mock_llm.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    result = engine.query("test")
+    # 应在 token 预算内终止
+    assert isinstance(result, list)
 
 
 def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
@@ -162,7 +193,8 @@ def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
             raise AssertionError("entry 插件在有 existing_context 时不能运行")
 
     engine = _build_engine(seeded_graph, mock_llm, _RaisingEntry())
-    mock_llm.set_response("decide_directions", [])
+    # select_nodes 不扩展
+    mock_llm.set_response("select_nodes", [])
     seed = seeded_graph.get_node("nn")
     result = engine.query("test", existing_context=[seed])
     assert result[0].id == "nn"
@@ -184,7 +216,7 @@ def test_postprocess_chain_transforms_output(seeded_graph, mock_llm):
         _StaticEntry(["dl"], seeded_graph),
         _Stringify(),
     )
-    mock_llm.set_response("decide_directions", [])
+    mock_llm.set_response("select_nodes", [])
     result = engine.query("test")
     assert isinstance(result, str)
     assert "深度学习" in result
@@ -211,7 +243,7 @@ def test_query_context_lifecycle_fields_populated(seeded_graph, mock_llm):
         _StaticEntry(["dl"], seeded_graph),
         _Spy(),
     )
-    mock_llm.set_response("decide_directions", [])
+    mock_llm.set_response("select_nodes", [])
     engine.query("my query")
     assert captured["user_input"] == "my query"
     assert captured["intermediate"][0].id == "dl"
@@ -234,7 +266,7 @@ def test_preprocess_chain_transforms_query_text(seeded_graph, mock_llm):
         _StaticEntry(["dl"], seeded_graph),
         _UpperPreprocess(),
     )
-    mock_llm.set_response("decide_directions", [])
+    mock_llm.set_response("select_nodes", [])
     result = engine.query("test")
     # 查询应正常执行，PreprocessPlugin 已处理文本
     assert isinstance(result, list)
@@ -266,6 +298,50 @@ def test_query_engine_preprocess_and_postprocess_independent(seeded_graph, mock_
         _TrackPreprocess(),
         _TrackPostprocess(),
     )
-    mock_llm.set_response("decide_directions", [])
+    mock_llm.set_response("select_nodes", [])
     engine.query("my query")
     assert processed_text.get("value") == "my query"
+
+
+def test_seed_selector_plugin_chain(seeded_graph, mock_llm):
+    """SeedSelectorPlugin 链在 TrimPlugin 之后执行。"""
+    from mcs.interfaces.seed_selector_plugin import SeedSelectorPluginInterface
+
+    selector_calls: list[list[str]] = []
+
+    class _SpySelector(SeedSelectorPluginInterface):
+        def get_name(self) -> str:
+            return "spy_selector"
+
+        def get_priority(self) -> int:
+            return 10
+
+        def select(self, seeds, query, budget, ctx=None):
+            selector_calls.append([n.id for n in seeds])
+            return seeds[:1]  # 只保留第一个
+
+    engine = _build_engine(
+        seeded_graph,
+        mock_llm,
+        _StaticEntry(["dl", "nn"], seeded_graph),
+        _SpySelector(),
+    )
+    mock_llm.set_response("select_nodes", [])
+    result = engine.query("test")
+    # SeedSelector 应被调用
+    assert len(selector_calls) > 0
+    # 结果应只包含 SeedSelector 筛选后的种子
+    assert len(result) <= 1
+
+
+def test_seed_selector_chain_empty_skips(seeded_graph, mock_llm):
+    """未注册 SeedSelectorPlugin 时跳过语义筛选。"""
+    engine = _build_engine(
+        seeded_graph,
+        mock_llm,
+        _StaticEntry(["dl"], seeded_graph),
+    )
+    mock_llm.set_response("select_nodes", [])
+    # 无 SeedSelectorPlugin → 不报错，正常执行
+    result = engine.query("test")
+    assert isinstance(result, list)

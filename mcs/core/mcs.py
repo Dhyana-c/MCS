@@ -266,8 +266,7 @@ class MCS:
             plugin_manager=self.read_manager,
             token_budget=self.token_budget,
             max_rounds=self.config.max_rounds,
-            max_picked=self.config.max_picked,
-            seed_bounding=getattr(self.config, "seed_graph_bounding", False),
+            max_accumulated_nodes=self.config.max_accumulated_nodes,
         )
 
         # WritePipeline 使用 write_manager + write_llm，但 query_engine 传入读取侧

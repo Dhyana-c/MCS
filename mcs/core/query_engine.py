@@ -4,7 +4,7 @@
 
     ① 前置插件链      (PostprocessPlugin chain, 可选)
     ② 种子定位        (EntryPlugin chain + TrimPlugin)
-    ③ 语义理解 Loop   (BFS + visited + max_rounds + max_picked)
+    ③ 语义理解 Loop   (BFS + visited + max_rounds + token_budget)
     ④ 仲裁            (ArbitrationPlugin, ≤1)
     ⑤ 后置处理链      (PostprocessPlugin chain)
 
@@ -63,18 +63,16 @@ class QueryEngine:
             plugin_manager: PluginManager,
             token_budget: TokenBudget,
             max_rounds: int = 5,
-            max_picked: int = 50,
+            max_accumulated_nodes: int = 1000,
             system_prompt: str = "",
-            seed_bounding: bool = False,
     ):
         self.store = store
         self.llm = llm
         self.plugin_manager = plugin_manager
         self.token_budget = token_budget
         self.max_rounds = max_rounds
-        self.max_picked = max_picked
+        self.max_accumulated_nodes = max_accumulated_nodes
         self.system_prompt = system_prompt
-        self.seed_bounding = seed_bounding
 
     # === 公共 API ===
 
@@ -101,10 +99,6 @@ class QueryEngine:
             seeds = list(existing_context)
         else:
             seeds = self._locate_seeds(processed_text, ctx)
-
-        # 阶段 ②.5（opt-in）：种子集超容量时归纳成分层种子图（虚拟根 + fanout reduce）
-        if self.seed_bounding:
-            seeds = self._bound_seed_graph(seeds, ctx)
 
         # 阶段 ③: 语义理解 Loop
         ctx.intermediate = self._traverse(seeds, processed_text, ctx)
@@ -134,7 +128,10 @@ class QueryEngine:
         return result if isinstance(result, str) else text
 
     def _locate_seeds(self, query: str, ctx: QueryContext) -> list[Node]:
-        """阶段 ②：运行所有 EntryPlugins（按优先级排序），合并，裁剪。"""
+        """阶段 ②：运行所有 EntryPlugins（按优先级排序），合并，裁剪，语义筛选。
+
+        执行顺序：EntryPlugin 链（合并）→ TrimPlugin（硬截断）→ SeedSelectorPlugin 链（语义筛选）
+        """
         from mcs.core.plugin import PluginType
 
         entry_plugins = self.plugin_manager.get_all(PluginType.ENTRY)
@@ -164,98 +161,26 @@ class QueryEngine:
             except NotImplementedError:
                 # 预算检查尚未实现；原样传递
                 pass
+
+        # SeedSelectorPlugin 链：语义筛选
+        selector_plugins = self.plugin_manager.get_all(PluginType.SEED_SELECTOR)
+        if selector_plugins and accumulated:
+            for selector in selector_plugins:
+                try:
+                    accumulated = selector.select(
+                        seeds=accumulated,
+                        query=query,
+                        budget=self.token_budget.T,
+                        ctx=ctx,
+                    )
+                except Exception:
+                    logger.warning(
+                        "SeedSelectorPlugin %s 执行失败，跳过",
+                        selector.get_name(),
+                        exc_info=True,
+                    )
+
         return accumulated
-
-    def _bound_seed_graph(
-            self, seeds: list[Node], ctx: QueryContext
-    ) -> list[Node]:
-        """种子集超容量时做分层收敛。
-
-        策略：
-        1. 若存在持久虚拟根 __seed_root__ 且有 LLM，从中导航定位最相关 hub
-        2. 否则，按预算截断（保守兜底）
-
-        与 hub_fallback 协同：hub_fallback 已从 root 导航，
-        本方法仅在 hub_fallback 返回过多种子时做二次收敛。
-
-        估算口径与渲染口径一致：使用 estimate_node（含格式行、body、extensions）。
-        """
-        if not seeds:
-            return seeds
-        tb = self.token_budget
-        if tb is None:
-            return seeds
-
-        # 检查是否超出预算
-        used = sum(tb.estimate_node(n) for n in seeds)
-        if used <= tb.T:
-            return seeds  # 未超预算，直接返回
-
-        # 超预算：尝试从 root 导航收敛
-        from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
-        root = self.store.get_node(SEED_ROOT_ID)
-
-        if root is not None and self.llm is not None:
-            try:
-                narrowed = self._navigate_to_relevant_hubs(seeds, root, ctx)
-                if narrowed:
-                    # 再次检查预算
-                    narrowed_used = sum(tb.estimate_node(n) for n in narrowed)
-                    if narrowed_used <= tb.T:
-                        return narrowed
-            except Exception:
-                logger.warning("导航收敛失败，回退截断")
-
-        # 兜底：按优先级截断
-        kept: list[Node] = []
-        used = 0
-        for n in seeds:
-            used += tb.estimate_node(n)
-            if used > tb.T and kept:
-                break
-            kept.append(n)
-        return kept
-
-    def _navigate_to_relevant_hubs(
-            self, seeds: list[Node], root: Node, ctx: QueryContext
-    ) -> list[Node]:
-        """从 root 导航到最相关的 hub 子集。
-
-        输入：超量的种子集
-        输出：预算内的相关 hub 子集
-        """
-        # 获取 root 的直接子节点（顶层 hub）
-        top_hubs = self.store.get_out_neighbors(root.id)
-        if not top_hubs:
-            return seeds
-
-        # LLM 导航：选择最相关的顶层 hub
-        selected_ids = self.llm.call(
-            purpose="navigate_hub",
-            nodes_in=[root, *top_hubs],
-            free_args={"target": ctx.user_input},
-        ) or []
-
-        selected = [self.store.get_node(i) for i in selected_ids]
-        selected = [n for n in selected if n is not None]
-
-        # 从选中的 hub 继续下钻
-        result: list[Node] = []
-        visited: set[str] = {root.id}
-
-        for hub in selected:
-            if hub.id in visited:
-                continue
-            visited.add(hub.id)
-
-            # 获取 hub 的概念成员
-            members = self.store.get_out_neighbors(hub.id)
-            for m in members:
-                if m.id in visited or m.role == "hub":
-                    continue
-                result.append(m)
-
-        return result[: self.max_picked]
 
     def _traverse(
             self,
@@ -263,7 +188,13 @@ class QueryEngine:
             query: str,
             ctx: QueryContext,
     ) -> list[Node]:
-        """阶段 ③：BFS 遍历，带 visited 集合 + max_rounds + max_picked。"""
+        """阶段 ③：token 预算驱动的 BFS 遍历。
+
+        种子已在阶段 ② 经过 SeedSelectorPlugin 筛选，直接加入 accumulated。
+        每轮：获取 accumulated 中节点的邻居作为 frontier → LLM 筛选 → 选中的加入 accumulated。
+
+        核心不变量保证：frontier + accumulated + query + system_prompt ≤ 窗口
+        """
         if not seeds:
             return []
 
@@ -271,42 +202,61 @@ class QueryEngine:
         accumulated: list[Node] = list(seeds)
         for node in seeds:
             visited.add(node.id)
-        frontier: list[Node] = list(seeds)
+        budget = self.token_budget.T
 
         for _round in range(self.max_rounds):
+            # 检查 token 预算
+            used_tokens = sum(
+                self.token_budget.estimate_node(n) for n in accumulated
+            )
+            if used_tokens >= budget:
+                logger.info(
+                    "accumulated token=%d >= budget=%d, 终止",
+                    used_tokens, budget,
+                )
+                break
+
+            # 安全阀：节点数硬上限
+            if len(accumulated) >= self.max_accumulated_nodes:
+                logger.info(
+                    "遍历达到 max_accumulated_nodes=%d, 终止",
+                    self.max_accumulated_nodes,
+                )
+                break
+
+            # 获取 accumulated 中节点的未访问邻居作为 frontier
+            frontier: list[Node] = []
+            for node in accumulated:
+                neighbors = self.store.get_neighbors(node.id) or []
+                for neighbor in neighbors:
+                    if neighbor.id not in visited:
+                        frontier.append(neighbor)
+                        visited.add(neighbor.id)  # 先标记，防止重复加入
+
             if not frontier:
                 break
-            if len(accumulated) >= self.max_picked:
+
+            # LLM 筛选 frontier：一次性调用
+            selected_ids = self.llm.call(
+                purpose="select_nodes",
+                nodes_in=frontier,
+                free_args={
+                    "query": query,
+                    "accumulated_summary": _summarize_for_prompt(accumulated),
+                },
+            ) or []
+            selected_set = set(selected_ids)
+
+            if not selected_set:
+                logger.debug("LLM 未选中任何节点，遍历终止")
                 break
 
-            next_frontier: list[Node] = []
+            # 将选中的节点加入 accumulated
             for node in frontier:
-                if len(accumulated) >= self.max_picked:
-                    break
-
-                neighbors = self.store.get_neighbors(node.id) or []
-                if not neighbors:
-                    continue
-
-                # LLM 调用：哪些邻居指向查询目标？
-                selected_ids = self.llm.call(
-                    purpose="decide_directions",
-                    nodes_in=[node, *neighbors],
-                    free_args={
-                        "query": query,
-                        "accumulated": _summarize_for_prompt(accumulated),
-                    },
-                ) or []
-                selected_set = set(selected_ids)
-                for neighbor in neighbors:
-                    if neighbor.id in selected_set and neighbor.id not in visited:
-                        visited.add(neighbor.id)
-                        accumulated.append(neighbor)
-                        next_frontier.append(neighbor)
-                        if len(accumulated) >= self.max_picked:
-                            break
-
-            frontier = next_frontier
+                if node.id in selected_set:
+                    accumulated.append(node)
+                    if len(accumulated) >= self.max_accumulated_nodes:
+                        break
 
         return accumulated
 

@@ -37,7 +37,7 @@ def _build_pipelines(store: StoreInterface, mock_llm, *extra_plugins, config=Non
         plugin_manager=pm,
         token_budget=TokenBudget(8000),
         max_rounds=3,
-        max_picked=20,
+        max_accumulated_nodes=20,
     )
     write_pipeline = WritePipeline(
         store=store,
@@ -277,7 +277,7 @@ def test_auto_persist_saves_changed_nodes(empty_graph, mock_llm):
         plugin_manager=pm,
         token_budget=TokenBudget(8000),
         max_rounds=3,
-        max_picked=20,
+        max_accumulated_nodes=20,
     )
     wp = WritePipeline(
         store=store,
@@ -342,7 +342,7 @@ def test_auto_persist_saves_edges(empty_graph, mock_llm):
         plugin_manager=pm,
         token_budget=TokenBudget(8000),
         max_rounds=3,
-        max_picked=20,
+        max_accumulated_nodes=20,
     )
     wp = WritePipeline(
         store=store,

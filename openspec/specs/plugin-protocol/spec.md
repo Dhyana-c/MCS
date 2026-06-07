@@ -45,6 +45,27 @@ The system SHALL define `TrimPluginInterface` with abstract method `trim(nodes: 
 
 ---
 
+### Requirement: 提供 SeedSelectorPluginInterface 用于种子语义筛选
+
+The system SHALL define `SeedSelectorPluginInterface` inheriting `Plugin`, with `get_type()` returning `PluginType.SEED_SELECTOR`, and an abstract `select(seeds: List[Node], query: str, budget: int, ctx) -> List[Node]` method. `execute()` SHALL delegate to `select()`. This interface MUST be used for query pipeline stage ② seed selection after TrimPlugin.
+
+#### Scenario: 接口最小契约
+
+- **WHEN** 实现一个 SeedSelectorPlugin
+- **THEN** 子类 MUST 提供 `select` 方法；`select` MUST 返回 `List[Node]`；`get_type()` MUST 返回 `PluginType.SEED_SELECTOR`
+
+#### Scenario: select 输出满足预算约束
+
+- **WHEN** SeedSelectorPlugin.select 完成
+- **THEN** 返回节点的估算 token 总和 MUST ≤ `budget`
+
+#### Scenario: select 保持或调整顺序
+
+- **WHEN** SeedSelectorPlugin.select 返回节点列表
+- **THEN** 列表顺序 MUST 反映相关性优先级（高相关性在前）；允许重排输入顺序
+
+---
+
 ### Requirement: 提供 ArbitrationPluginInterface 用于读流程仲裁
 
 The system SHALL define `ArbitrationPluginInterface` with abstract method `arbitrate(accumulated: List[Node], query: str, ctx) -> List[Node]`. Each query pipeline configuration accepts AT MOST one instance.
@@ -228,7 +249,7 @@ The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting 
 
 - **WHEN** 检查 `PluginType`
 - **THEN** MUST 继承 `str` 与 `Enum`
-- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、PREPROCESS、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE
+- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、PREPROCESS、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE、SEED_SELECTOR
 
 #### Scenario: 管线按 PluginType 查找
 

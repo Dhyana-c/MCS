@@ -33,7 +33,9 @@ def _default_for_purpose(purpose: str) -> Any:
     if purpose in {"synthesize", "gen_summary"}:
         return ""
     # extract_concepts, judge_relations, decide_directions, navigate_hub,
-    # arbitrate, gen_aliases 均默认为空列表。
+    # arbitrate, gen_aliases, select_nodes 均默认为空列表。
+    # 注意：select_nodes 默认返回空列表意味着 _traverse 中种子不会被选中。
+    # 测试需要显式设置 select_nodes 的响应来控制筛选行为。
     return []
 
 
@@ -136,7 +138,7 @@ def default_config() -> MCSConfig:
         mode="test",
         token_budget=8000,
         max_rounds=3,
-        max_picked=20,
+        max_accumulated_nodes=20,
         shared_plugins=["summary"],  # NodeExtension
         write_plugins=[],             # 无 Compaction
         read_plugins=[

@@ -114,7 +114,7 @@ def _full_pipeline(db_path: str, mock_llm):
         plugin_manager=pm,
         token_budget=TokenBudget(8000),
         max_rounds=1,
-        max_picked=20,
+        max_accumulated_nodes=20,
     )
     wp = WritePipeline(
         store=store,

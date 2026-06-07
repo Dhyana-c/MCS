@@ -28,6 +28,7 @@ class PluginType(str, Enum):
     NODE_EXTENSION = "node_extension"
     STORAGE_SCHEMA_EXT = "storage_schema_ext"
     MAINTENANCE = "maintenance"
+    SEED_SELECTOR = "seed_selector"
 
 
 class Plugin(ABC):

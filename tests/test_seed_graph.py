@@ -1,8 +1,7 @@
-"""分层种子图测试（新设计）：
+"""分层种子图测试（建图侧）：
 
-  - 查询侧 ``_bound_seed_graph`` 只读收敛（超预算按预算截断、**不改图**）；
-  - 建图侧 ``fanout_reducer``（seed_graph_bounding 开启）维护**持久虚拟根** +
-    递归分层，产物入 ``changed_nodes`` 以便落库。
+  - 建图侧 ``fanout_reducer`` 维护**持久虚拟根** + 递归分层，产物入 ``changed_nodes`` 以便落库。
+  - 查询侧种子超预算由 SeedSelectorPlugin 链处理（见 test_pipeline_query.py）。
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from mcs.stores.in_memory import InMemoryStore
 GraphStore = InMemoryStore
 
 
-def _engine(graph, mock_llm, token_budget, seed_bounding):
+def _engine(graph, mock_llm, token_budget):
     pm = PluginManager()
     pm.register(mock_llm)
     pm.register(FanoutReducerPlugin({"floor": 16}))
@@ -38,8 +37,7 @@ def _engine(graph, mock_llm, token_budget, seed_bounding):
         plugin_manager=pm,
         token_budget=token_budget,
         max_rounds=3,
-        max_picked=50,
-        seed_bounding=seed_bounding,
+        max_accumulated_nodes=1000,
     )
 
 
@@ -50,44 +48,6 @@ def _seeds(graph, n, content):
         graph.add_node(node)
         out.append(node)
     return out
-
-
-# ── 查询侧：只读收敛 ──────────────────────────────────────────────────────────
-
-
-def test_bound_seed_graph_is_readonly_and_trims(mock_llm):
-    """超预算时按预算收敛，且**不改图**（不建虚拟根/不建 hub/不加边）。"""
-    g = GraphStore()
-    seeds = _seeds(g, 20, "a" * 400)  # 每个 ~100 token；20 个远超小窗口
-    qe = _engine(g, mock_llm, TokenBudget(500), seed_bounding=True)
-    nodes_before = len(g.get_all_nodes())
-    edges_before = len(g.get_all_edges())
-
-    new_seeds = qe._bound_seed_graph(seeds, QueryContext())
-
-    assert len(new_seeds) < len(seeds)                  # 收敛
-    assert len(g.get_all_nodes()) == nodes_before       # 只读：节点数不变
-    assert len(g.get_all_edges()) == edges_before       # 只读：边数不变
-    assert not any(n.role == "hub" for n in g.get_all_nodes())
-    assert g.get_node(SEED_ROOT_ID) is None
-
-
-def test_small_seed_set_passthrough(mock_llm):
-    g = GraphStore()
-    seeds = _seeds(g, 5, "x")  # 远低于容量
-    qe = _engine(g, mock_llm, TokenBudget(8000), seed_bounding=True)
-    new_seeds = qe._bound_seed_graph(seeds, QueryContext())
-    assert {n.id for n in new_seeds} == {n.id for n in seeds}  # 不超容量 → 透传
-    assert not any(n.role == "hub" for n in g.get_all_nodes())
-
-
-def test_opt_in_off_does_not_bound(mock_llm):
-    g = GraphStore()
-    seeds = _seeds(g, 20, "a" * 400)
-    qe = _engine(g, mock_llm, TokenBudget(500), seed_bounding=False)
-    out = qe.query("q", existing_context=seeds)
-    assert not any(n.role == "hub" for n in g.get_all_nodes())
-    assert len(out) == 20
 
 
 # ── 建图侧：持久虚拟根 + 递归分层 ─────────────────────────────────────────────
@@ -109,7 +69,7 @@ def _fanout_with_root(graph, token_budget, mock_llm):
     pm.initialize_all(
         PluginContext(
             store=graph,
-            config=MCSConfig(seed_graph_bounding=True),  # 开启持久根维护
+            config=MCSConfig(),  # seed_graph_bounding 已删除
             token_budget=token_budget,
             context_renderer=None,  # type: ignore[arg-type]
             plugin_manager=pm,
@@ -119,7 +79,7 @@ def _fanout_with_root(graph, token_budget, mock_llm):
 
 
 def test_fanout_maintains_persistent_root(mock_llm):
-    """seed_graph_bounding 开启：新概念挂持久根、超阈值递归分层、产物入 changed_nodes。"""
+    """fanout_reducer 维护持久虚拟根：新概念挂持久根、超阈值递归分层、产物入 changed_nodes。"""
     g = GraphStore()
     concepts = []
     for i in range(20):  # 20 个 ~100 token 概念，floor=16 + 小窗口 → 根会被分层
@@ -144,7 +104,7 @@ def test_fanout_maintains_persistent_root(mock_llm):
 
 
 def test_no_persistent_root_when_disabled(mock_llm):
-    """默认（seed_graph_bounding 关）不建持久根。"""
+    """maintain_root=False时不建持久根。"""
     g = GraphStore()
     n = Node(id="c0", name="c0", content="x", role="concept")
     g.add_node(n)
@@ -155,7 +115,7 @@ def test_no_persistent_root_when_disabled(mock_llm):
     pm.initialize_all(
         PluginContext(
             store=g,
-            config=MCSConfig(seed_graph_bounding=False),  # 显式关闭
+            config=MCSConfig(),
             token_budget=TokenBudget(8000),
             context_renderer=None,  # type: ignore[arg-type]
             plugin_manager=pm,

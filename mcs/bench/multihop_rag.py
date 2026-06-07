@@ -250,20 +250,19 @@ def _make_mcs(
     rerank: bool = False,
     rerank_top_n: int | None = None,
     rerank_min_score: float = 0.0,
-    max_picked: int | None = None,
+    max_accumulated_nodes: int | None = None,
     max_rounds: int | None = None,
 ) -> Any:
     """创建一个配置好持久化与 LLM key 的 MCS 实例（已 initialize）。
 
     ``token_budget`` 设核心不变量阈值 T（如 32000）。``record_path`` 非空时挂载
     JSONL LLM 调用记录器。``rerank=True`` 时把 query_postprocess 重排插件加入插件链
-    （opt-in）。``max_picked`` / ``max_rounds`` 非 None 时放宽遍历宽度/轮数。
+    （opt-in）。``max_accumulated_nodes`` / ``max_rounds`` 非 None 时放宽遍历参数。
     """
     from mcs import MCSConfig
     from mcs.presets import Phase1Builder
 
     config = MCSConfig.knowledge_graph(write_llm=llm, read_llm=llm)
-    config.seed_graph_bounding = True  # 开启虚拟根节点 + fanout reduce
     config.token_budget = token_budget  # 核心不变量阈值 T（如 32k）
     # 评测可选关闭逐节点摘要重生（summary_regen）：文档级检索不直接依赖摘要文本，
     # 关掉可省 ~2.6× LLM 调用（摘要渲染回退到 content[:200]）。用于本地慢后端提速。
@@ -277,8 +276,8 @@ def _make_mcs(
         if "alias_entry" in config.read_plugins:
             config.read_plugins.remove("alias_entry")
     config.plugin_configs["sqlite_storage"] = {"path": db_path}
-    if max_picked is not None:
-        config.max_picked = max_picked
+    if max_accumulated_nodes is not None:
+        config.max_accumulated_nodes = max_accumulated_nodes
     if max_rounds is not None:
         config.max_rounds = max_rounds
     if rerank:
@@ -333,7 +332,7 @@ def build_shared_graph(
     rerank: bool = False,
     rerank_top_n: int | None = None,
     rerank_min_score: float = 0.0,
-    max_picked: int | None = None,
+    max_accumulated_nodes: int | None = None,
     max_rounds: int | None = None,
 ) -> Any:
     """把全部文档摄入**同一个**持久化 MCS 实例，返回该实例。
@@ -349,7 +348,7 @@ def build_shared_graph(
         rerank=rerank,
         rerank_top_n=rerank_top_n,
         rerank_min_score=rerank_min_score,
-        max_picked=max_picked,
+        max_accumulated_nodes=max_accumulated_nodes,
         max_rounds=max_rounds,
     )
     total = len(docs)
@@ -505,7 +504,7 @@ class MultiHopEvalConfig:
     rerank: bool = True  # query 阶段相关性重排（默认开；实测 hit@10 0.16→0.73，零额外 LLM）
     rerank_top_n: int | None = 50  # 重排后截断 top-N（仅 rerank=True 时生效）
     rerank_min_score: float = 0.0  # 重排过滤阈值（默认不误杀）
-    max_picked: int | None = None  # 放宽遍历累积上限（None=用默认 50）
+    max_accumulated_nodes: int | None = None  # 放宽遍历累积节点上限（None=用默认 1000）
     max_rounds: int | None = None  # 放宽遍历轮数（None=用默认 5）
     doc_rerank: bool = False  # 文档级重排（bench-only，与节点级 --rerank 正交）
     doc_rerank_top_n: int | None = None  # 文档级重排截断 top-N（None=不截断）
@@ -553,7 +552,7 @@ class MultiHopEvalRunner:
             rerank=cfg.rerank,
             rerank_top_n=cfg.rerank_top_n,
             rerank_min_score=cfg.rerank_min_score,
-            max_picked=cfg.max_picked,
+            max_accumulated_nodes=cfg.max_accumulated_nodes,
             max_rounds=cfg.max_rounds,
         )
 
@@ -704,10 +703,10 @@ def main() -> None:
         help="重排过滤阈值，低于该分的节点被丢弃（默认 0.0 不误杀）",
     )
     parser.add_argument(
-        "--max-picked",
+        "--max-accumulated-nodes",
         type=int,
         default=0,
-        help="放宽遍历累积上限（0=用默认 50；广召回时调大，如 150）",
+        help="放宽遍历累积节点上限（0=用默认 1000；广召回时调大）",
     )
     parser.add_argument(
         "--max-rounds",
@@ -748,7 +747,7 @@ def main() -> None:
         rerank=not args.no_rerank,
         rerank_top_n=args.rerank_top_n if args.rerank_top_n > 0 else None,
         rerank_min_score=args.rerank_min_score,
-        max_picked=args.max_picked if args.max_picked > 0 else None,
+        max_accumulated_nodes=args.max_accumulated_nodes if args.max_accumulated_nodes > 0 else None,
         max_rounds=args.max_rounds if args.max_rounds > 0 else None,
         doc_rerank=args.doc_rerank,
         doc_rerank_top_n=args.doc_rerank_top_n if args.doc_rerank_top_n > 0 else None,

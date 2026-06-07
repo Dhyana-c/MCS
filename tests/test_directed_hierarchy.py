@@ -35,7 +35,7 @@ def _fanout_with_root(graph, token_budget, mock_llm):
     pm.initialize_all(
         PluginContext(
             store=graph,
-            config=MCSConfig(seed_graph_bounding=True),
+            config=MCSConfig(),
             token_budget=token_budget,
             context_renderer=None,  # type: ignore[arg-type]
             plugin_manager=pm,
