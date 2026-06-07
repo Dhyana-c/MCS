@@ -62,21 +62,29 @@ WIKI_CHUNKS = [
 
 def build_mock_mcs() -> MCS:
     from tests.conftest import MockLLM
+    from mcs.presets import get_phase1_plugin_registry
 
     config = MCSConfig(
         mode="example_mock",
         token_budget=8000,
         max_rounds=2,
         max_picked=20,
-        plugins=[
+        shared_plugins=["summary"],
+        write_plugins=[],
+        read_plugins=[
             "alias_index",
             "alias_entry",
             "hub_fallback",
             "priority_trim",
-            "summary",
         ],
+        write_llm="mock_llm",
+        read_llm="mock_llm",
     )
-    mcs = MCS(config)
+    # 合并 mock_llm 到插件注册表
+    registry = get_phase1_plugin_registry()
+    registry["mock_llm"] = MockLLM
+
+    mcs = MCS(config, plugin_registry=registry)
     mock_llm = MockLLM()
 
     counter = {"i": 0}
@@ -104,19 +112,20 @@ def build_mock_mcs() -> MCS:
 
 
 def build_real_mcs() -> MCS:
+    from mcs.presets import Phase1Builder
+
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
         raise SystemExit("DEEPSEEK_API_KEY env var not set; cannot run real mode.")
     model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
-    config = MCSConfig.knowledge_graph()
+    config = MCSConfig.knowledge_graph(write_llm="deepseek", read_llm="deepseek")
     config.plugin_configs.setdefault("deepseek_llm", {}).update(
         {"api_key": api_key, "model": model}
     )
     config.plugin_configs.setdefault("sqlite_storage", {})["path"] = ":memory:"
     print(f"  (using DeepSeek model={model})")
-    mcs = MCS(config)
-    mcs.initialize()
-    return mcs
+    builder = Phase1Builder(config)
+    return builder.build()
 
 
 def main() -> None:

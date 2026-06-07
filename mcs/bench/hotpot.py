@@ -141,9 +141,10 @@ def ingest_hotpot_item(item: HotpotItem, llm: str = "deepseek") -> Any:
 
     返回已初始化的 MCS 实例（图已构建完毕）。
     """
-    from mcs import MCS, MCSConfig
+    from mcs import MCSConfig
+    from mcs.presets import Phase1Builder
 
-    config = MCSConfig.knowledge_graph(llm=llm)
+    config = MCSConfig.knowledge_graph(write_llm=llm, read_llm=llm)
     # 覆盖存储为 :memory:，保证图隔离（D3）
     config.plugin_configs["sqlite_storage"] = {"path": ":memory:"}
     # 从环境变量读取 API key
@@ -165,8 +166,8 @@ def ingest_hotpot_item(item: HotpotItem, llm: str = "deepseek") -> Any:
             "model": os.environ.get("OLLAMA_MODEL", ""),
         })
 
-    mcs = MCS(config)
-    mcs.initialize()
+    builder = Phase1Builder(config)
+    mcs = builder.build()
 
     for idx, (title, sentences) in enumerate(item.context):
         text = format_context_paragraph(title, sentences)

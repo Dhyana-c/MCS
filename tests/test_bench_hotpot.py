@@ -141,16 +141,18 @@ def test_format_context_paragraph_single():
 def test_ingest_hotpot_item_creates_isolated_instance(sample_hotpot_raw):
     """测试 ingest 创建独立 MCS 实例。"""
     item = HotpotItem(**sample_hotpot_raw[0])
-    # Mock MCS 和 MCSConfig 在 mcs 模块中
-    with patch("mcs.MCS") as mock_mcs_cls:
+    # Mock Phase1Builder 在 mcs.presets 模块中（与 hotpot.py 导入路径一致）
+    with patch("mcs.presets.Phase1Builder") as mock_builder_cls:
         mock_instance = MagicMock()
-        mock_mcs_cls.return_value = mock_instance
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = mock_instance
+        mock_builder_cls.return_value = mock_builder
 
         result = ingest_hotpot_item(item, llm="deepseek")
 
-        # 验证 MCS 被初始化
-        mock_mcs_cls.assert_called_once()
-        mock_instance.initialize.assert_called_once()
+        # 验证 Phase1Builder 被创建并调用 build()
+        mock_builder_cls.assert_called_once()
+        mock_builder.build.assert_called_once()
 
         # 验证 ingest 被调用 context 长度次
         assert mock_instance.ingest.call_count == len(item.context)
@@ -159,9 +161,11 @@ def test_ingest_hotpot_item_creates_isolated_instance(sample_hotpot_raw):
 def test_ingest_skips_failing_paragraph(sample_hotpot_raw):
     """单段 ingest 抛错时应跳过该段、继续其余段，不向上抛出。"""
     item = HotpotItem(**sample_hotpot_raw[0])  # 3 段
-    with patch("mcs.MCS") as mock_mcs_cls:
+    with patch("mcs.presets.Phase1Builder") as mock_builder_cls:
         inst = MagicMock()
-        mock_mcs_cls.return_value = inst
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = inst
+        mock_builder_cls.return_value = mock_builder
         inst.ingest.side_effect = [None, RuntimeError("boom"), None]
         result = ingest_hotpot_item(item, llm="deepseek")
         assert result is inst

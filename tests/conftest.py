@@ -137,13 +137,16 @@ def default_config() -> MCSConfig:
         token_budget=8000,
         max_rounds=3,
         max_picked=20,
-        plugins=[
+        shared_plugins=["summary"],  # NodeExtension
+        write_plugins=[],             # 无 Compaction
+        read_plugins=[
             "alias_index",
             "alias_entry",
             "hub_fallback",
             "priority_trim",
-            "summary",
         ],
+        write_llm="mock_llm",
+        read_llm="mock_llm",
         plugin_configs={},
     )
 
@@ -152,9 +155,14 @@ def default_config() -> MCSConfig:
 def mcs_with_mock_llm(default_config: MCSConfig, mock_llm: MockLLM):
     """使用 mock LLM 的已初始化 MCS 实例（无需真实 API 密钥）。"""
     from mcs import MCS
+    from mcs.presets import get_phase1_plugin_registry
 
-    mcs = MCS(default_config)
-    mcs.register_plugin(mock_llm)
+    # 合并 mock_llm 到插件注册表
+    registry = get_phase1_plugin_registry()
+    registry["mock_llm"] = MockLLM
+
+    mcs = MCS(default_config, plugin_registry=registry)
+    mcs.register_plugin(mock_llm)  # 直接注册 mock_llm 实例
     mcs.initialize()
     return mcs
 

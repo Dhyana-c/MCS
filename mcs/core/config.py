@@ -7,21 +7,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# 第一阶段默认插件集（knowledge_graph 模式）
-# 参见 openspec/specs/phase1-defaults/spec.md "知识图谱模式默认插件清单"
-PHASE1_DEFAULT_PLUGINS: list[str] = [
-    "alias_index",        # NodeExtension + Index
-    "alias_entry",        # EntryPlugin priority=100
-    "hub_fallback",       # EntryPlugin priority=0
-    "priority_trim",      # TrimPlugin
-    "summary",            # NodeExtension
-    "source_tracking",    # NodeExtension + StorageSchemaExtension
-    "idempotency_check",  # PostprocessPlugin (write stage ①)
-    "fanout_reducer",     # CompactionPlugin
-    "summary_regen",      # CompactionPlugin
-    "sqlite_storage",     # Storage
-    "deepseek_llm",       # LLM
+# ── Phase1 默认插件分配 ──────────────────────────────────────────────────
+# 参见 openspec/specs/mcs-presets/spec.md "Phase1 默认插件分配"
+
+PHASE1_SHARED_PLUGINS: list[str] = [
+    "source_tracking",     # NodeExtension + StorageSchemaExt
+    "summary",             # NodeExtension
 ]
+
+PHASE1_WRITE_PLUGINS: list[str] = [
+    "idempotency_check",   # Postprocess (write_preprocess)
+    "fanout_reducer",      # Compaction
+    "summary_regen",       # Compaction
+]
+
+PHASE1_READ_PLUGINS: list[str] = [
+    "alias_index",         # Index
+    "alias_entry",         # Entry (priority=100)
+    "hub_fallback",        # Entry (priority=0)
+    "priority_trim",       # Trim
+]
+
+# 旧名保留（向后兼容别名，供 openspec 等引用）
+PHASE1_DEFAULT_PLUGINS: list[str] = PHASE1_SHARED_PLUGINS + PHASE1_WRITE_PLUGINS + PHASE1_READ_PLUGINS
 
 
 @dataclass
@@ -41,59 +49,69 @@ class MCSConfig:
     # subgraph-bounding：查询侧种子图归纳（虚拟根 + fanout reduce）
     # 默认开启，保证默认配置下核心不变量（任意节点 + 一跳子节点 ≤ T）
     seed_graph_bounding: bool = True
-    plugins: list[str] = field(default_factory=list)
+
+    # 分离配置（替代旧 plugins 字段）
+    shared_plugins: list[str] = field(default_factory=list)   # Graph/Storage/NodeExtension
+    write_plugins: list[str] = field(default_factory=list)    # Compaction/write Postprocess
+    read_plugins: list[str] = field(default_factory=list)     # Entry/Trim/Index/read Postprocess
+
+    # LLM 分离
+    write_llm: str = ""   # 写入 LLM 名称
+    read_llm: str = ""    # 读取 LLM 名称
+
     plugin_configs: dict = field(default_factory=dict)
     prompt_overrides: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
-    def knowledge_graph(cls, llm: str = "deepseek") -> MCSConfig:
-        """第一阶段默认配置：11 个插件，T=8000，max_rounds=5，max_picked=50。
+    def knowledge_graph(cls, write_llm: str = "deepseek", read_llm: str | None = None) -> MCSConfig:
+        """第一阶段默认配置：shared+write+read 插件分离，T=8000，max_rounds=5，max_picked=50。
 
-        ``llm`` 选择厂商 LLM 后端：
+        ``write_llm`` / ``read_llm`` 选择厂商 LLM 后端：
 
-          - ``"deepseek"``（默认）：使用 ``deepseek_llm``，返回与历史一致的默认清单。
-          - ``"claude"``：把清单中的 ``deepseek_llm`` 等量替换为 ``claude_llm``
-            （仍 11 个插件），并预置其默认 ``plugin_configs``。
+          - ``"deepseek"``（默认）：使用 ``deepseek_llm``
+          - ``"claude"``：使用 ``claude_llm``
+          - ``"ollama"``：使用 ``ollama_llm``
+
+        若 ``read_llm`` 未指定，则与 ``write_llm`` 相同（共用同一 LLM）。
 
         参见 phase1-defaults 与 claude-llm-adapter capability spec。
         """
-        plugins = list(PHASE1_DEFAULT_PLUGINS)
+        if read_llm is None:
+            read_llm = write_llm
+
+        # 验证 LLM 名称
+        valid_llms = {"deepseek", "claude", "ollama"}
+        if write_llm not in valid_llms:
+            raise ValueError(
+                f"unknown write_llm={write_llm!r}; expected 'deepseek', 'claude', or 'ollama'"
+            )
+        if read_llm not in valid_llms:
+            raise ValueError(
+                f"unknown read_llm={read_llm!r}; expected 'deepseek', 'claude', or 'ollama'"
+            )
+
+        # 生成 LLM 插件名称
+        write_llm_name = f"{write_llm}_llm"
+        read_llm_name = f"{read_llm}_llm"
+
+        # 构建 plugin_configs
         plugin_configs: dict = {
             "sqlite_storage": {"path": "mcs.db"},
-            "deepseek_llm": {"api_key": "", "model": "deepseek-chat"},
         }
-        if llm == "claude":
-            plugins = [
-                "claude_llm" if p == "deepseek_llm" else p for p in plugins
-            ]
-            plugin_configs.pop("deepseek_llm", None)
-            plugin_configs["claude_llm"] = {
-                "auth_token": "",
-                "model": "claude-3-5-sonnet-latest",
-                "base_url": "https://api.anthropic.com",
-            }
-        elif llm == "ollama":
-            plugins = [
-                "ollama_llm" if p == "deepseek_llm" else p for p in plugins
-            ]
-            plugin_configs.pop("deepseek_llm", None)
-            plugin_configs["ollama_llm"] = {
-                "model": "",
-                "base_url": "http://localhost:11434/v1",
-                # 思维模型（qwen3/qwq/deepseek-r1…）默认关闭 thinking：
-                # MCS 只取结构化 JSON，thinking 纯属浪费且会把调用拖到分钟级。
-                "think": False,
-            }
-        elif llm != "deepseek":
-            raise ValueError(
-                f"unknown llm={llm!r}; expected 'deepseek', 'claude', or 'ollama'"
-            )
+        _add_llm_config(plugin_configs, write_llm, write_llm_name)
+        if read_llm_name != write_llm_name:
+            _add_llm_config(plugin_configs, read_llm, read_llm_name)
+
         return cls(
             mode="knowledge_graph",
             token_budget=8000,
             max_rounds=5,
             max_picked=50,
-            plugins=plugins,
+            shared_plugins=list(PHASE1_SHARED_PLUGINS),
+            write_plugins=list(PHASE1_WRITE_PLUGINS),
+            read_plugins=list(PHASE1_READ_PLUGINS),
+            write_llm=write_llm_name,
+            read_llm=read_llm_name,
             plugin_configs=plugin_configs,
         )
 
@@ -107,13 +125,29 @@ class MCSConfig:
             token_budget=8000,
             max_rounds=5,
             max_picked=50,
-            plugins=[
-                *PHASE1_DEFAULT_PLUGINS,
-                "event_layer",
-                "versioning",
-                "confidence",
-                "timeseries_entry",
-                "gc",
-                "arbitration",
-            ],
+            shared_plugins=list(PHASE1_SHARED_PLUGINS),
+            write_plugins=list(PHASE1_WRITE_PLUGINS),
+            read_plugins=list(PHASE1_READ_PLUGINS),
+            write_llm="deepseek_llm",
+            read_llm="deepseek_llm",
         )
+
+
+def _add_llm_config(plugin_configs: dict, llm: str, llm_name: str) -> None:
+    """向 plugin_configs 添加指定 LLM 的默认配置。"""
+    if llm == "deepseek":
+        plugin_configs[llm_name] = {"api_key": "", "model": "deepseek-chat"}
+    elif llm == "claude":
+        plugin_configs[llm_name] = {
+            "auth_token": "",
+            "model": "claude-3-5-sonnet-latest",
+            "base_url": "https://api.anthropic.com",
+        }
+    elif llm == "ollama":
+        plugin_configs[llm_name] = {
+            "model": "",
+            "base_url": "http://localhost:11434/v1",
+            # 思维模型（qwen3/qwq/deepseek-r1…）默认关闭 thinking：
+            # MCS 只取结构化 JSON，thinking 纯属浪费且会把调用拖到分钟级。
+            "think": False,
+        }

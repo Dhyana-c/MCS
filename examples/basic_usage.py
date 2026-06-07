@@ -65,21 +65,29 @@ QUERY = "什么是深度学习？"
 def build_mock_mcs() -> MCS:
     """使用脚本化 MockLLM 构建 MCS（无网络，无需 API 密钥）。"""
     from tests.conftest import MockLLM
+    from mcs.presets import get_phase1_plugin_registry
 
     config = MCSConfig(
         mode="example_mock",
         token_budget=8000,
         max_rounds=2,
         max_picked=20,
-        plugins=[
+        shared_plugins=["summary"],
+        write_plugins=[],
+        read_plugins=[
             "alias_index",
             "alias_entry",
             "hub_fallback",
             "priority_trim",
-            "summary",
         ],
+        write_llm="mock_llm",
+        read_llm="mock_llm",
     )
-    mcs = MCS(config)
+    # 合并 mock_llm 到插件注册表
+    registry = get_phase1_plugin_registry()
+    registry["mock_llm"] = MockLLM
+
+    mcs = MCS(config, plugin_registry=registry)
     mock_llm = MockLLM()
 
     # 脚本化 mock，使每次 ingest 创建一个新概念节点。
@@ -122,23 +130,26 @@ def build_real_mcs() -> MCS:
 
 def _build_deepseek_mcs() -> MCS:
     """使用 DeepSeek 构建 MCS（需要 ``DEEPSEEK_API_KEY``）。"""
+    from mcs.presets import Phase1Builder
+
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
         raise SystemExit("DEEPSEEK_API_KEY env var not set; cannot run real mode.")
     model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
-    config = MCSConfig.knowledge_graph()
+    config = MCSConfig.knowledge_graph(write_llm="deepseek", read_llm="deepseek")
     config.plugin_configs.setdefault("deepseek_llm", {}).update(
         {"api_key": api_key, "model": model}
     )
     config.plugin_configs.setdefault("sqlite_storage", {})["path"] = ":memory:"
     print(f"  (using DeepSeek model={model})")
-    mcs = MCS(config)
-    mcs.initialize()
-    return mcs
+    builder = Phase1Builder(config)
+    return builder.build()
 
 
 def _build_claude_mcs() -> MCS:
     """使用 Claude / Anthropic 兼容网关构建 MCS（需要 ``ANTHROPIC_AUTH_TOKEN``）。"""
+    from mcs.presets import Phase1Builder
+
     token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
     if not token:
         raise SystemExit(
@@ -146,7 +157,7 @@ def _build_claude_mcs() -> MCS:
         )
     model = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
     base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-    config = MCSConfig.knowledge_graph(llm="claude")
+    config = MCSConfig.knowledge_graph(write_llm="claude", read_llm="claude")
     cfg = config.plugin_configs.setdefault("claude_llm", {})
     cfg.update({"auth_token": token, "model": model, "base_url": base_url})
     timeout_ms = os.environ.get("API_TIMEOUT_MS", "")
@@ -157,9 +168,8 @@ def _build_claude_mcs() -> MCS:
             pass
     config.plugin_configs.setdefault("sqlite_storage", {})["path"] = ":memory:"
     print(f"  (using Claude model={model} via {base_url})")
-    mcs = MCS(config)
-    mcs.initialize()
-    return mcs
+    builder = Phase1Builder(config)
+    return builder.build()
 
 
 def main() -> None:

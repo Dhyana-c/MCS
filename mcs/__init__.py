@@ -2,9 +2,13 @@
 
 顶层 ``MCS`` 类将图存储、LLM 后端、插件链、读写管线组装在一起。典型用法：
 
-    from mcs import MCS, MCSConfig
+    # 快捷方式（推荐）
+    from mcs.presets import create_mcs
+    mcs = create_mcs(llm="deepseek", db_path="mcs.db")
 
-    config = MCSConfig.knowledge_graph()
+    # 或完整自定义
+    from mcs import MCS, MCSConfig
+    config = MCSConfig.knowledge_graph(write_llm="deepseek", read_llm="deepseek")
     config.plugin_configs["deepseek_llm"]["api_key"] = "..."
     mcs = MCS(config)
     mcs.initialize()
@@ -19,252 +23,23 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-from typing import Any
-
+from mcs.core.builder import MCSBuilder
 from mcs.core.config import MCSConfig
-from mcs.core.context_renderer import ContextRenderer
+from mcs.core.mcs import MCS
 from mcs.core.plugin import Plugin, PluginType
-from mcs.core.plugin_manager import PluginContext, PluginManager
-from mcs.core.query_engine import QueryEngine
 from mcs.core.store import StoreInterface
-from mcs.core.token_budget import TokenBudget
-from mcs.core.write_pipeline import WritePipeline
+from mcs.presets import Phase1Builder, create_mcs, get_phase1_plugin_registry
 from mcs.stores.in_memory import InMemoryStore
 from mcs.stores.sqlite_store import SQLiteStore
 
-
-__all__ = ["MCS", "MCSConfig", "StoreInterface", "InMemoryStore", "SQLiteStore"]
-
-
-# 将插件"名称"（出现在 MCSConfig.plugins 中）映射到其类。
-def _default_plugin_registry() -> dict[str, type[Plugin]]:
-    """返回第一期规范的名称 -> 插件类注册表。
-
-    延迟加载以保持导入时间低开销。
-    """
-    from mcs.plugins.phase1.alias_index import (
-        AliasEntryPlugin,
-        AliasIndexPlugin,
-    )
-    from mcs.plugins.phase1.claude_llm import ClaudeLLMPlugin
-    from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
-    from mcs.plugins.phase1.ollama_llm import OllamaLLMPlugin
-    from mcs.plugins.phase1.community_merger import CommunityMergerPlugin
-    from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
-    from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
-    from mcs.plugins.phase1.priority_trim import PriorityTrimPlugin
-    from mcs.plugins.phase1.rerank import RerankPlugin
-    from mcs.plugins.phase1.source_tracking import (
-        IdempotencyCheckPlugin,
-        SourceTrackingPlugin,
-    )
-    from mcs.plugins.phase1.summary import SummaryPlugin
-    from mcs.plugins.phase1.summary_regen import SummaryRegenPlugin
-
-    return {
-        "alias_index": AliasIndexPlugin,
-        "alias_entry": AliasEntryPlugin,
-        "hub_fallback": HubFallbackEntryPlugin,
-        "priority_trim": PriorityTrimPlugin,
-        "rerank": RerankPlugin,  # query_postprocess 重排（opt-in，不入默认链）
-        "summary": SummaryPlugin,
-        "source_tracking": SourceTrackingPlugin,
-        "idempotency_check": IdempotencyCheckPlugin,
-        "fanout_reducer": FanoutReducerPlugin,
-        "community_merger": CommunityMergerPlugin,  # CompactionPlugin（opt-in，不入默认链）
-        "summary_regen": SummaryRegenPlugin,
-        "deepseek_llm": DeepSeekLLMPlugin,
-        "claude_llm": ClaudeLLMPlugin,
-        "ollama_llm": OllamaLLMPlugin,
-    }
-
-
-class MCS:
-    """顶层编排器。
-
-    构造很轻量；调用一次 ``initialize()`` 来组装插件和构建管线。
-    之后使用 ``ingest()`` 和 ``query()``。
-    """
-
-    def __init__(
-        self,
-        config: MCSConfig | None = None,
-        plugin_registry: dict[str, type[Plugin]] | None = None,
-        store: StoreInterface | None = None,
-    ):
-        self.config = config or MCSConfig.knowledge_graph()
-        self._plugin_registry = plugin_registry or _default_plugin_registry()
-
-        self.store: StoreInterface = store or InMemoryStore()
-        self.token_budget: TokenBudget = TokenBudget(self.config.token_budget)
-        self.plugin_manager: PluginManager = PluginManager()
-        self.context_renderer: ContextRenderer = ContextRenderer(
-            self.plugin_manager
-        )
-
-        self.llm: Plugin | None = None
-        self.query_engine: QueryEngine | None = None
-        self.write_pipeline: WritePipeline | None = None
-
-        self._initialized = False
-
-    # === 生命周期 ===
-
-    def register_plugin(self, plugin: Plugin) -> None:
-        """直接添加插件实例（绕过配置名称注册表）。"""
-        self.plugin_manager.register(plugin)
-
-    def initialize(self) -> None:
-        """从配置实例化插件、组装管线、运行 initialize()。"""
-        if self._initialized:
-            return
-
-        # 从配置名称实例化插件
-        for plugin_name in self.config.plugins:
-            cls = self._plugin_registry.get(plugin_name)
-            if cls is None:
-                continue  # 忽略未知名称，让部分配置仍能工作
-            plugin_config = self.config.plugin_configs.get(plugin_name, {})
-            try:
-                instance = cls(plugin_config)
-            except TypeError:
-                instance = cls()
-            if self.plugin_manager.get_by_name(plugin_name) is None:
-                self.plugin_manager.register(instance)
-
-        # 解析 LLM 插件（第一个 PluginType.LLM 类型的）
-        llm = self.plugin_manager.get(PluginType.LLM)
-        if llm is None:
-            raise RuntimeError(
-                "未注册 LLM 插件。第一期期望配置中有 ``deepseek_llm`` "
-                "或其他 LLMInterface 实现。"
-            )
-        self.llm = llm  # type: ignore[assignment]
-
-        # 初始化 SQLiteStore（若使用）
-        if isinstance(self.store, SQLiteStore) and self.store.conn is None:
-            schema_exts = self.plugin_manager.get_all(PluginType.STORAGE_SCHEMA_EXT)
-            node_exts = {
-                p.get_name(): p
-                for p in self.plugin_manager.get_all(PluginType.NODE_EXTENSION)
-            }
-            self.store.initialize(
-                schema_extensions=schema_exts,
-                node_extensions=node_exts,
-            )
-
-        # 用 PluginContext 初始化插件
-        ctx = PluginContext(
-            store=self.store,
-            config=self.config,
-            token_budget=self.token_budget,
-            context_renderer=self.context_renderer,
-            plugin_manager=self.plugin_manager,
-        )
-        self.plugin_manager.initialize_all(ctx)
-
-        # 将用户 prompt 覆盖应用到 LLM
-        for purpose, overrides in (self.config.prompt_overrides or {}).items():
-            self.llm.register_prompt(
-                purpose,
-                system=overrides.get("system"),
-                template=overrides.get("template"),
-                parser=overrides.get("parser"),
-            )
-
-        # 构建管线（插件已激活）
-        self.query_engine = QueryEngine(
-            store=self.store,
-            llm=self.llm,
-            plugin_manager=self.plugin_manager,
-            token_budget=self.token_budget,
-            max_rounds=self.config.max_rounds,
-            max_picked=self.config.max_picked,
-            seed_bounding=getattr(self.config, "seed_graph_bounding", False),
-        )
-        self.write_pipeline = WritePipeline(
-            store=self.store,
-            llm=self.llm,
-            query_engine=self.query_engine,
-            plugin_manager=self.plugin_manager,
-            token_budget=self.token_budget,
-            config=self.config,
-        )
-
-        # Load-on-startup: 若图为空且 SQLiteStore 可用，从存储加载已有数据
-        self._try_load_from_storage()
-
-        self._initialized = True
-
-    def shutdown(self) -> None:
-        if not self._initialized:
-            return
-        self.plugin_manager.shutdown_all()
-        # 关闭 SQLiteStore
-        if isinstance(self.store, SQLiteStore):
-            self.store.shutdown()
-        self._initialized = False
-
-    # === 公共 API ===
-
-    def ingest(self, text: str, **metadata: Any) -> Any:
-        """执行写入管线。返回最终的 WriteContext。"""
-        self._require_init()
-        assert self.write_pipeline is not None
-        return self.write_pipeline.ingest(text, **metadata)
-
-    def query(
-        self,
-        text: str,
-        existing_context: list | None = None,
-    ) -> Any:
-        """执行查询管线。默认返回 ``List[Node]``
-        （或配置的后处理链产生的任何类型）。
-        """
-        self._require_init()
-        assert self.query_engine is not None
-        return self.query_engine.query(text, existing_context=existing_context)
-
-    def persist_full(self) -> None:
-        """全量重建持久化：让存储与内存图完全一致（反映删除）。
-
-        增量持久化只 upsert 不删行；分层归纳会重挂/删除边，需用本方法对齐快照。
-        建议在建图收尾（及周期性）调用。无 SQLiteStore 时为 no-op。
-        """
-        self._require_init()
-        if isinstance(self.store, SQLiteStore):
-            self.store.save_full()
-
-    def get_plugin(self, name: str) -> Plugin | None:
-        """按名称查找插件实例。"""
-        return self.plugin_manager.get_by_name(name)
-
-    # === 内部方法 ===
-
-    def _try_load_from_storage(self) -> None:
-        """若图为空且 SQLiteStore 可用，从存储加载已有数据。"""
-        if self.store.get_all_nodes():
-            return
-        if not isinstance(self.store, SQLiteStore):
-            return
-        try:
-            self.store.load()
-            # reload 后重建所有 IndexInterface 索引：插件 initialize 时图尚空、索引停留在
-            # 空状态；此处用加载后的图重建，否则 alias 等种子定位全失效（reload 复用图时
-            # 候选集会崩塌）。
-            for index in self.plugin_manager.get_all(PluginType.INDEX):
-                try:
-                    index.build(self.store)
-                except NotImplementedError:
-                    continue
-        except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Load-on-startup failed", exc_info=True,
-            )
-
-    def _require_init(self) -> None:
-        if not self._initialized:
-            raise RuntimeError(
-                "MCS 未初始化；请先调用 ``mcs.initialize()``。"
-            )
+__all__ = [
+    "MCS",
+    "MCSConfig",
+    "MCSBuilder",
+    "Phase1Builder",
+    "StoreInterface",
+    "InMemoryStore",
+    "SQLiteStore",
+    "create_mcs",
+    "get_phase1_plugin_registry",
+]

@@ -122,7 +122,8 @@ def test_rerank_stable_for_equal_scores():
 def test_rerank_not_in_default_plugins():
     """默认插件链不包含 rerank（opt-in）。"""
     assert "rerank" not in PHASE1_DEFAULT_PLUGINS
-    assert "rerank" not in MCSConfig.knowledge_graph().plugins
+    config = MCSConfig.knowledge_graph()
+    assert "rerank" not in config.read_plugins
 
 
 def _query_engine(mock_llm, *plugins):

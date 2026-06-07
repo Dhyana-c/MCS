@@ -23,11 +23,13 @@ ALL_MODULES = [
     "mcs",
     # core
     "mcs.core",
+    "mcs.core.builder",
     "mcs.core.config",
     "mcs.core.context_renderer",
     "mcs.core.decisions",
     "mcs.core.errors",
     "mcs.core.graph",
+    "mcs.core.mcs",
     "mcs.core.plugin_manager",
     "mcs.core.query_engine",
     "mcs.core.token_budget",
@@ -64,6 +66,9 @@ ALL_MODULES = [
     "mcs.plugins.phase2.gc",
     "mcs.plugins.phase2.timeseries_entry",
     "mcs.plugins.phase2.versioning",
+    # presets
+    "mcs.presets",
+    "mcs.presets.phase1",
     # prompts (9 purposes + registry)
     "mcs.prompts",
     "mcs.prompts.arbitrate",
@@ -246,22 +251,41 @@ def test_decision_action_types() -> None:
 
 def test_default_phase1_config_plugins() -> None:
     """默认 Phase 1 插件列表符合 phase1-defaults 规范。"""
-    from mcs.core.config import PHASE1_DEFAULT_PLUGINS, MCSConfig
+    from mcs.core.config import (
+        PHASE1_DEFAULT_PLUGINS,
+        PHASE1_SHARED_PLUGINS,
+        PHASE1_WRITE_PLUGINS,
+        PHASE1_READ_PLUGINS,
+        MCSConfig,
+    )
 
     config = MCSConfig.knowledge_graph()
-    assert config.plugins == PHASE1_DEFAULT_PLUGINS
+    # 验证分离后的插件列表
+    assert config.shared_plugins == PHASE1_SHARED_PLUGINS
+    assert config.write_plugins == PHASE1_WRITE_PLUGINS
+    assert config.read_plugins == PHASE1_READ_PLUGINS
     assert config.token_budget == 8000
     assert config.max_rounds == 5
     assert config.max_picked == 50
 
-    # 健全性检查：按规范应有 11 个插件
-    assert len(PHASE1_DEFAULT_PLUGINS) == 11
-    assert "alias_entry" in PHASE1_DEFAULT_PLUGINS
-    assert "hub_fallback" in PHASE1_DEFAULT_PLUGINS
-    assert "priority_trim" in PHASE1_DEFAULT_PLUGINS
-    assert "idempotency_check" in PHASE1_DEFAULT_PLUGINS
-    assert "fanout_reducer" in PHASE1_DEFAULT_PLUGINS
-    assert "summary_regen" in PHASE1_DEFAULT_PLUGINS
+    # 健全性检查：按规范应有 10 个插件（移除了 sqlite_storage，它不是插件）
+    # shared: source_tracking, summary (2)
+    # write: idempotency_check, fanout_reducer, summary_regen (3)
+    # read: alias_index, alias_entry, hub_fallback, priority_trim (4)
+    # total: 2 + 3 + 4 = 9 个插件
+    assert len(PHASE1_SHARED_PLUGINS) == 2
+    assert len(PHASE1_WRITE_PLUGINS) == 3
+    assert len(PHASE1_READ_PLUGINS) == 4
+    assert len(PHASE1_DEFAULT_PLUGINS) == 9
+
+    assert "alias_entry" in PHASE1_READ_PLUGINS
+    assert "hub_fallback" in PHASE1_READ_PLUGINS
+    assert "priority_trim" in PHASE1_READ_PLUGINS
+    assert "idempotency_check" in PHASE1_WRITE_PLUGINS
+    assert "fanout_reducer" in PHASE1_WRITE_PLUGINS
+    assert "summary_regen" in PHASE1_WRITE_PLUGINS
+    assert "source_tracking" in PHASE1_SHARED_PLUGINS
+    assert "summary" in PHASE1_SHARED_PLUGINS
 
 
 def test_context_renderer_get_summary_fallback() -> None:

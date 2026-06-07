@@ -259,30 +259,31 @@ def _make_mcs(
     JSONL LLM 调用记录器。``rerank=True`` 时把 query_postprocess 重排插件加入插件链
     （opt-in）。``max_picked`` / ``max_rounds`` 非 None 时放宽遍历宽度/轮数。
     """
-    from mcs import MCS, MCSConfig
+    from mcs import MCSConfig
+    from mcs.presets import Phase1Builder
 
-    config = MCSConfig.knowledge_graph(llm=llm)
+    config = MCSConfig.knowledge_graph(write_llm=llm, read_llm=llm)
     config.seed_graph_bounding = True  # 开启虚拟根节点 + fanout reduce
     config.token_budget = token_budget  # 核心不变量阈值 T（如 32k）
     # 评测可选关闭逐节点摘要重生（summary_regen）：文档级检索不直接依赖摘要文本，
     # 关掉可省 ~2.6× LLM 调用（摘要渲染回退到 content[:200]）。用于本地慢后端提速。
     if os.environ.get("MCS_NO_SUMMARY_REGEN", "0").lower() in ("1", "true", "yes"):
-        if "summary_regen" in config.plugins:
-            config.plugins.remove("summary_regen")
+        if "summary_regen" in config.write_plugins:
+            config.write_plugins.remove("summary_regen")
     # 评测可选去掉"关键词召回"(alias_entry)：种子只来自 hub_fallback 的种子图导航
     # (从持久根下钻)，用于隔离评估分层种子图本身的检索能力。build 走 resume 时被
     # 幂等跳过，故只影响查询阶段，不改已建图。
     if os.environ.get("MCS_NO_ALIAS_ENTRY", "0").lower() in ("1", "true", "yes"):
-        if "alias_entry" in config.plugins:
-            config.plugins.remove("alias_entry")
+        if "alias_entry" in config.read_plugins:
+            config.read_plugins.remove("alias_entry")
     config.plugin_configs["sqlite_storage"] = {"path": db_path}
     if max_picked is not None:
         config.max_picked = max_picked
     if max_rounds is not None:
         config.max_rounds = max_rounds
     if rerank:
-        if "rerank" not in config.plugins:
-            config.plugins.append("rerank")
+        if "rerank" not in config.read_plugins:
+            config.read_plugins.append("rerank")
         config.plugin_configs["rerank"] = {
             "scorer": "lexical",
             "top_n": rerank_top_n,
@@ -313,8 +314,8 @@ def _make_mcs(
             # 整篇摄入时调大上下文窗口（OLLAMA_NUM_CTX），避免长文档被静默截断。
             "num_ctx": int(os.environ.get("OLLAMA_NUM_CTX", "8192")),
         })
-    mcs = MCS(config)
-    mcs.initialize()
+    builder = Phase1Builder(config)
+    mcs = builder.build()
     if record_path:
         _attach_llm_recorder(mcs, record_path)
     return mcs

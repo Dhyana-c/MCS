@@ -128,9 +128,9 @@ def test_raw_call_wraps_vendor_error_as_llm_call_error():
 
 
 def test_registry_contains_claude():
-    from mcs import _default_plugin_registry
+    from mcs.presets import get_phase1_plugin_registry
 
-    reg = _default_plugin_registry()
+    reg = get_phase1_plugin_registry()
     assert reg.get("claude_llm") is ClaudeLLMPlugin
 
 
@@ -138,18 +138,19 @@ def test_default_backend_stays_deepseek_claude_is_opt_in():
     from mcs import MCSConfig
 
     default = MCSConfig.knowledge_graph()
-    assert "deepseek_llm" in default.plugins
-    assert "claude_llm" not in default.plugins
+    assert "deepseek_llm" == default.write_llm
+    assert "deepseek_llm" == default.read_llm
+    assert "claude_llm" not in default.write_llm
+    assert "claude_llm" not in default.read_llm
 
-    claude = MCSConfig.knowledge_graph(llm="claude")
-    assert "claude_llm" in claude.plugins
-    assert "deepseek_llm" not in claude.plugins
-    # 等量替换：插件总数不变。
-    assert len(claude.plugins) == len(default.plugins)
+    claude = MCSConfig.knowledge_graph(write_llm="claude", read_llm="claude")
+    assert "claude_llm" == claude.write_llm
+    assert "claude_llm" == claude.read_llm
+    assert "deepseek_llm" not in claude.write_llm
 
 
 def test_unknown_llm_choice_raises():
     from mcs import MCSConfig
 
     with pytest.raises(ValueError):
-        MCSConfig.knowledge_graph(llm="bogus")
+        MCSConfig.knowledge_graph(write_llm="bogus")

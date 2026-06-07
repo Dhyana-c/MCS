@@ -414,7 +414,13 @@ def test_load_on_startup_restores_graph(tmp_path, mock_llm):
 
     # 创建新的 MCS 实例，图应为空
     new_store = SQLiteStore({"path": db_path})
-    config = MCSConfig(plugins=["mock_llm"])
+    config = MCSConfig(
+        shared_plugins=[],
+        write_plugins=[],
+        read_plugins=[],
+        write_llm="mock_llm",
+        read_llm="mock_llm",
+    )
     mcs = MCS(config, store=new_store)
     mcs.register_plugin(mock_llm)
     mcs.initialize()
@@ -430,7 +436,13 @@ def test_load_on_startup_skipped_when_graph_has_data(mock_llm):
     """如果内存图已有数据，load-on-startup 不应覆盖。"""
     from mcs import MCS
 
-    config = MCSConfig(plugins=["mock_llm"])
+    config = MCSConfig(
+        shared_plugins=[],
+        write_plugins=[],
+        read_plugins=[],
+        write_llm="mock_llm",
+        read_llm="mock_llm",
+    )
     mcs = MCS(config)
 
     # 手动预先添加节点
@@ -453,7 +465,13 @@ def test_load_on_startup_handles_exception(tmp_path, mock_llm):
     # 使用损坏的数据库路径（SQLiteStore 初始化会创建表但 load 会失败）
     db_path = str(tmp_path / "corrupt.db")
     store = SQLiteStore({"path": db_path})
-    config = MCSConfig(plugins=["mock_llm"])
+    config = MCSConfig(
+        shared_plugins=[],
+        write_plugins=[],
+        read_plugins=[],
+        write_llm="mock_llm",
+        read_llm="mock_llm",
+    )
     mcs = MCS(config, store=store)
     mcs.register_plugin(mock_llm)
 
@@ -470,7 +488,7 @@ def test_load_on_startup_rebuilds_indexes(tmp_path, mock_llm):
     索引建成空的，load-on-startup 加载节点后必须重建索引。
     """
     from mcs import MCS
-    from mcs.plugins.phase1.alias_index import AliasIndexPlugin, AliasEntryPlugin
+    from mcs.presets import get_phase1_plugin_registry
 
     db_path = str(tmp_path / "idx.db")
     # 先用独立 SQLiteStore 落盘一个节点
@@ -482,13 +500,24 @@ def test_load_on_startup_rebuilds_indexes(tmp_path, mock_llm):
 
     # 新 MCS reload（含 SQLiteStore + alias_index + alias_entry）
     new_store = SQLiteStore({"path": db_path})
-    config = MCSConfig(plugins=["alias_index", "alias_entry"])
-    mcs = MCS(config, store=new_store)
+    config = MCSConfig(
+        shared_plugins=[],
+        write_plugins=[],
+        read_plugins=["alias_index", "alias_entry"],
+        write_llm="mock_llm",
+        read_llm="mock_llm",
+    )
+    registry = get_phase1_plugin_registry()
+    registry["mock_llm"] = type(mock_llm)  # 添加 mock_llm 到注册表
+    mcs = MCS(config, plugin_registry=registry, store=new_store)
     mcs.register_plugin(mock_llm)
     mcs.initialize()
 
     ai = mcs.get_plugin("alias_index")
+    assert ai is not None
     assert len(ai.index) > 0  # reload 后索引已重建（非空）
-    hits = mcs.get_plugin("alias_entry").locate("Quantum", None)
+    entry = mcs.get_plugin("alias_entry")
+    assert entry is not None
+    hits = entry.locate("Quantum", None)
     assert any(n.id == "n1" for n in hits)  # 种子定位能命中
     mcs.shutdown()
