@@ -12,7 +12,7 @@ from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
-from mcs.plugins.phase1.rerank import LexicalScorer, RerankPlugin
+from mcs.plugins.postprocess.rerank import LexicalScorer, RerankPlugin
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore

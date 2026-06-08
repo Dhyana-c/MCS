@@ -9,8 +9,8 @@ from mcs.core.config import MCSConfig
 from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.token_budget import TokenBudget
-from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
-from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
+from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
+from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore

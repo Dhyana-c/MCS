@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mcs.bench.multihop_rag import (
+from bench.multihop_rag import (
     MultiHopDataLoader,
     MultiHopEvalConfig,
     MultiHopEvalRunner,
@@ -170,7 +170,7 @@ def test_runner_persists_and_resumes(tmp_corpus_qa, tmp_path):
         built.append(m)
         return m
 
-    with patch("mcs.bench.multihop_rag.build_shared_graph", side_effect=fake_build):
+    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=fake_build):
         metrics = MultiHopEvalRunner(cfg).run()
         assert built[-1].query.call_count > 0
 
@@ -179,7 +179,7 @@ def test_runner_persists_and_resumes(tmp_corpus_qa, tmp_path):
     assert metrics["overall"]["n"] >= 1
 
     # resume：第二次运行不应再 query（全部已完成）
-    with patch("mcs.bench.multihop_rag.build_shared_graph", side_effect=fake_build):
+    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=fake_build):
         MultiHopEvalRunner(cfg).run()
         assert built[-1].query.call_count == 0
 
@@ -216,7 +216,7 @@ def test_runner_exclude_null_drops_null_queries(tmp_corpus_qa, tmp_path):
         m.query.return_value = [node]
         return m
 
-    with patch("mcs.bench.multihop_rag.build_shared_graph", side_effect=fake_build):
+    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=fake_build):
         MultiHopEvalRunner(cfg).run()
 
     results = json.loads((out / "retrieval_results.json").read_text(encoding="utf-8"))

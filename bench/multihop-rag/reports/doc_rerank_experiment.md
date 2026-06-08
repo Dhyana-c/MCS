@@ -95,9 +95,9 @@ overall recall@10 0.503 vs POC 0.81：
 
 ```bash
 # baseline（节点 rank 序映射文档）
-python -m mcs.bench.multihop_rag --corpus-subset 200 --db ./multihop_bench.db --output ./mh_baseline
+python -m bench.multihop_rag --corpus-subset 200 --db ./multihop_bench.db --output ./mh_baseline
 # 节点级重排
-python -m mcs.bench.multihop_rag --corpus-subset 200 --db ./multihop_bench.db --rerank --rerank-top-n 0 --exclude-null --output ./mh_node
+python -m bench.multihop_rag --corpus-subset 200 --db ./multihop_bench.db --rerank --rerank-top-n 0 --exclude-null --output ./mh_node
 # 文档级重排（本报告 · 418 全量）
-python -m mcs.bench.multihop_rag --corpus-subset 200 --db ./multihop_bench.db --doc-rerank --doc-rerank-top-n 0 --output ./mh_doc
+python -m bench.multihop_rag --corpus-subset 200 --db ./multihop_bench.db --doc-rerank --doc-rerank-top-n 0 --output ./mh_doc
 ```

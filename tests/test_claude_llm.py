@@ -8,7 +8,7 @@ import pytest
 
 from mcs.core.errors import LLMCallError
 from mcs.interfaces.llm import LLMInterface
-from mcs.plugins.phase1.claude_llm import ClaudeLLMPlugin
+from mcs.plugins.llm.claude_llm import ClaudeLLMPlugin
 
 # === 接口契约 ===
 
@@ -36,7 +36,7 @@ def test_lazy_import_class_loadable_without_credentials():
 
 
 def test_source_has_no_prompt_templates():
-    import mcs.plugins.phase1.claude_llm as mod
+    import mcs.plugins.llm.claude_llm as mod
 
     full = inspect.getsource(mod)
     for forbidden in ["你是", "extract", "判断", "{name}", "{content}"]:

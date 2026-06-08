@@ -9,10 +9,10 @@ Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类
 - **WHEN** 创建新的评测类型目录
 - **THEN** 目录下 MUST 包含 `scripts/` 和 `reports/` 子目录
 
-#### Scenario: 评测代码保留在 mcs/bench/
+#### Scenario: 评测代码位于 bench/ 目录
 
 - **WHEN** 评测代码需要被外部导入
-- **THEN** 代码 SHALL 保留在 `mcs/bench/` 包内，启动脚本通过 `from mcs.bench import ...` 调用
+- **THEN** 代码 SHALL 位于 `bench/` 目录下（如 `bench/multihop_rag/`、`bench/hotpotqa/`、`bench/plugins/`），启动脚本通过 `from bench.xxx import ...` 调用
 
 ### Requirement: 启动脚本无命令行参数
 

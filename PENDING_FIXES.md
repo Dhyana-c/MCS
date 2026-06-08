@@ -40,9 +40,9 @@
 ## B. Bench 质量
 
 - [x] **hotpot sp 过度预测**：`extract_supporting_facts` 把所有来源 title 全吐出（平均 7.5 个，gold 仅 2）→ 按 node rank 取 **top-N 剪枝**，提升 sp_em / 精确率。
-  - 涉及：`mcs/bench/hotpot.py:extract_supporting_facts`
+  - 涉及：`bench/hotpotqa/runner.py:extract_supporting_facts`
 - [x] **hotpot dry_run token 模型过时**：仍用 7900/条（实测 ~90K/条）→ 更新为实测模型（multihop 已用实测模型，可参照）。
-  - 涉及：`mcs/bench/hotpot.py:dry_run`
+  - 涉及：`bench/hotpotqa/runner.py:dry_run`
 - [x] **multihop `--exclude-null` 选项**：小 corpus 子集下 null_query（恒 301）占绝大多数，干扰信号；加开关可只评非 null。
 
 ## C. 评测基础设施 / 性能

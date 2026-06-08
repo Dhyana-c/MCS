@@ -26,22 +26,22 @@ def get_phase1_plugin_registry() -> dict[str, type["Plugin"]]:
 
     注意：`sqlite_storage` 不是插件，是 Store 配置项，不在此注册表中。
     """
-    from mcs.plugins.phase1.alias_index import AliasEntryPlugin, AliasIndexPlugin
-    from mcs.plugins.phase1.claude_llm import ClaudeLLMPlugin
-    from mcs.plugins.phase1.community_merger import CommunityMergerPlugin
-    from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
-    from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
-    from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
-    from mcs.plugins.phase1.llm_seed_selector import LLMSeedSelectorPlugin
-    from mcs.plugins.phase1.ollama_llm import OllamaLLMPlugin
-    from mcs.plugins.phase1.priority_trim import PriorityTrimPlugin
-    from mcs.plugins.phase1.rerank import RerankPlugin
-    from mcs.plugins.phase1.source_tracking import (
+    from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
+    from mcs.plugins.index.alias_index import AliasEntryPlugin, AliasIndexPlugin
+    from mcs.plugins.index.community_merger import CommunityMergerPlugin
+    from mcs.plugins.llm.claude_llm import ClaudeLLMPlugin
+    from mcs.plugins.llm.deepseek_llm import DeepSeekLLMPlugin
+    from mcs.plugins.llm.ollama_llm import OllamaLLMPlugin
+    from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
+    from mcs.plugins.maintenance.summary_regen import SummaryRegenPlugin
+    from mcs.plugins.postprocess.rerank import RerankPlugin
+    from mcs.plugins.postprocess.summary import SummaryPlugin
+    from mcs.plugins.preprocess.source_tracking import (
         IdempotencyCheckPlugin,
         SourceTrackingPlugin,
     )
-    from mcs.plugins.phase1.summary import SummaryPlugin
-    from mcs.plugins.phase1.summary_regen import SummaryRegenPlugin
+    from mcs.plugins.seed_selector.llm_seed_selector import LLMSeedSelectorPlugin
+    from mcs.plugins.trim.priority_trim import PriorityTrimPlugin
 
     return {
         # shared

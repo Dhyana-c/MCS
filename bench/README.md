@@ -1,8 +1,8 @@
 # MCS 评测框架
 
-本目录组织各类 benchmark 评测，与核心包 `mcs/bench/` 解耦：
+本目录组织各类 benchmark 评测，与核心包 `mcs/` 解耦：
 
-- **评测代码**：保留在 `mcs/bench/` 包内，可被外部项目导入使用
+- **评测代码**：位于 `bench/<评测类型>/`（库代码）与 `bench/plugins/`（bench 专用插件），可被外部项目导入使用
 - **启动脚本**：位于 `bench/<评测类型>/scripts/`，独立运行、配置硬编码
 - **输出文件**：集中到 `bench/<评测类型>/outputs/`，不污染项目根目录
 
@@ -16,8 +16,10 @@ bench/
 │   ├── scripts/            # 启动脚本（无命令行参数）
 │   ├── reports/            # 测试报告
 │   └── README.md           # 评测说明
-├── hotpotqa/               # HotpotQA 多跳问答评测（占位）
+├── hotpotqa/               # HotpotQA 多跳问答评测
+│   ├── runner.py           # 评测库代码 + CLI（python -m bench.hotpotqa）
 │   └── README.md
+├── plugins/                # bench 专用插件（如 doc_rerank）
 └── README.md               # 本文档
 ```
 
@@ -41,9 +43,9 @@ python bench/multihop-rag/scripts/run_whole_doc.py
 
 标准多跳问答评测。每条数据独立实例，指标为 EM/F1、sp_EM/sp_F1。
 
-目前代码在 `mcs.bench.hotpot`，启动脚本待迁移。
+评测代码在 `bench/hotpotqa/`（`runner.py`），可用 `python -m bench.hotpotqa` 运行；专用启动脚本待补充。
 
-详见 `mcs/bench/README.md`。
+详见 `bench/hotpotqa/README.md`。
 
 ## 启动脚本规范
 

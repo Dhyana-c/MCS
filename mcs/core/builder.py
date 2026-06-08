@@ -309,6 +309,8 @@ class MCSBuilder(ABC):
             write_manager: 写入侧插件管理器
             read_manager: 读取侧插件管理器
         """
+        from mcs.core.plugin_manager import PluginContext
+
         # 写入侧插件初始化
         write_ctx = PluginContext(
             store=store,

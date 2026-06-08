@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
+from mcs.plugins.llm.deepseek_llm import DeepSeekLLMPlugin
 
 
 def test_max_tokens_default_is_high():

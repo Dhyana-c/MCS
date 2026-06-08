@@ -4,7 +4,7 @@
 
 (a) 所有 ``mcs.*`` 子包和模块可导入。
 (b) 带抽象方法的接口直接实例化时抛出 ``TypeError``。
-(c) ``Source`` 数据类位于 ``mcs.plugins.phase1.source_tracking``，
+(c) ``Source`` 数据类位于 ``mcs.plugins.preprocess.source_tracking``，
     而非 ``mcs.core.graph``。
 (d) Phase 1 插件类的 ``name`` 类属性与设计一致。
 (e) 结构健全性（Node 字段、QueryContext / WriteContext 字段、
@@ -46,26 +46,30 @@ ALL_MODULES = [
     "mcs.interfaces.postprocess_plugin",
     "mcs.interfaces.storage_schema_ext",
     "mcs.interfaces.trim_plugin",
-    # plugins
+    # plugins (按类型分组)
     "mcs.plugins",
     "mcs.core.plugin",
-    "mcs.plugins.phase1",
-    "mcs.plugins.phase1.alias_index",
-    "mcs.plugins.phase1.claude_llm",
-    "mcs.plugins.phase1.deepseek_llm",
-    "mcs.plugins.phase1.fanout_reducer",
-    "mcs.plugins.phase1.hub_fallback",
-    "mcs.plugins.phase1.priority_trim",
-    "mcs.plugins.phase1.source_tracking",
-    "mcs.plugins.phase1.summary",
-    "mcs.plugins.phase1.summary_regen",
-    "mcs.plugins.phase2",
-    "mcs.plugins.phase2.arbitration",
-    "mcs.plugins.phase2.confidence",
-    "mcs.plugins.phase2.event_layer",
-    "mcs.plugins.phase2.gc",
-    "mcs.plugins.phase2.timeseries_entry",
-    "mcs.plugins.phase2.versioning",
+    "mcs.plugins.entry",
+    "mcs.plugins.entry.hub_fallback",
+    "mcs.plugins.trim",
+    "mcs.plugins.trim.priority_trim",
+    "mcs.plugins.postprocess",
+    "mcs.plugins.postprocess.rerank",
+    "mcs.plugins.postprocess.summary",
+    "mcs.plugins.preprocess",
+    "mcs.plugins.preprocess.source_tracking",
+    "mcs.plugins.maintenance",
+    "mcs.plugins.maintenance.fanout_reducer",
+    "mcs.plugins.maintenance.summary_regen",
+    "mcs.plugins.index",
+    "mcs.plugins.index.alias_index",
+    "mcs.plugins.index.community_merger",
+    "mcs.plugins.llm",
+    "mcs.plugins.llm.claude_llm",
+    "mcs.plugins.llm.deepseek_llm",
+    "mcs.plugins.llm.ollama_llm",
+    "mcs.plugins.seed_selector",
+    "mcs.plugins.seed_selector.llm_seed_selector",
     # presets
     "mcs.presets",
     "mcs.presets.phase1",
@@ -133,7 +137,7 @@ def test_abc_interfaces_not_instantiable() -> None:
 
 
 def test_source_lives_in_plugin_not_core() -> None:
-    from mcs.plugins.phase1.source_tracking import Source
+    from mcs.plugins.preprocess.source_tracking import Source
 
     assert Source is not None
 
@@ -150,21 +154,21 @@ def test_source_lives_in_plugin_not_core() -> None:
 
 def test_plugin_names_match_design() -> None:
     """每个 Phase 1 插件类都有默认配置和测试所期望的 ``get_name()`` 方法。"""
-    from mcs.plugins.phase1.alias_index import (
+    from mcs.plugins.index.alias_index import (
         AliasEntryPlugin,
         AliasIndexPlugin,
     )
-    from mcs.plugins.phase1.claude_llm import ClaudeLLMPlugin
-    from mcs.plugins.phase1.deepseek_llm import DeepSeekLLMPlugin
-    from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
-    from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
-    from mcs.plugins.phase1.priority_trim import PriorityTrimPlugin
-    from mcs.plugins.phase1.source_tracking import (
+    from mcs.plugins.llm.claude_llm import ClaudeLLMPlugin
+    from mcs.plugins.llm.deepseek_llm import DeepSeekLLMPlugin
+    from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
+    from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
+    from mcs.plugins.trim.priority_trim import PriorityTrimPlugin
+    from mcs.plugins.preprocess.source_tracking import (
         IdempotencyCheckPlugin,
         SourceTrackingPlugin,
     )
-    from mcs.plugins.phase1.summary import SummaryPlugin
-    from mcs.plugins.phase1.summary_regen import SummaryRegenPlugin
+    from mcs.plugins.postprocess.summary import SummaryPlugin
+    from mcs.plugins.maintenance.summary_regen import SummaryRegenPlugin
 
     assert AliasIndexPlugin().get_name() == "alias_index"
     assert AliasEntryPlugin().get_name() == "alias_entry"
@@ -181,7 +185,7 @@ def test_plugin_names_match_design() -> None:
 
 def test_alias_entry_plugin_priority() -> None:
     """AliasEntryPlugin 必须声明 get_priority()=100, exclusive=False。"""
-    from mcs.plugins.phase1.alias_index import AliasEntryPlugin
+    from mcs.plugins.index.alias_index import AliasEntryPlugin
 
     p = AliasEntryPlugin()
     assert p.get_priority() == 100

@@ -351,14 +351,14 @@ pip install -e ".[dev]"
 export DEEPSEEK_API_KEY=sk-...  # 或 set DEEPSEEK_API_KEY=sk-... (Windows)
 
 # dry-run 模式查看预估 token 消耗
-python -m mcs.bench.hotpot --dry-run --subset 100
+python -m bench.hotpotqa --dry-run --subset 100
 
 # 正式评测（100 条子集）
-python -m mcs.bench.hotpot --subset 100 --output ./bench_output
+python -m bench.hotpotqa --subset 100 --output ./bench_output
 
 # 使用 Claude 后端
 export ANTHROPIC_API_KEY=sk-ant-...
-python -m mcs.bench.hotpot --subset 100 --llm claude
+python -m bench.hotpotqa --subset 100 --llm claude
 ```
 
 ### CLI 参数
@@ -392,7 +392,7 @@ python -m mcs.bench.hotpot --subset 100 --llm claude
 3. 每条数据：10 个段落 ingest → query → 提取 answer + supporting_facts
 4. 输出预测 + gold 子集 → 计算官方指标
 
-详见 [`mcs/bench/README.md`](mcs/bench/README.md)。
+详见 [`bench/README.md`](bench/README.md)。
 
 ## MultiHop-RAG 检索评测
 
@@ -404,10 +404,10 @@ python -m mcs.bench.hotpot --subset 100 --llm claude
 
 ```bash
 # 200 篇子集，DeepSeek 后端（相关性重排默认开）
-python -m mcs.bench.multihop_rag --llm deepseek --corpus-subset 200 --output ./mh_out
+python -m bench.multihop_rag --llm deepseek --corpus-subset 200 --output ./mh_out
 
 # 整篇摄入（不切块，文本 100% 覆盖）+ 关闭重排做对照
-python -m mcs.bench.multihop_rag --llm deepseek --corpus-subset 200 --whole-doc --no-rerank
+python -m bench.multihop_rag --llm deepseek --corpus-subset 200 --whole-doc --no-rerank
 ```
 
 ### 关键选项

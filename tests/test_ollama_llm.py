@@ -12,7 +12,7 @@ import pytest
 
 from mcs.core.errors import LLMCallError
 from mcs.interfaces.llm import LLMInterface
-from mcs.plugins.phase1.ollama_llm import OllamaLLMPlugin
+from mcs.plugins.llm.ollama_llm import OllamaLLMPlugin
 
 
 def _fake_response(content="", status=200, text="", thinking=None):

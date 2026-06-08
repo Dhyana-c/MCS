@@ -5,7 +5,7 @@ from __future__ import annotations
 from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.token_budget import TokenBudget
-from mcs.plugins.phase1.hub_fallback import HubFallbackEntryPlugin
+from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore
@@ -92,7 +92,7 @@ def test_disable_llm_navigation_returns_hubs(mock_llm):
 
 def test_navigates_from_persistent_root(mock_llm):
     """存在持久根 __seed_root__ 时，从根自顶向下导航；绝不把合成根当种子。"""
-    from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
+    from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
 
     g = GraphStore()
     g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub"))
@@ -121,7 +121,7 @@ def test_navigates_from_persistent_root(mock_llm):
 
 def test_root_present_no_llm_returns_children(mock_llm):
     """有持久根但关闭导航：返回根的直接子节点作种子（不含根本身）。"""
-    from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID
+    from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
 
     g = GraphStore()
     g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub"))

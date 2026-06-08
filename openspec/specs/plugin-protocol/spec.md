@@ -272,7 +272,7 @@ For any plugin chain that supports priority (entry plugins, postprocess plugins)
 
 ### Requirement: Plugin 顶级基类定义于 core/plugin.py
 
-The system SHALL define a top-level `Plugin` abstract base class in `mcs/core/plugin.py` as the single root abstraction for all plugins. 所有接口与插件实现 SHALL 适配它；旧的 `mcs/plugins/base.py` 基类 SHALL 被删除，其职责由 `core/plugin.py` 接管。
+The system SHALL define a top-level `Plugin` abstract base class in `mcs/core/plugin.py` as the single root abstraction for all plugins. 所有接口与插件实现 SHALL 适配它；旧的 `mcs/plugins/base.py` 基类 SHALL 被删除，其职责由 `core/plugin.py` 接管。插件实现文件 SHALL 按其 `PluginType` 组织在 `mcs/plugins/<type>/` 目录下，而非 `mcs/plugins/phase1/`。
 
 #### Scenario: Plugin 契约完整
 
@@ -285,6 +285,12 @@ The system SHALL define a top-level `Plugin` abstract base class in `mcs/core/pl
 - **WHEN** 检查 `mcs/plugins/base.py`
 - **THEN** 该文件 MUST NOT 存在
 - **AND** 任何模块 MUST NOT 从 `mcs.plugins.base` 导入 `Plugin`
+
+#### Scenario: 插件按类型目录组织
+
+- **WHEN** 检查 `mcs/plugins/` 目录结构
+- **THEN** MUST NOT 存在 `phase1/` 或 `phase2/` 子目录
+- **AND** 插件文件 MUST 位于 `mcs/plugins/<plugin_type>/` 对应目录下
 
 ---
 
@@ -303,6 +309,11 @@ The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting 
 
 - **WHEN** 检查 `core/write_pipeline.py`、`core/query_engine.py`、`core/context_renderer.py`
 - **THEN** 所有 `plugin_manager.get()` / `get_all()` 调用 MUST 使用 `PluginType.XXX` 参数，而非 interface 类对象
+
+#### Scenario: 目录名与 PluginType 对齐
+
+- **WHEN** 检查 `mcs/plugins/` 下的子目录名
+- **THEN** 每个子目录名 MUST 对应 `PluginType` 的一个小写枚举值（如 `entry` 对应 `ENTRY`）
 
 ---
 

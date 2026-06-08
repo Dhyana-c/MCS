@@ -188,34 +188,30 @@ class QueryEngine:
             query: str,
             ctx: QueryContext,
     ) -> list[Node]:
-        """阶段 ③：token 预算驱动的 BFS 遍历。
+        """阶段 ③：逐节点的 token 预算驱动 BFS 遍历。
 
-        种子已在阶段 ② 经过 SeedSelectorPlugin 筛选，直接加入 accumulated。
-        每轮：获取 accumulated 中节点的邻居作为 frontier → LLM 筛选 → 选中的加入 accumulated。
-
-        核心不变量保证：frontier + accumulated + query + system_prompt ≤ 窗口
+        核心不变量保证「任一节点 + 其全部一跳邻居 ≤ 窗口 T」，因此每步只取**一个**节点
+        连同它的**全部一跳邻居**送 LLM 筛选——单次 select_nodes 调用天然 ≤ T，无需截断
+        frontier（截断会丢边、且把上百邻居塞进一次调用会逼模型吐空 → 遍历早停、召回归零）。
+        LLM 选中的邻居里，**已访问的去重丢弃**（不重复当新节点处理），未访问的加入
+        accumulated 并入队待扩展。``max_rounds`` 限制 BFS 深度（自种子起算的层数）；
+        token 预算 / ``max_accumulated_nodes`` 兜底终止。
         """
         if not seeds:
             return []
 
         visited: set[str] = set()
-        accumulated: list[Node] = list(seeds)
-        for node in seeds:
-            visited.add(node.id)
+        accumulated: list[Node] = []
+        queue: list[tuple[Node, int]] = []  # (节点, 自种子起算的深度)
+        for seed in seeds:
+            if seed.id not in visited:
+                visited.add(seed.id)
+                accumulated.append(seed)
+                queue.append((seed, 0))
+
         budget = self.token_budget.T
 
-        for _round in range(self.max_rounds):
-            # 检查 token 预算
-            used_tokens = sum(
-                self.token_budget.estimate_node(n) for n in accumulated
-            )
-            if used_tokens >= budget:
-                logger.info(
-                    "accumulated token=%d >= budget=%d, 终止",
-                    used_tokens, budget,
-                )
-                break
-
+        while queue:
             # 安全阀：节点数硬上限
             if len(accumulated) >= self.max_accumulated_nodes:
                 logger.info(
@@ -223,38 +219,41 @@ class QueryEngine:
                     self.max_accumulated_nodes,
                 )
                 break
-
-            # 获取 accumulated 中节点的未访问邻居作为 frontier
-            frontier: list[Node] = []
-            for node in accumulated:
-                neighbors = self.store.get_neighbors(node.id) or []
-                for neighbor in neighbors:
-                    if neighbor.id not in visited:
-                        frontier.append(neighbor)
-                        visited.add(neighbor.id)  # 先标记，防止重复加入
-
-            if not frontier:
+            # token 预算：accumulated 子图渲染量超窗口则停
+            used_tokens = sum(
+                self.token_budget.estimate_node(n) for n in accumulated
+            )
+            if used_tokens >= budget:
+                logger.info(
+                    "accumulated token=%d >= budget=%d, 终止", used_tokens, budget
+                )
                 break
 
-            # LLM 筛选 frontier：一次性调用
+            node, depth = queue.pop(0)
+            if depth >= self.max_rounds:
+                continue  # 达深度上限：保留在 accumulated，但不再扩展其邻居
+
+            neighbors = self.store.get_neighbors(node.id) or []
+            if not neighbors:
+                continue
+
+            # 不变量保证 node + 全部一跳邻居 ≤ T → 一次性送 LLM（不截断）
             selected_ids = self.llm.call(
                 purpose="select_nodes",
-                nodes_in=frontier,
+                nodes_in=[node, *neighbors],
                 free_args={
                     "query": query,
                     "accumulated_summary": _summarize_for_prompt(accumulated),
                 },
             ) or []
-            selected_set = set(selected_ids)
+            selected = set(selected_ids)
 
-            if not selected_set:
-                logger.debug("LLM 未选中任何节点，遍历终止")
-                break
-
-            # 将选中的节点加入 accumulated
-            for node in frontier:
-                if node.id in selected_set:
-                    accumulated.append(node)
+            # 选中的邻居：已访问的去重丢弃，未访问的加入并入队（深度 +1）
+            for neighbor in neighbors:
+                if neighbor.id in selected and neighbor.id not in visited:
+                    visited.add(neighbor.id)
+                    accumulated.append(neighbor)
+                    queue.append((neighbor, depth + 1))
                     if len(accumulated) >= self.max_accumulated_nodes:
                         break
 

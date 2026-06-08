@@ -15,7 +15,7 @@ from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
-from mcs.plugins.phase1.source_tracking import (
+from mcs.plugins.preprocess.source_tracking import (
     IdempotencyCheckPlugin,
     Source,
     SourceTrackingPlugin,
@@ -84,6 +84,76 @@ def test_incremental_save_does_not_delete_edge(tmp_path):
     store2.initialize()
     store2.load()
     assert store2.get_edge("a", "b") is not None  # 旧边仍在 → 故需 save_full
+
+
+def test_flush_changes_persists_seed_root_incrementally(tmp_path):
+    """回归：flush_changes 让虚拟根节点 + 其有向层级边增量落盘（不调用 save_full）。
+
+    曾经 __seed_root__ 与 root→concept 边只在 save_full 落库，增量持久化抓不到；
+    <save_full 节奏的小图或中断续跑会重载出无根图、根边丢失。
+    """
+    db = str(tmp_path / "root.db")
+    store = SQLiteStore({"path": db})
+    store.initialize()
+    store.add_node(Node(id="__seed_root__", name="__seed_root__", content="", role="hub"))
+    store.add_node(Node(id="c1", name="C1", content="概念一"))
+    store.add_node(Node(id="c2", name="C2", content="概念二"))
+    store.add_edge("__seed_root__", "c1", direction="out")
+    store.add_edge("__seed_root__", "c2", direction="out")
+    store.flush_changes()  # 增量落盘——注意未调用 save_full
+    store.shutdown()
+
+    store2 = SQLiteStore({"path": db})
+    store2.initialize()
+    store2.load()
+    root = store2.get_node("__seed_root__")
+    assert root is not None and root.role == "hub"
+    assert store2.get_edge("__seed_root__", "c1") is not None
+    assert store2.get_edge("__seed_root__", "c2") is not None
+
+
+def test_flush_changes_reflects_edge_deletion_incrementally(tmp_path):
+    """回归：flush_changes 增量反映边删除（重挂）——save() 做不到、过去依赖 save_full。"""
+    db = str(tmp_path / "rehang.db")
+    store = SQLiteStore({"path": db})
+    store.initialize()
+    for nid in ("__seed_root__", "c1", "hub1"):
+        store.add_node(Node(id=nid, name=nid, content=""))
+    store.add_edge("__seed_root__", "c1", direction="out")
+    store.flush_changes()
+    # 重挂：删 root→c1，新增 root→hub1 与 hub1→c1
+    store.delete_edge("__seed_root__", "c1")
+    store.add_edge("__seed_root__", "hub1", direction="out")
+    store.add_edge("hub1", "c1", direction="out")
+    store.flush_changes()
+    store.shutdown()
+
+    store2 = SQLiteStore({"path": db})
+    store2.initialize()
+    store2.load()
+    assert store2.get_edge("__seed_root__", "c1") is None  # 旧边已被增量删除
+    assert store2.get_edge("__seed_root__", "hub1") is not None
+    assert store2.get_edge("hub1", "c1") is not None
+
+
+def test_flush_changes_reflects_node_deletion_incrementally(tmp_path):
+    """回归：flush_changes 增量反映节点删除（如合并同义删成员）及其级联删边。"""
+    db = str(tmp_path / "del.db")
+    store = SQLiteStore({"path": db})
+    store.initialize()
+    store.add_node(Node(id="a", name="A", content=""))
+    store.add_node(Node(id="b", name="B", content=""))
+    store.add_edge("a", "b", direction="out")
+    store.flush_changes()
+    store.delete_node("b")  # 级联删 a→b 边
+    store.flush_changes()
+    store.shutdown()
+
+    store2 = SQLiteStore({"path": db})
+    store2.initialize()
+    store2.load()
+    assert store2.get_node("b") is None
+    assert store2.get_edge("a", "b") is None
 
 
 def _full_pipeline(db_path: str, mock_llm):

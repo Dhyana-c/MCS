@@ -42,6 +42,12 @@ class SQLiteStore(StoreInterface):
         self._nodes: dict[str, Node] = {}
         self._edges: dict[tuple[str, str, str], Edge] = {}
         self._adjacency: dict[str, set[str]] = {}
+        # 增量持久化的变更跟踪：自上次 flush/save 以来需 upsert / DELETE 的节点与边。
+        # 边以 (source_id, target_id, direction) 数据库坐标记录（与 _save_edge 写入一致）。
+        self._dirty_nodes: set[str] = set()
+        self._deleted_nodes: set[str] = set()
+        self._dirty_edges: set[tuple[str, str, str]] = set()
+        self._deleted_edges: set[tuple[str, str, str]] = set()
 
     # === 初始化 ===
 
@@ -77,6 +83,7 @@ class SQLiteStore(StoreInterface):
     def add_node(self, node: Node) -> str:
         self._nodes[node.id] = node
         self._adjacency.setdefault(node.id, set())
+        self._track_node_dirty(node.id)
         return node.id
 
     def get_node(self, node_id: str) -> Node | None:
@@ -89,6 +96,7 @@ class SQLiteStore(StoreInterface):
         for key, value in (updates or {}).items():
             if hasattr(node, key):
                 setattr(node, key, value)
+        self._track_node_dirty(node_id)
 
     def delete_node(self, node_id: str) -> None:
         if node_id not in self._nodes:
@@ -97,6 +105,7 @@ class SQLiteStore(StoreInterface):
             self.delete_edge(node_id, other)
         self._adjacency.pop(node_id, None)
         self._nodes.pop(node_id, None)
+        self._track_node_deleted(node_id)
 
     # === 边 CRUD ===
 
@@ -121,6 +130,7 @@ class SQLiteStore(StoreInterface):
         self._adjacency.setdefault(source_id, set()).add(target_id)
         if direction == "bidirectional":
             self._adjacency.setdefault(target_id, set()).add(source_id)
+        self._track_edge_dirty(self._edges[key])
 
     def get_edge(self, source_id: str, target_id: str) -> Edge | None:
         for direction in ("bidirectional", "out"):
@@ -133,7 +143,9 @@ class SQLiteStore(StoreInterface):
     def delete_edge(self, source_id: str, target_id: str) -> None:
         for direction in ("bidirectional", "out"):
             key = self._edge_key(source_id, target_id, direction)
-            self._edges.pop(key, None)
+            edge = self._edges.pop(key, None)
+            if edge is not None:
+                self._track_edge_deleted(edge)
         if self.get_edge(source_id, target_id) is None:
             self._adjacency.get(source_id, set()).discard(target_id)
             self._adjacency.get(target_id, set()).discard(source_id)
@@ -209,6 +221,7 @@ class SQLiteStore(StoreInterface):
         for edge in self.get_all_edges():
             self._save_edge(edge)
         self.conn.commit()
+        self._clear_change_tracking()  # 内存已全量落盘，跟踪归零
 
     def save_full(self) -> None:
         """全量重建：先清空 nodes/edges 再整图重写，反映边/节点删除。
@@ -224,6 +237,7 @@ class SQLiteStore(StoreInterface):
         for edge in self.get_all_edges():
             self._save_edge(edge)
         self.conn.commit()
+        self._clear_change_tracking()  # 内存已全量落盘，跟踪归零
 
     def load(self) -> None:
         """从 SQLite 数据库加载节点和边到内存。"""
@@ -245,11 +259,53 @@ class SQLiteStore(StoreInterface):
             # add_edge 已按 direction 如实建边（含同对节点 out + bidirectional 共存）；
             # 旧数据 direction 为 NULL 时回退 bidirectional（与 schema 默认一致）。
             self.add_edge(row[0], row[1], direction=row[2] or "bidirectional")
+        # 加载后内存与 db 一致：清空 add_node/add_edge 期间累积的跟踪，避免首次 flush 冗余重写
+        self._clear_change_tracking()
 
     def commit(self) -> None:
         """提交挂起的写入（供写入管线阶段 ⑦ 调用）。"""
         if self.conn is not None:
             self.conn.commit()
+
+    def mark_node_dirty(self, node_id: str) -> None:
+        """显式标记节点为脏，使其在下次 ``flush_changes`` 时被 upsert。
+
+        用于绕过 store 方法的原地改动（如决策阶段对 ``extensions`` 追加 statements /
+        别名 / source_tracking），这些改动 store 无从感知，由调用方补标。
+        """
+        if node_id in self._nodes:
+            self._track_node_dirty(node_id)
+
+    def flush_changes(self) -> None:
+        """增量落盘自上次 flush/save 以来的节点/边变更（含删除），并提交。
+
+        先执行删除（边、节点）再 upsert，避免「删后又以同 PK 重加」的次序冲突。
+        变更由各 add/update/delete 方法跟踪，覆盖决策阶段与压缩/裂变阶段对根、hub、
+        层级边的全部增删改——使持久图任意时刻与内存图一致，``save_full`` 不再是
+        虚拟根 / 层级边落库的唯一途径（续跑重载即得到完整有根图）。
+        """
+        if self.conn is None:
+            return
+        for src, tgt, direction in self._deleted_edges:
+            self.conn.execute(
+                "DELETE FROM edges WHERE source_id=? AND target_id=? AND direction=?",
+                (src, tgt, direction),
+            )
+        for nid in self._deleted_nodes:
+            self.conn.execute("DELETE FROM nodes WHERE id=?", (nid,))
+        for nid in self._dirty_nodes:
+            node = self._nodes.get(nid)
+            if node is not None:
+                self._save_node(node)
+        for coord in self._dirty_edges:
+            edge = self._edges.get(self._edge_key(*coord))
+            # 仅当该坐标的边仍在内存（未被后续删除/改向）时落盘
+            if edge is not None and (
+                edge.source_id, edge.target_id, edge.direction
+            ) == coord:
+                self._save_edge(edge)
+        self.conn.commit()
+        self._clear_change_tracking()
 
     # === 内部持久化辅助方法 ===
 
@@ -280,6 +336,32 @@ class SQLiteStore(StoreInterface):
             "(source_id, target_id, direction) VALUES (?, ?, ?)",
             (edge.source_id, edge.target_id, edge.direction),
         )
+
+    # === 变更跟踪（增量持久化） ===
+
+    def _track_node_dirty(self, node_id: str) -> None:
+        self._dirty_nodes.add(node_id)
+        self._deleted_nodes.discard(node_id)
+
+    def _track_node_deleted(self, node_id: str) -> None:
+        self._deleted_nodes.add(node_id)
+        self._dirty_nodes.discard(node_id)
+
+    def _track_edge_dirty(self, edge: Edge) -> None:
+        coord = (edge.source_id, edge.target_id, edge.direction)
+        self._dirty_edges.add(coord)
+        self._deleted_edges.discard(coord)
+
+    def _track_edge_deleted(self, edge: Edge) -> None:
+        coord = (edge.source_id, edge.target_id, edge.direction)
+        self._deleted_edges.add(coord)
+        self._dirty_edges.discard(coord)
+
+    def _clear_change_tracking(self) -> None:
+        self._dirty_nodes.clear()
+        self._deleted_nodes.clear()
+        self._dirty_edges.clear()
+        self._deleted_edges.clear()
 
     def _serialize_extensions(self, extensions: dict | None) -> dict:
         """对带编解码的 NodeExtension 走其 ``serialize()`` 产出 dict（D5）。

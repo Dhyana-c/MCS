@@ -58,7 +58,7 @@ bench/multihop-rag/outputs/
 脚本默认从 `D:\code\hotpot\MultiHopRAG\` 读取数据。如需使用其他路径，修改脚本中的 `--corpus` 和 `--queries` 参数，或使用 CLI 方式：
 
 ```bash
-python -m mcs.bench.multihop_rag --corpus /path/to/corpus.json --queries /path/to/qa.json
+python -m bench.multihop_rag --corpus /path/to/corpus.json --queries /path/to/qa.json
 ```
 
 ## 续跑

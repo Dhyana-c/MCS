@@ -7,7 +7,7 @@ import pytest
 from dataclasses import asdict
 from unittest.mock import MagicMock, patch
 
-from mcs.bench.hotpot import (
+from bench.hotpotqa import (
     HotpotDataLoader,
     HotpotEvalConfig,
     HotpotEvalRunner,
@@ -335,7 +335,7 @@ def test_run_persists_and_resumes(sample_hotpot_file, tmp_path):
         inst.query.return_value = [node]
         return inst
 
-    with patch("mcs.bench.hotpot.ingest_hotpot_item", side_effect=fake_ingest):
+    with patch("bench.hotpotqa.runner.ingest_hotpot_item", side_effect=fake_ingest):
         metrics = HotpotEvalRunner(cfg).run()
 
     saved = json.loads((out / "predictions.json").read_text(encoding="utf-8"))
@@ -343,7 +343,7 @@ def test_run_persists_and_resumes(sample_hotpot_file, tmp_path):
     assert metrics["em"] >= 0.5
 
     # 二次运行：resume 跳过全部，不再 ingest，指标一致
-    with patch("mcs.bench.hotpot.ingest_hotpot_item") as p2:
+    with patch("bench.hotpotqa.runner.ingest_hotpot_item") as p2:
         metrics2 = HotpotEvalRunner(cfg).run()
         p2.assert_not_called()
     assert metrics2["em"] == metrics["em"]

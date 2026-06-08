@@ -209,7 +209,7 @@ def test_compaction_skipped_when_should_run_false(empty_graph, mock_llm):
 def test_pending_source_attached_to_changed_nodes(empty_graph, mock_llm):
     """阶段 ⑤ 后：ctx.metadata 暂存的 Source 必须挂到本次变更的节点上。"""
     from mcs.core.write_pipeline import WriteContext
-    from mcs.plugins.phase1.source_tracking import Source
+    from mcs.plugins.preprocess.source_tracking import Source
 
     wp, _, _ = _build_pipelines(empty_graph, mock_llm)
     node = Node(id="n1", name="N", content="c")
@@ -516,6 +516,38 @@ def _build_mcs_with_store(config: MCSConfig, store: SQLiteStore, mock_llm):
         write_manager=write_manager,
         read_manager=read_manager,
     )
+
+
+def test_real_builder_build_runs_full_assembly(mock_llm):
+    """回归：真实 MCSBuilder.build() 必须跑通 _init_plugin_context。
+
+    曾因 _init_plugin_context 内未导入 PluginContext 抛 NameError，但当时没有任何
+    测试调用真实 build()（conftest._MockLLMBuilder 与 _build_mcs_with_store 都各自
+    重写了组装流程），导致该回归未被发现。本测试直接走 MCSBuilder.build()。
+    """
+    from mcs.core.builder import MCSBuilder
+
+    mock_cls = type(mock_llm)
+
+    class _RegressionBuilder(MCSBuilder):
+        def get_plugin_class(self, name: str):
+            return mock_cls if name == "mock_llm" else None
+
+    config = MCSConfig(
+        shared_plugins=[],
+        write_plugins=[],
+        read_plugins=[],
+        write_llm="mock_llm",
+        read_llm="mock_llm",
+        plugin_configs={"sqlite_storage": {"path": ":memory:"}},
+    )
+    mcs = _RegressionBuilder(config).build()
+    try:
+        # _init_plugin_context 已执行：双管线就绪、LLM 已注册到两侧（同实例共享）
+        assert mcs.write_pipeline.llm is mcs.query_engine.llm
+        assert mcs.get_plugin("mock_llm") is not None
+    finally:
+        mcs.shutdown()
 
 
 def test_load_on_startup_restores_graph(tmp_path, mock_llm):

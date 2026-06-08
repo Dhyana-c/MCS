@@ -1,15 +1,23 @@
 # HotpotQA 多跳问答评测
 
-占位目录。HotpotQA 评测功能已实装在 `mcs.bench.hotpot` 模块中。
-
-## 现有功能
-
-参见 `mcs/bench/README.md` 和 `mcs/bench/hotpot.py`。
+HotpotQA 评测代码位于本目录 `runner.py`，可作为库导入，也可经 `python -m bench.hotpotqa` 运行。
 
 ## 使用方式
 
+CLI（从项目根目录运行）：
+
+```bash
+# 估算 token 消耗（不调用 LLM）
+python -m bench.hotpotqa --dry-run --subset 100
+
+# 正式评测（100 条子集，DeepSeek 后端）
+python -m bench.hotpotqa --subset 100 --output ./bench_output
+```
+
+作为库导入：
+
 ```python
-from mcs.bench import HotpotEvalRunner, HotpotEvalConfig
+from bench.hotpotqa import HotpotEvalRunner, HotpotEvalConfig
 
 config = HotpotEvalConfig(
     subset=100,
@@ -21,6 +29,8 @@ runner = HotpotEvalRunner(config)
 metrics = runner.run()
 ```
 
-## 后续迁移
+API key 从环境变量 `DEEPSEEK_API_KEY`（或 `ANTHROPIC_API_KEY`）读取。
 
-计划将 HotpotQA 的启动脚本迁移到本目录，与 MultiHop-RAG 保持一致的组织结构。
+## 后续
+
+计划在 `bench/hotpotqa/scripts/` 下补充无参启动脚本，与 MultiHop-RAG 保持一致的组织结构。

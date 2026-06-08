@@ -363,7 +363,7 @@ class WritePipeline:
         而非等阶段 ⑥ 的 should_run（后者可能因 floor 阈值跳过）。
         """
         from mcs.core.plugin import PluginType
-        from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin, SEED_ROOT_ID
+        from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin, SEED_ROOT_ID
 
         fanout_plugin = None
         for plugin in self.plugin_manager.get_all(PluginType.COMPACTION):
@@ -402,14 +402,14 @@ class WritePipeline:
                 plugin.run(changed_nodes, self.store, self.llm.call)
 
     def _run_persist(self, ctx: WriteContext) -> None:
-        """阶段 ⑦：将 ctx.changed 中的节点及关联边增量持久化。
+        """阶段 ⑦：把本次 ingest 的全部图变更增量落盘（节点 + 边 + 删除）。
 
-        检查 config.auto_persist 开关；无 SQLiteStore 或 changed 为空时跳过。
-        存储异常被捕获并记录警告，不影响 ingest 返回。
+        变更由 SQLiteStore 在每次 add/update/delete 时跟踪——涵盖阶段⑤的决策与阶段⑥
+        压缩/裂变对**虚拟根、hub、层级边**的增删改（含重挂导致的边删除），经
+        ``flush_changes`` 一次提交。决策对既有节点的原地改动（statements / 别名 /
+        source_tracking）不经 store 方法，故对 ``ctx.changed`` 显式 ``mark_node_dirty``
+        补标。无 SQLiteStore 或 auto_persist 关闭时跳过；异常不影响 ingest 返回。
         """
-        if not ctx.changed:
-            return
-
         auto_persist = getattr(self.config, "auto_persist", True) if self.config else True
         if not auto_persist:
             return
@@ -421,33 +421,12 @@ class WritePipeline:
             return
 
         try:
-            changed_ids = {n.id for n in ctx.changed}
-            persisted_edges: set[tuple[str, str]] = set()
-
             for node in ctx.changed:
-                self.store._save_node(node)
-
-            for node in ctx.changed:
-                for neighbor in self.store.get_neighbors(node.id):
-                    edge = self.store.get_edge(node.id, neighbor.id)
-                    if edge is None:
-                        continue
-                    key = (edge.source_id, edge.target_id)
-                    if key in persisted_edges:
-                        continue
-                    if neighbor.id in changed_ids or node.id in changed_ids:
-                        self.store._save_edge(edge)
-                        persisted_edges.add(key)
-
-            # 每次 ingest 落盘后显式提交：消除"滞后一块 + shutdown 丢最后一块"。
-            self.store.commit()
+                self.store.mark_node_dirty(node.id)
+            self.store.flush_changes()
             ctx.persisted = True
         except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Auto-persist failed for %d changed nodes", len(ctx.changed),
-                exc_info=True,
-            )
+            logger.warning("Auto-persist failed", exc_info=True)
 
 
 # === 辅助函数 ===

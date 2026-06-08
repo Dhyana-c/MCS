@@ -12,7 +12,7 @@ from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
-from mcs.plugins.phase1.fanout_reducer import SEED_ROOT_ID, FanoutReducerPlugin
+from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID, FanoutReducerPlugin
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore
@@ -101,6 +101,33 @@ def test_fanout_maintains_persistent_root(mock_llm):
     assert len(g.get_neighbors(SEED_ROOT_ID)) < 20
     # 每个概念仍可从根（递归）到达：所有概念都进了某个 hub 或直接挂根
     assert g.get_node("c0") is not None
+
+
+def test_seed_root_maintained_without_budget_pressure(mock_llm):
+    """回归：无预算压力（大 T）下，经 should_run 闸门仍必须建根并把概念挂到根。
+
+    旧实现 should_run 只看预算超限，故小语料 / 大窗口 / 整篇摄入永不建根 → 整图扁平、
+    查询无从沿 out 下钻 → 文档级召回为 0。修复后根维护与预算闸门解耦。
+    本测试走 ``should_run`` 闸门（模拟真实 ``_run_compaction``），而非直接调 ``run()``。
+    """
+    g = GraphStore()
+    concepts = [
+        Node(id=f"c{i}", name=f"c{i}", content="x", role="concept") for i in range(3)
+    ]
+    for n in concepts:
+        g.add_node(n)
+    fr = _fanout_with_root(g, TokenBudget(8000), mock_llm)  # 大 T：3 个小概念不会超预算
+
+    changed = list(concepts)
+    assert fr.should_run(changed, g)            # 有新概念 → 需维护根（即便无预算压力）
+    fr.run(changed, g, mock_llm.call)
+
+    root = g.get_node(SEED_ROOT_ID)
+    assert root is not None                      # 无预算压力也建了持久根
+    for c in concepts:                           # 每个概念都以 out 边挂在根下
+        assert g.get_edge(SEED_ROOT_ID, c.id) is not None
+    # 未超预算 → 不应触发 decide_hub 裂变（无新 hub）
+    assert all(n.role != "hub" for n in g.get_all_nodes() if n.id != SEED_ROOT_ID)
 
 
 def test_no_persistent_root_when_disabled(mock_llm):

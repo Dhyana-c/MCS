@@ -7,10 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mcs.bench.doc_rerank import aggregate_docs, doc_rerank
-from mcs.bench.multihop_rag import MultiHopEvalConfig, MultiHopEvalRunner
+from bench.plugins.doc_rerank import aggregate_docs, doc_rerank
+from bench.multihop_rag import MultiHopEvalConfig, MultiHopEvalRunner
 from mcs.core.graph import Node
-from mcs.plugins.phase1.source_tracking import Source
+from mcs.plugins.preprocess.source_tracking import Source
 
 
 def _node(name: str, content: str, doc: str, statements=None) -> Node:
@@ -143,7 +143,7 @@ def test_runner_doc_rerank_off_uses_node_order(tmp_corpus_qa, tmp_path):
         corpus_path=cp, queries_path=qp, output_dir=str(out),
         db_path=str(tmp_path / "g.db"), doc_rerank=False,
     )
-    with patch("mcs.bench.multihop_rag.build_shared_graph", side_effect=_fake_build_factory()):
+    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=_fake_build_factory()):
         MultiHopEvalRunner(cfg).run()
     res = json.loads((out / "retrieval_results.json").read_text(encoding="utf-8"))
     ranked = next(iter(res.values()))["ranked"]
@@ -157,7 +157,7 @@ def test_runner_doc_rerank_on_routes_through_doc_rerank(tmp_corpus_qa, tmp_path)
         corpus_path=cp, queries_path=qp, output_dir=str(out),
         db_path=str(tmp_path / "g.db"), doc_rerank=True,
     )
-    with patch("mcs.bench.multihop_rag.build_shared_graph", side_effect=_fake_build_factory()):
+    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=_fake_build_factory()):
         MultiHopEvalRunner(cfg).run()
     res = json.loads((out / "retrieval_results.json").read_text(encoding="utf-8"))
     ranked = next(iter(res.values()))["ranked"]

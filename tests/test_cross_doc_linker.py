@@ -7,7 +7,7 @@ import pytest
 
 from mcs.core.graph import Node
 from mcs.diagnostics.graph_quality import diagnose_graph
-from mcs.plugins.phase1.cross_doc_linker import (
+from mcs.plugins.preprocess.cross_doc_linker import (
     cross_doc_link_pass,
     cross_doc_link_pass_from_db,
     find_cross_doc_candidates_by_name,

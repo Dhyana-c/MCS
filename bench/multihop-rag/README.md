@@ -26,13 +26,13 @@
 
 ```bash
 # 先估算首建图成本（不调用 LLM）
-python -m mcs.bench.multihop_rag --dry-run --corpus-subset 50
+python -m bench.multihop_rag --dry-run --corpus-subset 50
 
 # 小规模真实评测（采样 50 篇文档，自动过滤到证据可达的 query）
-python -m mcs.bench.multihop_rag --corpus-subset 50 --k 2,4,10
+python -m bench.multihop_rag --corpus-subset 50 --k 2,4,10
 
 # 全量（一次建图很贵，之后 query 复用该图）
-python -m mcs.bench.multihop_rag
+python -m bench.multihop_rag
 ```
 
 关键参数：`--corpus-subset N`（采样 N 篇文档并同步过滤 query）、`--db`（共享图落盘路径，
@@ -44,7 +44,7 @@ python -m mcs.bench.multihop_rag
 
 `query()` 召回好但**排名差**（gold 文档中位 rank 36/~165），是 Hit@k 偏低的主因。
 零成本词法重排可把 recall@10 从 0.14 拉到 0.81。重排做成一个 **opt-in** 的
-`query_postprocess` 插件（`mcs/plugins/phase1/rerank.py`），用查询给 `query()` 返回的
+`query_postprocess` 插件（`mcs/plugins/postprocess/rerank.py`），用查询给 `query()` 返回的
 节点打相关性分 → 过滤 → 降序 → 截断 top-N。**默认不启用**，不影响既有评测基线。
 
 bench 侧开关（仅作用于 query 阶段，**不重建图**）：
@@ -66,9 +66,9 @@ bench 侧开关（仅作用于 query 阶段，**不重建图**）：
 
 ```bash
 # 基线（不重排）
-python -m mcs.bench.multihop_rag --db ./multihop_bench.db --output ./mh_baseline
+python -m bench.multihop_rag --db ./multihop_bench.db --output ./mh_baseline
 # 重排（同一张图，仅 query 阶段不同）
-python -m mcs.bench.multihop_rag --db ./multihop_bench.db --rerank --rerank-top-n 10 --output ./mh_rerank
+python -m bench.multihop_rag --db ./multihop_bench.db --rerank --rerank-top-n 10 --output ./mh_rerank
 ```
 
 打分器可插拔：`LexicalScorer`（已实装）之外预留了 `EmbeddingScorer` / `LLMScorer` 接口位，
@@ -81,7 +81,7 @@ python -m mcs.bench.multihop_rag --db ./multihop_bench.db --rerank --rerank-top-
 第一次出现的节点决定，未必是该文档最相关的代表。实测节点级把 recall@10 从 0.140 提到 0.226，
 仍远低于离线 POC 的 0.81——差距主因就是这层粒度错配。
 
-`--doc-rerank` 是 **bench 专用的文档级重排**（`mcs/bench/doc_rerank.py`，**不进核心插件链、
+`--doc-rerank` 是 **bench 专用的文档级重排**（`bench/plugins/doc_rerank.py`，**不进核心插件链、
 不改 mcs 核心**）：把召回节点按 `doc_id` 反向聚合成候选文档，对每篇文档用查询对「文档级文本」
 （`doc_id` 标题 + 该文档下召回节点的 name/content/statements 聚合）直接打**词法**分、排序、截断。
 排序对象 = 评测对象 = 文档，绕过映射稀释。与节点级 `--rerank` **正交**，默认 opt-in。
@@ -95,11 +95,11 @@ python -m mcs.bench.multihop_rag --db ./multihop_bench.db --rerank --rerank-top-
 
 ```bash
 # baseline（节点 rank 序映射文档）
-python -m mcs.bench.multihop_rag --db ./multihop_bench.db --exclude-null --output ./mh_baseline
+python -m bench.multihop_rag --db ./multihop_bench.db --exclude-null --output ./mh_baseline
 # 节点级重排
-python -m mcs.bench.multihop_rag --db ./multihop_bench.db --rerank --rerank-top-n 0 --exclude-null --output ./mh_node
+python -m bench.multihop_rag --db ./multihop_bench.db --rerank --rerank-top-n 0 --exclude-null --output ./mh_node
 # 文档级重排
-python -m mcs.bench.multihop_rag --db ./multihop_bench.db --doc-rerank --exclude-null --output ./mh_doc
+python -m bench.multihop_rag --db ./multihop_bench.db --doc-rerank --exclude-null --output ./mh_doc
 ```
 
 ## 指标口径

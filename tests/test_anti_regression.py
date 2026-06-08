@@ -12,7 +12,7 @@ from mcs.core.decisions import Community, MultiHubDecision
 from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.token_budget import TokenBudget
-from mcs.plugins.phase1.fanout_reducer import FanoutReducerPlugin
+from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore
@@ -50,6 +50,55 @@ def test_select_batch_returns_all_under_invariant():
 
     batch = fr._select_batch(node, g.get_neighbors("hub"))
     assert len(batch) == 100  # 不变量保证全部邻居 ≤ 窗口
+
+
+def test_select_batch_caps_at_max_community_size_when_over_budget():
+    """回归：超预算的贪婪批次受 max_community_size 截顶。
+
+    旧实现仅按 token 预算截批；当概念渲染极小（如关摘要回退 content[:200]）时，
+    一批可装入上百个概念 → 一次性丢给 decide_hub → 模型吐空 → 裂变不收敛。
+    """
+    g = GraphStore()
+    node = Node(id="hub", name="hub", content="a" * 40)
+    g.add_node(node)
+    for i in range(100):
+        g.add_node(Node(id=f"n{i}", name=f"n{i}", content="a" * 40))
+        g.add_edge("hub", f"n{i}", direction="bidirectional")
+    fr = FanoutReducerPlugin({"floor": 16, "max_community_size": 5})
+    fr.token_budget = TokenBudget(500)  # 小窗口 → node + 100 邻居超预算 → 走贪婪路径
+
+    neighbors = g.get_neighbors("hub")
+    assert fr._exceeds_budget(node, neighbors)   # 前置：确实超预算
+    batch = fr._select_batch(node, neighbors)
+    assert 2 <= len(batch) <= 5                   # 受 max_community_size=5 截顶
+
+
+def test_decide_hub_halves_batch_on_empty_response():
+    """回归：decide_hub 空响应（批次过大逼空）时折半重试，最终用更小批次成功。"""
+    fr = FanoutReducerPlugin({"max_community_size": 50})
+    node = Node(id="c", name="c", content="x")
+    batch = [Node(id=f"m{i}", name=f"m{i}", content="x") for i in range(40)]
+
+    calls: list[int] = []
+
+    def fake_llm(purpose, nodes_in, free_args):
+        members = nodes_in[1:]
+        calls.append(len(members))
+        if len(members) > 10:
+            return MultiHubDecision()  # 空 communities（模拟大批次被模型吐空 → 解析为空）
+        return MultiHubDecision(communities=[
+            Community(
+                theme="g",
+                member_ids=[m.id for m in members],
+                strategy="summarize",
+                summary="g",
+            )
+        ])
+
+    decision, used = fr._decide_hub(node, batch, fake_llm)
+    assert decision is not None and decision.communities  # 最终成功产出社区
+    assert len(used) <= 10                                # 折半到可用批次
+    assert len(calls) >= 2                                # 至少重试过一次
 
 
 def test_overbroad_hub_rejects_empty_summary():

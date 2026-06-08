@@ -28,9 +28,6 @@ claude = [
     "anthropic>=0.40,<1.0",
 ]
 
-[project.scripts]
-hotpot-eval = "mcs.bench.hotpot:main"
-
 [tool.setuptools.packages.find]
 include = ["mcs*"]
 exclude = ["tests*", "examples*"]

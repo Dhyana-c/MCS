@@ -11,6 +11,10 @@ from pathlib import Path
 BENCH_ROOT = Path(__file__).parent.parent
 PROJECT_ROOT = BENCH_ROOT.parent.parent
 
+# 直接运行脚本时 sys.path[0] 是脚本目录而非项目根；加入项目根以便 import bench.*
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -41,7 +45,7 @@ print("=" * 60)
 print("Multihop RAG 节点级重排 — 200 文档, LexicalScorer")
 print("=" * 60)
 
-from mcs.bench.multihop_rag import MultiHopEvalConfig, MultiHopEvalRunner
+from bench.multihop_rag import MultiHopEvalConfig, MultiHopEvalRunner
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
