@@ -188,17 +188,21 @@ class QueryEngine:
             query: str,
             ctx: QueryContext,
     ) -> list[Node]:
-        """阶段 ③：逐节点的 token 预算驱动 BFS 遍历。
+        """阶段 ③：批量邻居扩展的 token 预算驱动 BFS 遍历。
 
-        核心不变量保证「任一节点 + 其全部一跳邻居 ≤ 窗口 T」，因此每步只取**一个**节点
-        连同它的**全部一跳邻居**送 LLM 筛选——单次 select_nodes 调用天然 ≤ T，无需截断
-        frontier（截断会丢边、且把上百邻居塞进一次调用会逼模型吐空 → 遍历早停、召回归零）。
-        LLM 选中的邻居里，**已访问的去重丢弃**（不重复当新节点处理），未访问的加入
-        accumulated 并入队待扩展。``max_rounds`` 限制 BFS 深度（自种子起算的层数）；
-        token 预算 / ``max_accumulated_nodes`` 兜底终止。
+        核心优化：多个节点及其邻居合并后一次 LLM 调用，只要总 token ≤ T*0.8。
+        核心不变量保证「任一节点 + 其全部一跳邻居 ≤ 窗口 T」，因此多节点合并后
+        单次 select_nodes 调用天然 ≤ T*0.8（80% 余量防估算误差）。
+
+        LLM 选中的邻居里，**已访问的去重丢弃**，未访问的加入 accumulated 并入队。
+        ``max_rounds`` 限制 BFS 深度；token 预算 / ``max_accumulated_nodes`` 兜底终止。
         """
         if not seeds:
             return []
+
+        from mcs.core.context_renderer import ContextRenderer
+        from mcs.core.errors import LLMParseError
+        from mcs.prompts.select_nodes import BATCH_USER_TEMPLATE
 
         visited: set[str] = set()
         accumulated: list[Node] = []
@@ -210,6 +214,7 @@ class QueryEngine:
                 queue.append((seed, 0))
 
         budget = self.token_budget.T
+        pack_threshold = budget * 0.8  # 打包阈值，留 20% 余量
 
         while queue:
             # 安全阀：节点数硬上限
@@ -229,35 +234,136 @@ class QueryEngine:
                 )
                 break
 
-            node, depth = queue.pop(0)
-            if depth >= self.max_rounds:
-                continue  # 达深度上限：保留在 accumulated，但不再扩展其邻居
+            # === 批量打包 ===
+            batch_centers: list[tuple[Node, int]] = []  # (中心节点, 深度)
+            batch_neighbors: list[Node] = []
+            neighbor_to_center: dict[str, tuple[str, int]] = {}  # neighbor_id -> (center_id, center_depth)
+            batch_tokens = 0
 
-            neighbors = self.store.get_neighbors(node.id) or []
+            # 贪心打包：从 queue 取节点直到接近 pack_threshold
+            while queue and batch_tokens < pack_threshold:
+                node, depth = queue.pop(0)
+                if depth >= self.max_rounds:
+                    continue  # 达深度上限：不加入本批次，跳过扩展
+
+                neighbors = self.store.get_neighbors(node.id) or []
+                if not neighbors:
+                    continue  # 无邻居：不加入本批次
+
+                # 估算本节点的 token（中心 + 邻居）
+                node_tokens = self.token_budget.estimate_node(node)
+                neighbor_tokens = sum(
+                    self.token_budget.estimate_node(n) for n in neighbors
+                )
+                total_tokens = node_tokens + neighbor_tokens
+
+                # 检查是否超预算
+                if batch_tokens + total_tokens > budget:
+                    # 单节点超预算 → 仍可加入（不变量保证 ≤ T）
+                    if batch_tokens == 0:  # 空批次，加入这单个节点
+                        batch_centers.append((node, depth))
+                        for neighbor in neighbors:
+                            if neighbor.id not in neighbor_to_center:
+                                batch_neighbors.append(neighbor)
+                                neighbor_to_center[neighbor.id] = (node.id, depth)
+                        batch_tokens = total_tokens
+                    else:
+                        # 预算不足且已有节点，把当前节点放回队列头部
+                        queue.insert(0, (node, depth))
+                    break  # 预算不足，停止打包
+
+                # 加入批次
+                batch_centers.append((node, depth))
+                for neighbor in neighbors:
+                    if neighbor.id not in neighbor_to_center:
+                        batch_neighbors.append(neighbor)
+                        neighbor_to_center[neighbor.id] = (node.id, depth)
+                batch_tokens += total_tokens
+
+            if not batch_centers:
+                continue  # 本轮无可扩展节点
+
+            # === 渲染中心和邻居 ===
+            renderer = ContextRenderer(self.plugin_manager)
+            centers_text = renderer.render(
+                [n for n, _ in batch_centers], purpose="select_nodes"
+            )
+            neighbors_text = renderer.render(batch_neighbors, purpose="select_nodes")
+
+            # === 批量 LLM 调用 ===
+            selected_ids: list[str] = []
+            # 构造 nodes_in：所有中心节点 + 所有邻居（保持兼容 LLMInterface.call 标准）
+            all_nodes_in = [n for n, _ in batch_centers] + batch_neighbors
+            # 保存原模板以便恢复
+            original_prompt = self.llm.get_prompt("select_nodes")
+            try:
+                # 临时注册批量模板
+                self.llm.register_prompt("select_nodes", template=BATCH_USER_TEMPLATE)
+                selected_ids = self.llm.call(
+                    purpose="select_nodes",
+                    nodes_in=all_nodes_in,
+                    free_args={
+                        "query": query,
+                        "centers": centers_text,
+                        "neighbors": neighbors_text,
+                        "accumulated_summary": _summarize_for_prompt(accumulated),
+                    },
+                ) or []
+            except LLMParseError:
+                # 回退到逐节点处理
+                logger.warning("批量 LLM 调用失败，回退到逐节点处理")
+                selected_ids = self._fallback_single_node_select(
+                    batch_centers, query, accumulated
+                )
+            finally:
+                # 恢复原模板
+                self.llm.register_prompt(
+                    "select_nodes",
+                    template=original_prompt.template,
+                    system=original_prompt.system,
+                )
+
+            selected = set(selected_ids)
+
+            # === 归类选中节点 ===
+            for neighbor_id in selected:
+                if neighbor_id not in visited and neighbor_id in neighbor_to_center:
+                    center_id, center_depth = neighbor_to_center[neighbor_id]
+                    # 找到 neighbor 节点对象
+                    neighbor_node = next(
+                        (n for n in batch_neighbors if n.id == neighbor_id), None
+                    )
+                    if neighbor_node:
+                        visited.add(neighbor_id)
+                        accumulated.append(neighbor_node)
+                        queue.append((neighbor_node, center_depth + 1))
+                        if len(accumulated) >= self.max_accumulated_nodes:
+                            break
+
+        return accumulated
+
+    def _fallback_single_node_select(
+            self,
+            batch_centers: list[tuple[Node, int]],
+            query: str,
+            accumulated: list[Node],
+    ) -> list[str]:
+        """批量调用失败时，回退到逐节点 LLM 筛选。"""
+        selected_ids: list[str] = []
+        for center, depth in batch_centers:
+            neighbors = self.store.get_neighbors(center.id) or []
             if not neighbors:
                 continue
-
-            # 不变量保证 node + 全部一跳邻居 ≤ T → 一次性送 LLM（不截断）
-            selected_ids = self.llm.call(
+            single_selected = self.llm.call(
                 purpose="select_nodes",
-                nodes_in=[node, *neighbors],
+                nodes_in=[center, *neighbors],
                 free_args={
                     "query": query,
                     "accumulated_summary": _summarize_for_prompt(accumulated),
                 },
             ) or []
-            selected = set(selected_ids)
-
-            # 选中的邻居：已访问的去重丢弃，未访问的加入并入队（深度 +1）
-            for neighbor in neighbors:
-                if neighbor.id in selected and neighbor.id not in visited:
-                    visited.add(neighbor.id)
-                    accumulated.append(neighbor)
-                    queue.append((neighbor, depth + 1))
-                    if len(accumulated) >= self.max_accumulated_nodes:
-                        break
-
-        return accumulated
+            selected_ids.extend(single_selected)
+        return selected_ids
 
     def _arbitrate(
             self,

@@ -183,29 +183,29 @@ Stage ③ SHALL enforce safety valves: `max_rounds` (BFS rounds / hops) and `max
 
 ---
 
-### Requirement: 语义理解 Loop 使用 select_nodes 篮选候选
+### Requirement: 语义理解 Loop 使用 select_nodes 筛选候选
 
-Within stage ③, for each round, the framework MUST issue ONE LLM call with `purpose = select_nodes`. The LLM SHALL select which frontier nodes are relevant to the query — only selected nodes are added to `accumulated` and `visited`.
+Within stage ③, the framework MUST issue LLM calls with `purpose = select_nodes` to filter frontier nodes. The calls SHALL use batch expansion strategy: multiple frontier nodes and their neighbors can be combined into a single LLM call as long as total tokens ≤ budget.
 
-#### Scenario: 每轮一次 LLM 筛选
+#### Scenario: 批量扩展减少 LLM 调用次数
 
-- **WHEN** 一轮 BFS 有 frontier 节点
-- **THEN** 框架 MUST 发起 LLM 调用（purpose="select_nodes"），筛选与查询相关的节点
+- **WHEN** multiple frontier nodes have neighbors that fit within token budget when combined
+- **THEN** framework MUST issue ONE LLM call for the batch instead of one call per frontier node
 
-#### Scenario: 仅选中节点加入 accumulated 和 visited
+#### Scenario: 仅选中邻居节点加入 accumulated 和 visited
 
-- **WHEN** LLM 选中某节点
-- **THEN** 该节点 MUST 被加入 `accumulated` 和 `visited`；未选中者 MUST NOT 加入 `visited`
+- **WHEN** LLM returns selected node IDs from batch expansion
+- **THEN** selected neighbor nodes MUST be added to `accumulated` and `visited`; center nodes MUST NOT be added (they are already visited); unselected neighbors MUST NOT be added to `visited`
 
-#### Scenario: 未选中节点可被后续轮次重新发现
+#### Scenario: 未选中邻居可被后续轮次重新发现
 
-- **WHEN** LLM 未选中某候选节点
-- **THEN** 该节点 MUST NOT 加入 `visited`；后续轮次 MAY 重新发现该节点
+- **WHEN** LLM does not select a neighbor candidate
+- **THEN** that neighbor MUST NOT be added to `visited`; subsequent rounds MAY rediscover it via other paths
 
-#### Scenario: 单轮候选超预算时分批调用
+#### Scenario: 批量超预算时拆分或逐节点处理
 
-- **WHEN** 单轮 frontier 的估算 token > `token_budget.T`
-- **THEN** 框架 MUST 将 frontier 按预算分批，逐批调用 LLM 筛选
+- **WHEN** combined batch would exceed `token_budget.T`
+- **THEN** framework MUST either split into smaller batches or fallback to single-node processing
 
 ---
 

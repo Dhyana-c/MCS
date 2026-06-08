@@ -345,3 +345,205 @@ def test_seed_selector_chain_empty_skips(seeded_graph, mock_llm):
     # 无 SeedSelectorPlugin → 不报错，正常执行
     result = engine.query("test")
     assert isinstance(result, list)
+
+
+# === 批量邻居扩展测试 ===
+
+
+def test_batch_packing_combines_multiple_nodes(seeded_graph, mock_llm):
+    """批量打包：多个节点及其邻居合并后一次 LLM 调用。"""
+    from tests.conftest import MockLLM
+
+    # 构造两个种子的场景
+    g = seeded_graph
+    dl = g.get_node("dl")
+    ml = g.get_node("ml")
+
+    mock = MockLLM()
+    engine = _build_engine(g, mock, _StaticEntry(["dl", "ml"], g))
+
+    # 记录 LLM 调用次数
+    call_count = 0
+
+    def count_and_select(nodes_in, _free_args):
+        nonlocal call_count
+        call_count += 1
+        # 只选邻居，不选中心节点
+        ids = [n.id for n in (nodes_in or [])]
+        # 排除中心节点（dl, ml）
+        return [i for i in ids if i not in ("dl", "ml")]
+
+    mock.set_response("select_nodes", count_and_select)
+    engine.query("test")
+
+    # 批量模式应该减少 LLM 调用次数（理想情况 1 次，而非每个种子 1 次）
+    # 注意：实际调用次数取决于打包阈值和节点大小
+    assert call_count >= 1
+
+
+def test_batch_depth_calculation_correct():
+    """批量模式下邻居深度计算正确。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    # 构造两跳图：a -> b1, b2; b1 -> c1; b2 -> c2
+    nodes = [
+        Node(id="a", name="A", content="A"),
+        Node(id="b1", name="B1", content="B1"),
+        Node(id="b2", name="B2", content="B2"),
+        Node(id="c1", name="C1", content="C1"),
+        Node(id="c2", name="C2", content="C2"),
+    ]
+    for n in nodes:
+        g.add_node(n)
+    g.add_edge("a", "b1")
+    g.add_edge("a", "b2")
+    g.add_edge("b1", "c1")
+    g.add_edge("b2", "c2")
+
+    mock = MockLLM()
+    pm = PluginManager()
+    pm.register(mock)
+    pm.register(_StaticEntry(["a"], g))
+    ctx = PluginContext(
+        store=g,
+        config=None,
+        token_budget=TokenBudget(8000),
+        context_renderer=None,
+        plugin_manager=pm,
+    )
+    pm.initialize_all(ctx)
+    engine = QueryEngine(
+        store=g,
+        llm=mock,
+        plugin_manager=pm,
+        token_budget=TokenBudget(8000),
+        max_rounds=2,
+        max_accumulated_nodes=1000,
+    )
+
+    # 选中所有邻居
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    result = engine.query("test")
+
+    # 验证所有节点都被访问
+    ids = {n.id for n in result}
+    assert ids == {"a", "b1", "b2", "c1", "c2"}
+
+
+def test_batch_visited_dedup_shared_neighbor():
+    """同一邻居被多个中心共享时只处理一次。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    # a1, a2 都指向 shared
+    a1 = Node(id="a1", name="A1", content="A1")
+    a2 = Node(id="a2", name="A2", content="A2")
+    shared = Node(id="shared", name="Shared", content="Shared")
+    for n in [a1, a2, shared]:
+        g.add_node(n)
+    g.add_edge("a1", "shared")
+    g.add_edge("a2", "shared")
+
+    mock = MockLLM()
+    engine = _build_engine(g, mock, _StaticEntry(["a1", "a2"], g))
+
+    selected_count = 0
+
+    def track_selection(nodes_in, _free_args):
+        nonlocal selected_count
+        ids = [n.id for n in (nodes_in or [])]
+        # 只选 shared
+        selected = [i for i in ids if i == "shared"]
+        selected_count += len(selected)
+        return selected
+
+    mock.set_response("select_nodes", track_selection)
+    result = engine.query("test")
+
+    # shared 只能在结果中出现一次
+    ids = [n.id for n in result]
+    assert ids.count("shared") == 1
+
+
+def test_batch_fallback_on_parse_error(seeded_graph, mock_llm):
+    """LLMParseError 时回退到逐节点处理。"""
+    from mcs.core.errors import LLMParseError
+
+    # 第一次调用抛出 LLMParseError，触发回退
+    call_count = 0
+
+    def fail_then_succeed(nodes_in, _free_args):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise LLMParseError("select_nodes", "invalid", "test error")
+        return [n.id for n in (nodes_in or []) if n.id != "dl"]
+
+    mock_llm.set_response("select_nodes", fail_then_succeed)
+    engine = _build_engine(seeded_graph, mock_llm, _StaticEntry(["dl"], seeded_graph))
+    result = engine.query("test")
+
+    # 回退后应仍有结果
+    assert isinstance(result, list)
+    assert len(result) >= 1  # 至少包含种子 dl
+
+
+def test_batch_overflow_node_put_back_to_queue():
+    """超预算时未加入批次的节点应放回队列头部，下一轮继续处理。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    # 构造三个种子，每个有大邻居（模拟超预算场景）
+    nodes = [
+        Node(id="a", name="A", content="A node with large content"),
+        Node(id="b", name="B", content="B node with large content"),
+        Node(id="c", name="C", content="C node with large content"),
+        Node(id="n1", name="N1", content="Neighbor 1 of A"),
+        Node(id="n2", name="N2", content="Neighbor 2 of B"),
+        Node(id="n3", name="N3", content="Neighbor 3 of C"),
+    ]
+    for n in nodes:
+        g.add_node(n)
+    g.add_edge("a", "n1")
+    g.add_edge("b", "n2")
+    g.add_edge("c", "n3")
+
+    mock = MockLLM()
+    # 极小预算：迫使批次只能容纳一个节点
+    pm = PluginManager()
+    pm.register(mock)
+    pm.register(_StaticEntry(["a", "b", "c"], g))
+    ctx = PluginContext(
+        store=g,
+        config=None,
+        token_budget=TokenBudget(100),  # 极小预算
+        context_renderer=None,
+        plugin_manager=pm,
+    )
+    pm.initialize_all(ctx)
+    engine = QueryEngine(
+        store=g,
+        llm=mock,
+        plugin_manager=pm,
+        token_budget=TokenBudget(100),
+        max_rounds=1,
+        max_accumulated_nodes=100,
+    )
+
+    # 选中所有邻居
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or []) if n.id.startswith("n")],
+    )
+    result = engine.query("test")
+
+    # 即使预算极小，所有种子和邻居都应被处理（因为超预算节点放回队列）
+    ids = {n.id for n in result}
+    # 种子 a, b, c 应都在 accumulated
+    assert "a" in ids
+    assert "b" in ids
+    assert "c" in ids

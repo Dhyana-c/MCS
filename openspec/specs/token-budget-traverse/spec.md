@@ -1,13 +1,13 @@
 # token-budget-traverse Specification
 
 ## Purpose
-定义 token 预算驱动的遍历逻辑，替代基于节点计数的 max_picked 机制。确保遍历过程遵循 MCS 核心不变量（token 预算约束）。
+定义 token 预算驱动的遍历逻辑，替代基于节点计数的 max_picked 机制。确保遍历过程遵循 MCS 核心不变量（token 预算约束）。支持批量邻居扩展策略以优化 LLM 调用效率。
 
 ## Requirements
 
 ### Requirement: _traverse 删除 max_picked 参数，改用 token 预算控制
 
-The system SHALL modify `QueryEngine._traverse` to remove `max_picked` parameter and use `token_budget.T` as the termination condition.
+The system SHALL modify `QueryEngine._traverse` to remove `max_picked` parameter and use `token_budget.T` as the termination condition. In batch expansion mode, the packing threshold SHALL be `token_budget.T * 0.8` to reserve margin for estimation errors.
 
 #### Scenario: 不再依赖节点计数
 
@@ -18,6 +18,11 @@ The system SHALL modify `QueryEngine._traverse` to remove `max_picked` parameter
 
 - **WHEN** `accumulated` 的估算 token 总和 > `token_budget.T`
 - **THEN** 遍历 MUST 立即终止
+
+#### Scenario: 批量打包使用 80% 预算阈值
+
+- **WHEN** packing multiple centers into a batch
+- **THEN** the framework MUST stop packing when `batch_tokens >= token_budget.T * 0.8`
 
 ---
 
@@ -70,25 +75,30 @@ The system SHALL modify `_traverse` so that only LLM-selected nodes are added to
 
 ### Requirement: 遍历流程实现用户定义的语义
 
-The system SHALL implement `_traverse` according to the following flow:
+The system SHALL implement `_traverse` with batch expansion. The flow is:
 
-1. 初始化：`accumulated = []`, `visited = set()`, `frontier = seeds`
-2. LLM 筛选 frontier：`selected = llm.select_nodes(frontier, query, accumulated)`
-3. 若 selected 为空 → 终止
-4. 将 selected 加入 accumulated 和 visited
-5. 若 accumulated token > budget → 终止
-6. 获取 selected 的子节点 → 过滤 visited → 作为新 frontier
-7. 重复步骤 2-6 直到无新 frontier 或超预算
+1. Initialize: `accumulated = []`, `visited = set()`, `queue = [(seed, 0)]`
+2. Pack batch: greedily take nodes from queue until `batch_tokens >= T * 0.8`
+3. Load neighbors for each center in the batch, maintaining `neighbor_to_center` mapping
+4. LLM filter: `selected_ids = llm.select_nodes([*centers, *all_neighbors], query, accumulated)`
+5. For each selected neighbor: if not visited, add to `accumulated` and `visited`, enqueue with `depth = parent_center_depth + 1`
+6. If `accumulated` token > budget → terminate
+7. Repeat steps 2-6 until queue empty or budget exceeded
 
 #### Scenario: 完整遍历流程
 
 - **WHEN** 调用 `_traverse(seeds, query, ctx)`
-- **THEN** 框架 MUST 按上述 7 步流程执行
+- **THEN** 框架 MUST 按上述批量扩展流程执行
 
 #### Scenario: 每轮后检查预算
 
-- **WHEN** 一轮 BFS 完成，新节点加入 `accumulated`
+- **WHEN** 一轮批量扩展完成，新节点加入 `accumulated`
 - **THEN** 框架 MUST 计算当前 `accumulated` 的 token 总和；若 > `token_budget.T`，终止遍历
+
+#### Scenario: 邻居-中心映射正确维护
+
+- **WHEN** loading neighbors for batch centers
+- **THEN** framework MUST maintain `neighbor_id -> (center_id, center_depth)` mapping for depth calculation
 
 ---
 
