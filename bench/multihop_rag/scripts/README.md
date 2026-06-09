@@ -16,10 +16,10 @@
 
 ```bash
 # 从项目根目录运行
-python bench/multihop-rag/scripts/run_whole_doc.py
+python bench/multihop_rag/scripts/run_whole_doc.py
 
 # 或进入脚本目录运行
-cd bench/multihop-rag/scripts
+cd bench/multihop_rag/scripts
 python run_dry_run.py
 ```
 
@@ -31,14 +31,14 @@ python run_dry_run.py
 2. 找到 `# 配置（硬编码）` 注释下的变量
 3. 修改 DB_PATH、OUTPUT_DIR、CORPUS_SUBSET 等参数
 
-也可使用 `bench/multihop-rag/config/default.json` 作为配置参考。
+也可使用 `bench/multihop_rag/config/default.json` 作为配置参考。
 
 ## 输出
 
 输出目录结构：
 
 ```
-bench/multihop-rag/outputs/
+bench/multihop_rag/outputs/
 ├── whole_doc/          # run_whole_doc.py 输出
 ├── baseline/           # run_baseline.py 输出
 ├── node_rerank/        # run_node_rerank.py 输出
@@ -55,7 +55,7 @@ bench/multihop-rag/outputs/
 
 ## 数据依赖
 
-脚本默认从 `D:\code\hotpot\MultiHopRAG\` 读取数据。如需使用其他路径，修改脚本中的 `--corpus` 和 `--queries` 参数，或使用 CLI 方式：
+脚本默认从 `bench/multihop_rag/data/` 读取数据。如需使用其他路径，修改脚本中的 `--corpus` 和 `--queries` 参数，或使用 CLI 方式：
 
 ```bash
 python -m bench.multihop_rag --corpus /path/to/corpus.json --queries /path/to/qa.json

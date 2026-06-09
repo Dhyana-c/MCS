@@ -15,8 +15,8 @@
 
 ## 3. 规整评测文档
 
-- [ ] 3.1 合并 `mcs/bench/MULTIHOP_RAG.md` 内容到 `bench/multihop-rag/README.md`
-- [ ] 3.2 迁移 `mcs/bench/MULTIHOP_RERANK_REPORT.md` → `bench/multihop-rag/reports/doc_rerank_experiment.md`
+- [ ] 3.1 合并 `mcs/bench/MULTIHOP_RAG.md` 内容到 `bench/multihop_rag/README.md`
+- [ ] 3.2 迁移 `mcs/bench/MULTIHOP_RERANK_REPORT.md` → `bench/multihop_rag/reports/doc_rerank_experiment.md`
 - [ ] 3.3 调整 `mcs/bench/README.md`：移除重复内容，保留 API 文档职责
 - [ ] 3.4 精简 `bench/README.md`：保留入口文档职责，详细说明下沉到各评测类型 README
 

@@ -271,7 +271,6 @@ mcs/
 │
 ├── bench/                      # 评测框架
 │   ├── __init__.py             # 模块入口
-│   ├── hotpot.py               # HotpotQA 评测核心
 │   └── README.md               # 评测框架说明
 │
 ├── interfaces/                 # 插件接口
@@ -335,68 +334,10 @@ mcs/
 - DeepSeek API（或兼容 OpenAI SDK 的 LLM 服务）
 - Anthropic Claude API（可选：`pip install -e ".[claude]"`；也支持 Anthropic 兼容网关）
 - Ollama（可选：本地推理引擎，零 token 成本；需单独安装）
-- ujson（用于 HotpotQA 评测脚本）
-
-## HotpotQA 评测
-
-MCS 提供 HotpotQA 多跳问答端到端评测框架，用于定量验证"几跳语义游走能否连到一起"的核心假设。
-
-### 快速评测
-
-```bash
-# 安装评测依赖
-pip install -e ".[dev]"
-
-# 设置 API key
-export DEEPSEEK_API_KEY=sk-...  # 或 set DEEPSEEK_API_KEY=sk-... (Windows)
-
-# dry-run 模式查看预估 token 消耗
-python -m bench.hotpotqa --dry-run --subset 100
-
-# 正式评测（100 条子集）
-python -m bench.hotpotqa --subset 100 --output ./bench_output
-
-# 使用 Claude 后端
-export ANTHROPIC_API_KEY=sk-ant-...
-python -m bench.hotpotqa --subset 100 --llm claude
-```
-
-### CLI 参数
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--subset` | 100 | 评测子集大小（0 表示全量 7405 条） |
-| `--llm` | deepseek | LLM 后端（deepseek / claude） |
-| `--output` | ./bench_output | 输出目录 |
-| `--dry-run` | False | 仅估算 token，不执行 LLM 调用 |
-| `--no-resume` | False | 从头开始，忽略进度文件 |
-| `--strategy` | uniform | 采样策略（uniform / proportional） |
-| `--data-path` | D:\code\hotpot\hotpot_dev_distractor_v1.json | 数据文件路径 |
-| `--eval-script-dir` | D:\code\hotpot | hotpot_evaluate_v1.py 所在目录 |
-
-### 输出文件
-
-评测完成后，`output_dir` 包含：
-
-- `predictions.json` - 预测结果 `{answer: {_id: str}, sp: {_id: [[title, sent_idx], ...]}}`
-- `gold_subset.json` - 子集 gold 文件
-- `metrics.json` - 指标结果 `{em, f1, sp_em, sp_f1, joint_em, joint_f1}`
-- `progress.json` - 已完成的 `_id` 列表（断点续跑）
-
-### 评测架构
-
-每条 HotpotQA 数据创建独立 MCS 实例（`:memory:` 存储），避免跨条污染。评测流程：
-
-1. 加载 HotpotQA dev_distractor 数据
-2. 按 type（bridge/comparison）分层采样
-3. 每条数据：10 个段落 ingest → query → 提取 answer + supporting_facts
-4. 输出预测 + gold 子集 → 计算官方指标
-
-详见 [`bench/README.md`](bench/README.md)。
 
 ## MultiHop-RAG 检索评测
 
-与 HotpotQA（每条独立建图）相反，MultiHop-RAG 评测是**一次建图、多 query**：把整个语料摄入**同一个持久化 MCS 实例**，再对所有 query 评**文档级检索**指标——`query()` 返回的节点经 `source_tracking` 映射回来源文档，与 gold evidence 文档比对，算 **Hit@k / Recall@k / MAP@k / MRR@k**。绕开"MCS 不是答题器"的弱点，直接量化"图召回 + 排序"的质量。
+MultiHop-RAG 评测是**一次建图、多 query**：把整个语料摄入**同一个持久化 MCS 实例**，再对所有 query 评**文档级检索**指标——`query()` 返回的节点经 `source_tracking` 映射回来源文档，与 gold evidence 文档比对，算 **Hit@k / Recall@k / MAP@k / MRR@k**。
 
 数据：HuggingFace `yixuantt/MultiHop-RAG`（`multihoprag_corpus.json` + `multihoprag_qa.json`）。
 

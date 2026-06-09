@@ -13,8 +13,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CORPUS = r"D:\code\hotpot\MultiHopRAG\multihoprag_corpus.json"
-DEFAULT_QA = r"D:\code\hotpot\MultiHopRAG\multihoprag_qa.json"
+DEFAULT_CORPUS = str(Path(__file__).resolve().parent / "data" / "multihoprag_corpus.json")
+DEFAULT_QA = str(Path(__file__).resolve().parent / "data" / "multihoprag_qa.json")
 
 
 @dataclass

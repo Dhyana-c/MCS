@@ -1,6 +1,6 @@
 {
-  "corpus_path": "D:\\code\\hotpot\\MultiHopRAG\\multihoprag_corpus.json",
-  "queries_path": "D:\\code\\hotpot\\MultiHopRAG\\multihoprag_qa.json",
+  "corpus_path": "data/multihoprag_corpus.json",
+  "queries_path": "data/multihoprag_qa.json",
   "corpus_subset": 200,
   "llm_backend": "deepseek",
   "token_budget": 8000,

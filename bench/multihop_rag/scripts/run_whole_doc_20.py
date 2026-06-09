@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-# 脚本所在目录的父目录（bench/multihop-rag/）
+# bench/multihop_rag/
 BENCH_ROOT = Path(__file__).parent.parent
 PROJECT_ROOT = BENCH_ROOT.parent.parent
 

@@ -10,15 +10,12 @@
 
 ```
 bench/
-├── multihop-rag/           # MultiHop-RAG 检索评测
+├── multihop_rag/           # MultiHop-RAG 检索评测
 │   ├── config/             # 配置文件
 │   ├── data/               # 数据文件（不提交）
 │   ├── scripts/            # 启动脚本（无命令行参数）
 │   ├── reports/            # 测试报告
 │   └── README.md           # 评测说明
-├── hotpotqa/               # HotpotQA 多跳问答评测
-│   ├── runner.py           # 评测库代码 + CLI（python -m bench.hotpotqa）
-│   └── README.md
 ├── plugins/                # bench 专用插件（如 doc_rerank）
 └── README.md               # 本文档
 ```
@@ -31,21 +28,13 @@ bench/
 
 ```bash
 # 查看可用脚本
-ls bench/multihop-rag/scripts/
+ls bench/multihop_rag/scripts/
 
 # 运行评测（整篇文档摄入）
-python bench/multihop-rag/scripts/run_whole_doc.py
+python bench/multihop_rag/scripts/run_whole_doc.py
 ```
 
-详见 `bench/multihop-rag/README.md`。
-
-### HotpotQA
-
-标准多跳问答评测。每条数据独立实例，指标为 EM/F1、sp_EM/sp_F1。
-
-评测代码在 `bench/hotpotqa/`（`runner.py`），可用 `python -m bench.hotpotqa` 运行；专用启动脚本待补充。
-
-详见 `bench/hotpotqa/README.md`。
+详见 `bench/multihop_rag/README.md`。
 
 ## 启动脚本规范
 

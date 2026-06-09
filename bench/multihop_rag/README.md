@@ -1,26 +1,16 @@
 # MultiHop-RAG 检索评测
 
-在 MCS 的 **Phase-1 能力区间**内对"跨文档多跳检索"做评测。与 `hotpot.py` 相反，这里是
+在 MCS 的 **Phase-1 能力区间**内对"跨文档多跳检索"做评测。
 **一次建图、多 query**：把整个语料摄入**同一张共享持久图**，再对所有 query 做检索。
-
-## 与 hotpot bench 的架构差异
-
-| | hotpot.py | multihop_rag.py |
-|---|---|---|
-| 图 | 每条数据**独立** `:memory:` 实例 | **一个共享**持久图（SQLite） |
-| 摄入 | 每题重建 10 段（用完即弃） | 全语料建一次、长期复用 |
-| 续跑 | 按 `_id` 进度文件 | idempotency 跳过已摄入 + query 进度文件 |
-| 主指标 | EM/F1/sp（答题口径） | **Hit@k / MAP@k / MRR@k**（检索召回口径） |
-| 适配性 | 与 MCS 错配（被迫关掉大图） | 贴合 MCS（考验大图多跳找路） |
 
 ## 数据下载
 
-数据集不在仓库内，需从 HuggingFace `yixuantt/MultiHop-RAG` 下载两个文件：
+数据集放在 `bench/multihop_rag/data/` 目录下（已包含在项目中）：
 
 - `multihoprag_corpus.json`（609 篇新闻文档：title/body/source/published_at/url/author/category）
 - `multihoprag_qa.json`（2556 个 query：query/answer/question_type/evidence_list）
 
-本地默认路径：`D:\code\hotpot\MultiHopRAG\`。可用 `huggingface-cli download yixuantt/MultiHop-RAG --repo-type dataset` 或网页下载后放入该目录。
+如需重新下载，可从 HuggingFace `yixuantt/MultiHop-RAG` 获取：`huggingface-cli download yixuantt/MultiHop-RAG --repo-type dataset`
 
 ## 用法
 

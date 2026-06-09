@@ -12,7 +12,7 @@ Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类
 #### Scenario: 评测代码位于 bench/ 目录
 
 - **WHEN** 评测代码需要被外部导入
-- **THEN** 代码 SHALL 位于 `bench/` 目录下（如 `bench/multihop_rag/`、`bench/hotpotqa/`、`bench/plugins/`），启动脚本通过 `from bench.xxx import ...` 调用
+- **THEN** 代码 SHALL 位于 `bench/` 目录下（如 `bench/multihop_rag/`、`bench/plugins/`），启动脚本通过 `from bench.xxx import ...` 调用
 
 ### Requirement: 启动脚本无命令行参数
 
@@ -20,7 +20,7 @@ Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类
 
 #### Scenario: 脚本直接运行
 
-- **WHEN** 运行 `python bench/multihop-rag/scripts/run_baseline.py`
+- **WHEN** 运行 `python bench/multihop_rag/scripts/run_baseline.py`
 - **THEN** 脚本 SHALL 无需任何命令行参数即可完成评测
 
 #### Scenario: 不同配置使用不同脚本
@@ -62,12 +62,12 @@ Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类
 #### Scenario: 临时数据库文件
 
 - **WHEN** 项目根目录存在 `multihop_*.db` 文件
-- **THEN** 这些文件 SHALL 移动到 `bench/multihop-rag/outputs/` 或删除
+- **THEN** 这些文件 SHALL 移动到 `bench/multihop_rag/outputs/` 或删除
 
 #### Scenario: 临时启动脚本
 
 - **WHEN** 项目根目录存在 `_run_*.py` 文件
-- **THEN** 这些文件 SHALL 迁移到 `bench/multihop-rag/scripts/` 后删除原文件
+- **THEN** 这些文件 SHALL 迁移到 `bench/multihop_rag/scripts/` 后删除原文件
 
 ### Requirement: 评测目录 README
 
@@ -75,5 +75,5 @@ Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类
 
 #### Scenario: README 内容
 
-- **WHEN** 查看 `bench/multihop-rag/README.md`
+- **WHEN** 查看 `bench/multihop_rag/README.md`
 - **THEN** 文档 SHALL 包含评测目的、数据下载说明、可用脚本列表和指标说明

@@ -22,11 +22,11 @@ huggingface-cli download yixuantt/MultiHop-RAG --repo-type dataset --local-dir .
 ## 预期文件
 
 ```
-bench/multihop-rag/data/
+bench/multihop_rag/data/
 ├── multihoprag_corpus.json
 └── multihoprag_qa.json
 ```
 
 ## 默认路径
 
-评测脚本默认从 `D:\code\hotpot\MultiHopRAG\` 读取数据。如需使用本目录，请在脚本中指定 `--corpus` 和 `--queries` 参数。
+评测脚本默认从 `bench/multihop_rag/data/` 读取数据（即本目录）。

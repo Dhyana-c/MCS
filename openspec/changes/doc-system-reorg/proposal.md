@@ -7,7 +7,7 @@ MCS 项目文档体系目前存在以下问题：
 2. **文档职责重叠、边界不清**：
    - `README.md` 包含架构、快速开始、评测说明等（混合定位/用法/评测）
    - `MCS技术方案.md` 与多个 `openspec/specs/` spec 内容重叠（如 `subgraph-bounding`、`query-pipeline`）
-   - `mcs/bench/README.md` 与 `bench/multihop-rag/README.md` 内容高度重复
+   - `mcs/bench/README.md` 与 `bench/multihop_rag/README.md` 内容高度重复
 
 3. **过期文档未清理**：`PENDING_FIXES.md` 中大部分问题已修复但仍保留"待修复"标题；部分 spec 的 Purpose 为 TBD（如 `project-skeleton/spec.md`）；归档的 change 目录未被清理索引。
 
@@ -54,8 +54,8 @@ docs/
 
 - `bench/README.md`：保留为评测入口，精简为"目录结构 + 评测类型导航"
 - `mcs/bench/README.md`：改为指向 `bench/README.md` + API 用法（职责分离）
-- `mcs/bench/MULTIHOP_RAG.md`：与 `bench/multihop-rag/README.md` 合并（去重）
-- `mcs/bench/MULTIHOP_RERANK_REPORT.md`：迁入 `bench/multihop-rag/reports/`（报告集中）
+- `mcs/bench/MULTIHOP_RAG.md`：与 `bench/multihop_rag/README.md` 合并（去重）
+- `mcs/bench/MULTIHOP_RERANK_REPORT.md`：迁入 `bench/multihop_rag/reports/`（报告集中）
 
 ### 6. 删除过期文档
 

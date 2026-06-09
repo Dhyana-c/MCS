@@ -1,12 +1,11 @@
 """MultiHop-RAG 共享语料多跳检索评测。
 
-与 hotpot bench 相反，这里是"一次建图、多 query"：把整个语料摄入**同一个持久化
+"一次建图、多 query"：把整个语料摄入**同一个持久化
 MCS 实例**（SQLite，非 :memory:），之后对所有 query 做检索评测。主指标是**文档级
 检索召回** Hit@k / MAP@k / MRR@k——把 query() 返回的 List[Node] 经 source_tracking
-映射回来源文档，与 gold evidence 的来源文档比对。绕开"MCS 不是答题器"的弱点。
+映射回来源文档，与 gold evidence 的来源文档比对。
 
-数据：从 HuggingFace ``yixuantt/MultiHop-RAG`` 下载，本地放在
-``D:\\code\\hotpot\\MultiHopRAG\\``（multihoprag_corpus.json + multihoprag_qa.json）。
+数据：放在 ``bench/multihop_rag/data/`` 目录下（multihoprag_corpus.json + multihoprag_qa.json）。
 """
 
 from bench.multihop_rag.builder import build_shared_graph, chunk_body

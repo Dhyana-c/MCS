@@ -100,7 +100,7 @@ docs/
 
 | 重复对 | 策略 | 保留位置 |
 |--------|------|----------|
-| `mcs/bench/MULTIHOP_RAG.md` vs `bench/multihop-rag/README.md` | 合并为一份 | `bench/multihop-rag/README.md` |
+| `mcs/bench/MULTIHOP_RAG.md` vs `bench/multihop_rag/README.md` | 合并为一份 | `bench/multihop_rag/README.md` |
 | `mcs/bench/README.md` vs `bench/README.md` | 职责分离 | 前者 API 文档、后者入口文档 |
 | `openspec/specs/architecture.md` vs `docs/architecture.md` | 迁移 + stub | `docs/architecture.md`（原位置留 stub） |
 
@@ -166,8 +166,8 @@ docs/
 
 ### 阶段三：规整评测文档
 
-1. 合并 `mcs/bench/MULTIHOP_RAG.md` → `bench/multihop-rag/README.md`
-2. 迁移 `mcs/bench/MULTIHOP_RERANK_REPORT.md` → `bench/multihop-rag/reports/`
+1. 合并 `mcs/bench/MULTIHOP_RAG.md` → `bench/multihop_rag/README.md`
+2. 迁移 `mcs/bench/MULTIHOP_RERANK_REPORT.md` → `bench/multihop_rag/reports/`
 3. 调整 `mcs/bench/README.md` 职责
 
 ### 阶段四：补充 spec Purpose
