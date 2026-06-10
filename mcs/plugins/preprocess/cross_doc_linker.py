@@ -187,15 +187,19 @@ def apply_cross_doc_links(
         if graph.get_node(candidate.target_id) is None:
             continue
 
-        # Check if edge already exists
+        # Check if edge already exists (either direction)
         if graph.get_edge(candidate.source_id, candidate.target_id) is not None:
             continue
 
-        # Add edge
+        # Add semantic edges (two directed edges for bidirectional reachability)
         graph.add_edge(candidate.source_id, candidate.target_id)
+        graph.add_edge(candidate.target_id, candidate.source_id)
         edge = graph.get_edge(candidate.source_id, candidate.target_id)
         if edge:
             new_edges.append(edge)
+        reverse_edge = graph.get_edge(candidate.target_id, candidate.source_id)
+        if reverse_edge:
+            new_edges.append(reverse_edge)
             applied += 1
 
     return applied, new_edges
@@ -272,9 +276,9 @@ def load_graph_from_db(db_path: str) -> GraphStore:
                 )
             )
         for row in conn.execute(
-            "SELECT source_id, target_id, direction FROM edges"
+            "SELECT source_id, target_id FROM edges"
         ):
-            graph.add_edge(row[0], row[1], direction=row[2] or "bidirectional")
+            graph.add_edge(row[0], row[1])
     finally:
         conn.close()
     return graph
@@ -284,7 +288,7 @@ def persist_new_edges(db_path: str, new_edges: list[Edge]) -> int:
     """Write newly-created edges back to the ``edges`` table.
 
     Uses ``INSERT OR IGNORE`` so rows already present (matching the
-    ``(source_id, target_id, direction)`` primary key) are left untouched.
+    ``(source_id, target_id)`` primary key) are left untouched.
 
     Args:
         db_path: Path to the SQLite database to write to.
@@ -299,13 +303,12 @@ def persist_new_edges(db_path: str, new_edges: list[Edge]) -> int:
     try:
         before = conn.total_changes
         conn.executemany(
-            "INSERT OR IGNORE INTO edges (source_id, target_id, direction) "
-            "VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO edges (source_id, target_id) "
+            "VALUES (?, ?)",
             [
                 (
                     e.source_id,
                     e.target_id,
-                    getattr(e, "direction", None) or "bidirectional",
                 )
                 for e in new_edges
             ],

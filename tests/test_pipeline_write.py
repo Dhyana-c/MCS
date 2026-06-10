@@ -363,7 +363,7 @@ def test_auto_persist_saves_edges(empty_graph, mock_llm):
 
     assert ctx.persisted is True
     rows = store.conn.execute("SELECT COUNT(*) FROM edges").fetchone()
-    assert rows[0] == 1
+    assert rows[0] == 2  # 语义边落两条对向单向边：new→anchor + anchor→new
 
 
 def test_auto_persist_storage_exception_handled(empty_graph, mock_llm):

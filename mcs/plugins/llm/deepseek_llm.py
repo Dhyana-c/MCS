@@ -33,7 +33,7 @@ class DeepSeekLLMPlugin(LLMInterface):
             "base_url", "https://api.deepseek.com"
         )
         self.timeout: float = float(self.config.get("timeout", 60.0))
-        self.max_tokens: int = int(self.config.get("max_tokens", 8192))
+        self.max_tokens: int = int(self.config.get("max_tokens", 32768))
         self.client: Any = None
 
     # === Plugin 基类方法 ===

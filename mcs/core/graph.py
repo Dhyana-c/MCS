@@ -27,14 +27,13 @@ class Node:
 
 @dataclass
 class Edge:
-    """无类型邻接边。
+    """有向边 ``source → target``。
 
-    方向来源于社区合并；初始值为"bidirectional"。
+    全图只有单向边；语义关系以两条对向单向边表达。
     """
 
     source_id: str
     target_id: str
-    direction: str = "bidirectional"  # "bidirectional" | "out"
 
 
 @dataclass

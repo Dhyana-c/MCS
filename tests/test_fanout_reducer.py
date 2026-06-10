@@ -82,7 +82,7 @@ def test_gate_estimate_matches_actual_render():
     for i in range(8):
         nb = Node(id=f"n{i}", name=f"n{i}", content=f"concept number {i} body text")
         g.add_node(nb)
-        g.add_edge("hub", f"n{i}", direction="out")
+        g.add_edge("hub", f"n{i}")
 
     renderer = ContextRenderer(None)  # 无插件扩展
     nbrs = g.get_neighbors("hub")
@@ -107,7 +107,7 @@ def test_gate_estimate_matches_actual_render():
 
 def test_run_synthetic_creates_hub_and_reorganizes():
     g, node = _graph_with_fanout(20, "a" * 400)  # node.id="hub"，20 邻居
-    p = _plugin(TokenBudget(500), floor=16)  # 小窗口 → 触发，batch 取若干
+    p = _plugin(TokenBudget(500), floor=16)  # 小窗口 → 触发
 
     before = len(g.get_neighbors("hub"))
     p.run([node], g, _summary_community("Cluster A"))
@@ -135,14 +135,11 @@ def test_run_skips_when_under_budget():
 def test_multi_hub_creates_multiple_hubs():
     """一进多出：一次归纳产出多个 hub。"""
 
-    # 使用小预算触发裂变，但 mock LLM 只返回 batch 中的 member_ids
     g, node = _graph_with_fanout(50, "a" * 400)
     p = _plugin(TokenBudget(500), floor=16)
 
     def llm(purpose, nodes_in, free_args):
-        # nodes_in[0] 是中心节点，nodes_in[1:] 是 batch 中的邻居
         batch_ids = [n.id for n in nodes_in[1:]]
-        # 只返回 batch 中存在的 member_ids
         return MultiHubDecision(
             communities=[
                 Community(theme="Group A", member_ids=batch_ids[:2], strategy="summarize", summary="Group A summary"),
@@ -166,9 +163,7 @@ def test_key_concept_strategy_promotes_existing_node():
     p = _plugin(TokenBudget(500), floor=16)
 
     def llm(purpose, nodes_in, free_args):
-        # nodes_in[0] 是中心节点，nodes_in[1:] 是 batch 中的邻居
         batch_ids = [n.id for n in nodes_in[1:]]
-        # 返回第一个邻居作为关键概念
         return MultiHubDecision(
             communities=[
                 Community(theme="Key", member_ids=batch_ids[:3], strategy="key_concept", key_concept_id=batch_ids[0] if batch_ids else None),
@@ -177,7 +172,6 @@ def test_key_concept_strategy_promotes_existing_node():
         )
 
     p.run([node], g, llm)
-    # 检查是否有节点被提拔为 hub
     hubs = [n for n in g.get_all_nodes() if n.role == "hub" and n.id != "hub"]
     assert len(hubs) >= 1
 
@@ -193,11 +187,10 @@ def test_unassigned_members_stay_with_parent():
             communities=[
                 Community(theme="A", member_ids=["n0", "n1"], strategy="summarize", summary="A"),
             ],
-            unassigned_ids=["n2", "n3"],  # n2, n3 未分类
+            unassigned_ids=["n2", "n3"],
         )
 
     p.run([node], g, llm)
-    # n2, n3 仍直连 node（未重挂到 hub）
     neighbors = g.get_neighbors("hub")
     assert "n2" in {n.id for n in neighbors} or "n3" in {n.id for n in neighbors}
 
@@ -209,11 +202,9 @@ def test_overlapping_clustering():
     p = _plugin(TokenBudget(500), floor=16)
 
     def llm(purpose, nodes_in, free_args):
-        # nodes_in[0] 是中心节点，nodes_in[1:] 是 batch 中的邻居
         batch_ids = [n.id for n in nodes_in[1:]]
         if len(batch_ids) < 3:
             return MultiHubDecision(communities=[], unassigned_ids=batch_ids)
-        # n0 同时属于两个社区
         return MultiHubDecision(
             communities=[
                 Community(theme="Technology", member_ids=[batch_ids[0], batch_ids[1]], strategy="summarize", summary="Technology and computing concepts"),
@@ -224,7 +215,6 @@ def test_overlapping_clustering():
 
     p.run([node], g, llm)
     new_hubs = [n for n in g.get_all_nodes() if n.role == "hub" and n.id != "hub"]
-    # 至少产出 hub（可能只有 1 个，因为 batch 可能太小）
     assert len(new_hubs) >= 1
 
 
@@ -232,7 +222,6 @@ def test_hub_reuse_edge_absorption():
     """hub 复用：节点 X 包含 hub H 的全部成员时，X 改连 H。"""
 
     g = GraphStore()
-    # 构建图：root 连 n0-n5，root 也连 hub
     root = Node(id="root", name="root", content="r" * 400)
     g.add_node(root)
     hub = Node(id="hub1", name="Hub1", content="Hub about tech", role="hub")
@@ -240,22 +229,18 @@ def test_hub_reuse_edge_absorption():
     for i in range(6):
         n = Node(id=f"n{i}", name=f"n{i}", content=f"concept {i}")
         g.add_node(n)
-        # root 和 hub 都直连 n0-n5
-        g.add_edge(root.id, n.id, direction="out")
-        g.add_edge(hub.id, n.id, direction="out")
-    g.add_edge(root.id, hub.id, direction="out")
+        g.add_edge(root.id, n.id)
+        g.add_edge(hub.id, n.id)
+    g.add_edge(root.id, hub.id)
 
     p = _plugin(TokenBudget(500), floor=2)
-    # 运行边吸收
     p._absorb_hub_edges(g)
 
-    # root 不应再直连 hub 的成员，而是通过 hub 间接连接
-    root_out_neighbors = g.get_out_neighbors(root.id)
-    root_out_ids = {n.id for n in root_out_neighbors}
-    assert "hub1" in root_out_ids  # root 连到 hub
-    # root 不再直连 hub 的成员（被吸收了）
+    root_neighbors = g.get_neighbors(root.id)
+    root_ids = {n.id for n in root_neighbors}
+    assert "hub1" in root_ids
     for i in range(6):
-        assert f"n{i}" not in root_out_ids
+        assert f"n{i}" not in root_ids
 
 
 def test_partial_contain_no_absorption():
@@ -266,29 +251,25 @@ def test_partial_contain_no_absorption():
     g.add_node(root)
     hub = Node(id="hub1", name="Hub1", content="Hub about tech", role="hub")
     g.add_node(hub)
-    # hub 只包含 n0-n2
     for i in range(3):
         n = Node(id=f"n{i}", name=f"n{i}", content=f"concept {i}")
         g.add_node(n)
-        g.add_edge(hub.id, n.id, direction="out")
-    # root 直连 n0-n5（包含 n0-n2 + 更多）
+        g.add_edge(hub.id, n.id)
     for i in range(6):
         n = g.get_node(f"n{i}")
         if n is None:
             n = Node(id=f"n{i}", name=f"n{i}", content=f"concept {i}")
             g.add_node(n)
-        g.add_edge(root.id, n.id, direction="out")
-    g.add_edge(root.id, hub.id, direction="out")
+        g.add_edge(root.id, n.id)
+    g.add_edge(root.id, hub.id)
 
     p = _plugin(TokenBudget(500), floor=2)
     p._absorb_hub_edges(g)
 
-    # root 仍直连 n3-n5（因为 n3-n5 不是 hub 的成员）
-    root_out_neighbors = g.get_out_neighbors(root.id)
-    root_out_ids = {n.id for n in root_out_neighbors}
-    assert "n3" in root_out_ids
-    assert "n4" in root_out_ids
-    assert "n5" in root_out_ids
+    root_ids = {n.id for n in g.get_neighbors(root.id)}
+    assert "n3" in root_ids
+    assert "n4" in root_ids
+    assert "n5" in root_ids
 
 
 def test_absorb_skips_single_member_hub_no_net_reduction():
@@ -297,15 +278,14 @@ def test_absorb_skips_single_member_hub_no_net_reduction():
     g.add_node(Node(id="root", name="root", content="r"))
     g.add_node(Node(id="hub1", name="Hub1", content="hub", role="hub"))
     g.add_node(Node(id="m0", name="m0", content="m0"))
-    g.add_edge("hub1", "m0", direction="out")   # hub 仅 1 个成员
-    g.add_edge("root", "m0", direction="out")   # root 直连 m0
-    g.add_edge("root", "hub1", direction="out")
+    g.add_edge("hub1", "m0")
+    g.add_edge("root", "m0")
+    g.add_edge("root", "hub1")
 
     p = _plugin(TokenBudget(500), floor=2)
     p._absorb_hub_edges(g)
 
-    # 未吸收：root 仍直连 m0
-    assert "m0" in {n.id for n in g.get_out_neighbors("root")}
+    assert "m0" in {n.id for n in g.get_neighbors("root")}
 
 
 def test_rollback_restores_inplace_field_mutations():
@@ -313,7 +293,7 @@ def test_rollback_restores_inplace_field_mutations():
     g = GraphStore()
     g.add_node(Node(id="a", name="A", content="original A", role="concept"))
     g.add_node(Node(id="b", name="B", content="original B", role="concept"))
-    g.add_edge("a", "b", direction="out")
+    g.add_edge("a", "b")
 
     p = _plugin(TokenBudget(500), floor=2)
     state = {
@@ -323,13 +303,12 @@ def test_rollback_restores_inplace_field_mutations():
         },
         "edges": list(g.get_all_edges()),
     }
-    # 原地改动：提拔 role + 改 content + 删节点
     g.update_node("a", {"role": "hub", "content": "MUTATED"})
     g.delete_node("b")
 
     p._rollback_reorg(g, state)
 
-    assert g.get_node("a").role == "concept"        # role 还原
-    assert g.get_node("a").content == "original A"   # content 还原
-    assert g.get_node("b") is not None              # 被删节点恢复
+    assert g.get_node("a").role == "concept"
+    assert g.get_node("a").content == "original A"
+    assert g.get_node("b") is not None
     assert g.get_node("b").content == "original B"

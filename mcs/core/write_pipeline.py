@@ -288,11 +288,13 @@ class WritePipeline:
                 raise UnknownActionError(action)
 
         # 第二遍：篇内关系边（add_edge 自带去重 / 防自环 / 端点存在校验）
+        # 语义边落两条对向单向边（a→b + b→a）
         for source_id, names in pending_named_edges:
             for nm in names:
                 target_id = name_to_id.get(nm)
                 if target_id:
                     self.store.add_edge(source_id, target_id)
+                    self.store.add_edge(target_id, source_id)
         return changed
 
     def _dispatch_merge(self, decision: Decision) -> None:
@@ -337,6 +339,7 @@ class WritePipeline:
         self.store.add_node(node)
         for anchor_id in decision.edges_to or []:
             self.store.add_edge(node.id, anchor_id)
+            self.store.add_edge(anchor_id, node.id)
         # 初始陈述成为新节点上的附加陈述
         if decision.initial_statements:
             # 第一阶段将陈述保留在 extensions 中；第二阶段将其包装为属性节点

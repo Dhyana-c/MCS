@@ -12,16 +12,15 @@ GraphStore = InMemoryStore
 
 
 def _hub_graph() -> GraphStore:
-    """根枢纽 h → {c1, c2}（c1 再挂一个 g1）。使用有向下行边构建层级。"""
+    """根枢纽 h → {c1, c2}（c1 再挂一个 g1）。使用单向下行边构建层级。"""
     g = GraphStore()
     g.add_node(Node(id="h", name="根枢纽", content="顶层", role="hub"))
     g.add_node(Node(id="c1", name="子概念1", content="..."))
     g.add_node(Node(id="c2", name="子概念2", content="..."))
     g.add_node(Node(id="g1", name="孙概念1", content="..."))
-    # 层级边使用 out 方向
-    g.add_edge("h", "c1", direction="out")
-    g.add_edge("h", "c2", direction="out")
-    g.add_edge("c1", "g1", direction="out")
+    g.add_edge("h", "c1")
+    g.add_edge("h", "c2")
+    g.add_edge("c1", "g1")
     return g
 
 
@@ -45,7 +44,6 @@ def test_navigate_hub_called_and_drills(mock_llm):
     g = _hub_graph()
     plugin = HubFallbackEntryPlugin()
     _init(plugin, g, mock_llm)
-    # 第一层 frontier=[h] 选 c1；第二层 frontier=[c1] 选 g1。用首个节点 id 路由。
     routes = {"h": ["c1"], "c1": ["g1"]}
 
     def _route(nodes_in, _free_args):
@@ -58,7 +56,7 @@ def test_navigate_hub_called_and_drills(mock_llm):
     purposes = [c["purpose"] for c in mock_llm.call_log]
     assert "navigate_hub" in purposes
     seed_ids = {n.id for n in seeds}
-    assert "g1" in seed_ids  # 成功下钻两层
+    assert "g1" in seed_ids
 
 
 def test_no_hubs_returns_empty(mock_llm):
@@ -99,10 +97,9 @@ def test_navigates_from_persistent_root(mock_llm):
     g.add_node(Node(id="t1", name="顶层1", content="..."))
     g.add_node(Node(id="t2", name="顶层2", content="..."))
     g.add_node(Node(id="leaf", name="叶", content="..."))
-    # 层级边使用 out 方向
-    g.add_edge(SEED_ROOT_ID, "t1", direction="out")
-    g.add_edge(SEED_ROOT_ID, "t2", direction="out")
-    g.add_edge("t1", "leaf", direction="out")
+    g.add_edge(SEED_ROOT_ID, "t1")
+    g.add_edge(SEED_ROOT_ID, "t2")
+    g.add_edge("t1", "leaf")
     plugin = HubFallbackEntryPlugin()
     _init(plugin, g, mock_llm)
     routes = {SEED_ROOT_ID: ["t1"], "t1": ["leaf"]}
@@ -115,8 +112,8 @@ def test_navigates_from_persistent_root(mock_llm):
     seeds = plugin.locate("找叶", None)
 
     seed_ids = {n.id for n in seeds}
-    assert SEED_ROOT_ID not in seed_ids  # 绝不返回合成根
-    assert "leaf" in seed_ids            # 从根下钻到叶
+    assert SEED_ROOT_ID not in seed_ids
+    assert "leaf" in seed_ids
 
 
 def test_root_present_no_llm_returns_children(mock_llm):
@@ -127,11 +124,9 @@ def test_root_present_no_llm_returns_children(mock_llm):
     g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub"))
     g.add_node(Node(id="t1", name="顶层1", content="..."))
     g.add_node(Node(id="t2", name="顶层2", content="..."))
-    # 层级边使用 out 方向
-    g.add_edge(SEED_ROOT_ID, "t1", direction="out")
-    g.add_edge(SEED_ROOT_ID, "t2", direction="out")
+    g.add_edge(SEED_ROOT_ID, "t1")
+    g.add_edge(SEED_ROOT_ID, "t2")
     plugin = HubFallbackEntryPlugin({"use_llm_navigation": False})
     _init(plugin, g, mock_llm)
     seeds = plugin.locate("q", None)
-    # 根的 out 邻居是 t1, t2
     assert {n.id for n in seeds} == {"t1", "t2"}

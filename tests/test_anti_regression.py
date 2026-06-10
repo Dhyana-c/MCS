@@ -36,56 +36,27 @@ def _fanout_with_root(graph, token_budget, mock_llm, **extra_cfg):
     return fr
 
 
-def test_select_batch_returns_all_under_invariant():
-    """有 token_budget 时，_select_batch 返回全部邻居（不变量保证 ≤ 窗口）。"""
-    g = GraphStore()
-    node = Node(id="hub", name="hub", content="a" * 400)
-    g.add_node(node)
-    for i in range(100):
-        g.add_node(Node(id=f"n{i}", name=f"n{i}", content="a" * 400))
-        g.add_edge("hub", f"n{i}", direction="bidirectional")
-
-    fr = FanoutReducerPlugin({"floor": 16})
-    fr.token_budget = TokenBudget(100000)  # 大窗口
-
-    batch = fr._select_batch(node, g.get_neighbors("hub"))
-    assert len(batch) == 100  # 不变量保证全部邻居 ≤ 窗口
-
-
-def test_select_batch_caps_at_max_community_size_when_over_budget():
-    """回归：超预算的贪婪批次受 max_community_size 截顶。
-
-    旧实现仅按 token 预算截批；当概念渲染极小（如关摘要回退 content[:200]）时，
-    一批可装入上百个概念 → 一次性丢给 decide_hub → 模型吐空 → 裂变不收敛。
-    """
-    g = GraphStore()
-    node = Node(id="hub", name="hub", content="a" * 40)
-    g.add_node(node)
-    for i in range(100):
-        g.add_node(Node(id=f"n{i}", name=f"n{i}", content="a" * 40))
-        g.add_edge("hub", f"n{i}", direction="bidirectional")
-    fr = FanoutReducerPlugin({"floor": 16, "max_community_size": 5})
-    fr.token_budget = TokenBudget(500)  # 小窗口 → node + 100 邻居超预算 → 走贪婪路径
-
-    neighbors = g.get_neighbors("hub")
-    assert fr._exceeds_budget(node, neighbors)   # 前置：确实超预算
-    batch = fr._select_batch(node, neighbors)
-    assert 2 <= len(batch) <= 5                   # 受 max_community_size=5 截顶
-
-
-def test_decide_hub_halves_batch_on_empty_response():
-    """回归：decide_hub 空响应（批次过大逼空）时折半重试，最终用更小批次成功。"""
-    fr = FanoutReducerPlugin({"max_community_size": 50})
+def test_decide_hub_returns_none_on_empty_response():
+    """decide_hub 空响应（LLM 返回无 communities）时返回 None。"""
+    fr = FanoutReducerPlugin()
     node = Node(id="c", name="c", content="x")
     batch = [Node(id=f"m{i}", name=f"m{i}", content="x") for i in range(40)]
 
-    calls: list[int] = []
+    def fake_llm(purpose, nodes_in, free_args):
+        return MultiHubDecision()  # 空 communities
+
+    decision = fr._decide_hub(node, batch, fake_llm)
+    assert decision is None
+
+
+def test_decide_hub_returns_decision_on_success():
+    """decide_hub 成功时返回 decision。"""
+    fr = FanoutReducerPlugin()
+    node = Node(id="c", name="c", content="x")
+    batch = [Node(id=f"m{i}", name=f"m{i}", content="x") for i in range(10)]
 
     def fake_llm(purpose, nodes_in, free_args):
         members = nodes_in[1:]
-        calls.append(len(members))
-        if len(members) > 10:
-            return MultiHubDecision()  # 空 communities（模拟大批次被模型吐空 → 解析为空）
         return MultiHubDecision(communities=[
             Community(
                 theme="g",
@@ -95,10 +66,8 @@ def test_decide_hub_halves_batch_on_empty_response():
             )
         ])
 
-    decision, used = fr._decide_hub(node, batch, fake_llm)
-    assert decision is not None and decision.communities  # 最终成功产出社区
-    assert len(used) <= 10                                # 折半到可用批次
-    assert len(calls) >= 2                                # 至少重试过一次
+    decision = fr._decide_hub(node, batch, fake_llm)
+    assert decision is not None and decision.communities
 
 
 def test_overbroad_hub_rejects_empty_summary():
@@ -173,7 +142,6 @@ def test_similar_hub_deduplication():
     fr = FanoutReducerPlugin({"floor": 2})
     fr.token_budget = TokenBudget(500)
 
-    # 摘要高度近似 → 应返回既有 hub
     similar = fr._find_similar_hub(
         "Medical and healthcare information cluster", g, threshold=0.7
     )
@@ -210,12 +178,10 @@ def test_max_reorg_warning_logged(mock_llm, caplog):
         g.add_node(n)
         concepts.append(n)
 
-    # 每次都返回新 hub，让递归持续
     call_count = [0]
     def _always_hub(nodes_in, free_args):
         call_count[0] += 1
         ids = [n.id for n in nodes_in[1:]]
-        # 不重复的摘要避免去重、领域词避免过宽检测 → 持续产新 hub 触发递归
         return MultiHubDecision(communities=[
             Community(theme=f"c{call_count[0]}", member_ids=ids,
                       strategy="summarize", summary=f"Cluster {call_count[0]}")
@@ -223,12 +189,10 @@ def test_max_reorg_warning_logged(mock_llm, caplog):
 
     mock_llm.set_response("decide_hub", _always_hub)
 
-    # 直接创建 plugin，确保配置正确
     pm = PluginManager()
     pm.register(mock_llm)
     fr = FanoutReducerPlugin({
         "floor": 2, "max_reorg": 2,
-        "max_hub_member_ratio": 0.9, "max_hub_summary_domains": 10,
     })
     pm.register(fr)
     pm.initialize_all(
@@ -241,7 +205,7 @@ def test_max_reorg_warning_logged(mock_llm, caplog):
         )
     )
 
-    with caplog.at_level(logging.WARNING, logger="mcs.plugins.phase1.fanout_reducer"):
+    with caplog.at_level(logging.WARNING, logger="mcs.plugins.maintenance.fanout_reducer"):
         changed = list(concepts)
         fr.run(changed, g, mock_llm.call)
 

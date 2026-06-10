@@ -98,8 +98,8 @@ def test_flush_changes_persists_seed_root_incrementally(tmp_path):
     store.add_node(Node(id="__seed_root__", name="__seed_root__", content="", role="hub"))
     store.add_node(Node(id="c1", name="C1", content="概念一"))
     store.add_node(Node(id="c2", name="C2", content="概念二"))
-    store.add_edge("__seed_root__", "c1", direction="out")
-    store.add_edge("__seed_root__", "c2", direction="out")
+    store.add_edge("__seed_root__", "c1")
+    store.add_edge("__seed_root__", "c2")
     store.flush_changes()  # 增量落盘——注意未调用 save_full
     store.shutdown()
 
@@ -119,12 +119,12 @@ def test_flush_changes_reflects_edge_deletion_incrementally(tmp_path):
     store.initialize()
     for nid in ("__seed_root__", "c1", "hub1"):
         store.add_node(Node(id=nid, name=nid, content=""))
-    store.add_edge("__seed_root__", "c1", direction="out")
+    store.add_edge("__seed_root__", "c1")
     store.flush_changes()
     # 重挂：删 root→c1，新增 root→hub1 与 hub1→c1
     store.delete_edge("__seed_root__", "c1")
-    store.add_edge("__seed_root__", "hub1", direction="out")
-    store.add_edge("hub1", "c1", direction="out")
+    store.add_edge("__seed_root__", "hub1")
+    store.add_edge("hub1", "c1")
     store.flush_changes()
     store.shutdown()
 
@@ -143,7 +143,7 @@ def test_flush_changes_reflects_node_deletion_incrementally(tmp_path):
     store.initialize()
     store.add_node(Node(id="a", name="A", content=""))
     store.add_node(Node(id="b", name="B", content=""))
-    store.add_edge("a", "b", direction="out")
+    store.add_edge("a", "b")
     store.flush_changes()
     store.delete_node("b")  # 级联删 a→b 边
     store.flush_changes()

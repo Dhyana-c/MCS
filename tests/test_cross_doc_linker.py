@@ -82,7 +82,7 @@ def test_pass_applies_and_is_idempotent():
 
     applied, new_edges = cross_doc_link_pass(g)
     assert applied == 1
-    assert len(new_edges) == 1
+    assert len(new_edges) == 2  # 语义边落两条对向单向边：a→b + b→a
     assert g.get_edge("a", "b") is not None
 
     applied2, new_edges2 = cross_doc_link_pass(g)
@@ -126,14 +126,14 @@ def test_persist_round_trip_in_place(tmp_path):
 
     result = cross_doc_link_pass_from_db(str(db))
     assert result["links_applied"] == 1
-    assert result["edges_persisted"] == 1
+    assert result["edges_persisted"] == 2  # 语义边落两条对向单向边
     assert result["baseline"]["cross_doc_edge_count"] == 0
-    assert result["after"]["cross_doc_edge_count"] == 1
+    assert result["after"]["cross_doc_edge_count"] == 2  # 两条单向边都算跨文档边
 
     # Reload from disk and confirm the edge survived the round-trip.
     reloaded = load_graph_from_db(str(db))
     assert reloaded.get_edge("a", "b") is not None
-    assert diagnose_graph(reloaded).cross_doc_edge_count == 1
+    assert diagnose_graph(reloaded).cross_doc_edge_count == 2  # 两条单向边
 
 
 def test_output_copy_leaves_input_untouched(tmp_path):
@@ -144,7 +144,7 @@ def test_output_copy_leaves_input_untouched(tmp_path):
 
     result = cross_doc_link_pass_from_db(str(src), output_db_path=str(out))
     assert result["target_db_path"] == str(out)
-    assert result["edges_persisted"] == 1
+    assert result["edges_persisted"] == 2  # 语义边落两条对向单向边
 
     # Input untouched; output has the new edge.
     assert diagnose_graph(load_graph_from_db(str(src))).cross_doc_edge_count == 0

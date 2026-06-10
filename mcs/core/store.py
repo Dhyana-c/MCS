@@ -49,13 +49,8 @@ class StoreInterface(ABC):
     # === 边 CRUD ===
 
     @abstractmethod
-    def add_edge(
-        self,
-        source_id: str,
-        target_id: str,
-        direction: str = "bidirectional",
-    ) -> None:
-        """添加边。direction 为 'bidirectional' 或 'out'。"""
+    def add_edge(self, source_id: str, target_id: str) -> None:
+        """添加有向边 ``source → target``。所有边一律单向。"""
         ...
 
     @abstractmethod
@@ -72,12 +67,12 @@ class StoreInterface(ABC):
 
     @abstractmethod
     def get_neighbors(self, node_id: str) -> list[Node]:
-        """获取全部邻居（bidirectional 两端 + out 边 source 端的 target）。"""
+        """获取出邻居：该节点为源的全部有向边目标。"""
         ...
 
     @abstractmethod
     def get_out_neighbors(self, node_id: str) -> list[Node]:
-        """获取 out 邻居：仅 direction=out 的边目标。"""
+        """获取出邻居。与 ``get_neighbors`` 同义，保留以减小迁移面。"""
         ...
 
     @abstractmethod

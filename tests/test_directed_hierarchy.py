@@ -1,10 +1,11 @@
-"""层级边有向化测试：_reorganize 有向拓扑、_maintain_seed_root 有向下行、方向落库保真。
+"""单向边层级拓扑测试：_reorganize 纯下行、_maintain_seed_root 单向、落库保真。
 
-覆盖 seed-graph-directional-hierarchy 任务 2.2 / 2.4。
+覆盖单向边模型下的层级重组、导航邻居、根维护、持久化、语义边保留。
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
 
 from mcs.core.config import MCSConfig
@@ -44,13 +45,10 @@ def _fanout_with_root(graph, token_budget, mock_llm):
     return fr
 
 
-def test_reorganize_produces_directed_topology():
-    """对 a↔b, a↔c 基于 {b,c} 提 hub d ⇒ a→d, d→b, d→c, b→a, c→a。
+def test_reorganize_produces_pure_downstream_topology():
+    """_reorganize(a, d, [b,c], g) 纯下行：删 a→b, a→c；建 a→d, d→b, d→c。
 
-    验证：
-    - 下行边 a→d, d→b, d→c 均为 direction="out"
-    - 上行边 b→a, c→a 均为 direction="out"
-    - 不存在双向的 a↔b 或 a↔c
+    无上行边：b→a 和 c→a 不存在。
     """
     g = GraphStore()
     a = Node(id="a", name="A", content="x" * 400)
@@ -59,8 +57,8 @@ def test_reorganize_produces_directed_topology():
     d = Node(id="d", name="Hub D", content="cluster", role="hub")
     for n in [a, b, c, d]:
         g.add_node(n)
-    g.add_edge("a", "b", direction="bidirectional")
-    g.add_edge("a", "c", direction="bidirectional")
+    g.add_edge("a", "b")
+    g.add_edge("a", "c")
 
     fr = FanoutReducerPlugin({"floor": 2})
     fr.token_budget = TokenBudget(500)
@@ -69,38 +67,32 @@ def test_reorganize_produces_directed_topology():
     # 下行边 a→d
     edge_ad = g.get_edge("a", "d")
     assert edge_ad is not None
-    assert edge_ad.direction == "out"
     assert edge_ad.source_id == "a"
     assert edge_ad.target_id == "d"
 
-    # 下行边 d→b, d→c
+    # 下行边 d→b
     edge_db = g.get_edge("d", "b")
     assert edge_db is not None
-    assert edge_db.direction == "out"
     assert edge_db.source_id == "d"
+    assert edge_db.target_id == "b"
 
+    # 下行边 d→c
     edge_dc = g.get_edge("d", "c")
     assert edge_dc is not None
-    assert edge_dc.direction == "out"
     assert edge_dc.source_id == "d"
+    assert edge_dc.target_id == "c"
 
-    # 上行边 b→a, c→a
-    edge_ba = g.get_edge("b", "a")
-    assert edge_ba is not None
-    assert edge_ba.direction == "out"
-    assert edge_ba.source_id == "b"
+    # 原始直连边 a→b, a→c 已删除
+    assert g.get_edge("a", "b") is None
+    assert g.get_edge("a", "c") is None
 
-    edge_ca = g.get_edge("c", "a")
-    assert edge_ca is not None
-    assert edge_ca.direction == "out"
-    assert edge_ca.source_id == "c"
-
-    # 不存在双向的 a↔b 或 a↔c
-    assert g.get_edge("a", "b") is None or g.get_edge("a", "b").direction != "bidirectional"
+    # 无上行边 b→a, c→a
+    assert g.get_edge("b", "a") is None
+    assert g.get_edge("c", "a") is None
 
 
-def test_reorganize_out_neighbors_for_navigation():
-    """有向拓扑下，a 的 out 邻居只有 d（不含 b/c），d 的 out 邻居有 b 和 c。"""
+def test_reorganize_out_neighbors():
+    """重组后导航邻居：a 的邻居只有 d，d 的邻居有 b/c，b 的邻居为空（无上行）。"""
     g = GraphStore()
     a = Node(id="a", name="A", content="x" * 400)
     b = Node(id="b", name="B", content="x" * 400)
@@ -108,23 +100,25 @@ def test_reorganize_out_neighbors_for_navigation():
     d = Node(id="d", name="Hub D", content="cluster", role="hub")
     for n in [a, b, c, d]:
         g.add_node(n)
-    g.add_edge("a", "b", direction="bidirectional")
-    g.add_edge("a", "c", direction="bidirectional")
+    g.add_edge("a", "b")
+    g.add_edge("a", "c")
 
     fr = FanoutReducerPlugin({"floor": 2})
     fr.token_budget = TokenBudget(500)
     fr._reorganize(a, d, [b, c], g)
 
-    # a 的 out 邻居：只有 d
-    assert {n.id for n in g.get_out_neighbors("a")} == {"d"}
-    # d 的 out 邻居：b 和 c
-    assert {n.id for n in g.get_out_neighbors("d")} == {"b", "c"}
-    # b 的 out 邻居：只有 a（上行回指）
-    assert {n.id for n in g.get_out_neighbors("b")} == {"a"}
+    # a 的邻居：只有 d
+    assert {n.id for n in g.get_neighbors("a")} == {"d"}
+    # d 的邻居：b 和 c
+    assert {n.id for n in g.get_neighbors("d")} == {"b", "c"}
+    # b 的邻居：空（无上行回指）
+    assert {n.id for n in g.get_neighbors("b")} == set()
+    # c 的邻居：空（无上行回指）
+    assert {n.id for n in g.get_neighbors("c")} == set()
 
 
-def test_maintain_seed_root_uses_out_edges(mock_llm):
-    """_maintain_seed_root 把新概念挂根用有向下行 root→concept（out）。"""
+def test_maintain_seed_root_uses_unidirectional_edges(mock_llm):
+    """root→concept 边是单向的：get_neighbors(root) 含概念，get_neighbors(concept) 不含 root。"""
     g = GraphStore()
     concepts = []
     for i in range(20):
@@ -140,16 +134,27 @@ def test_maintain_seed_root_uses_out_edges(mock_llm):
     root = g.get_node(SEED_ROOT_ID)
     assert root is not None
 
-    # 根到直接子节点的边应为 out 方向
+    # get_neighbors(root) 应包含概念节点
+    root_neighbors = {n.id for n in g.get_neighbors(SEED_ROOT_ID)}
+    assert len(root_neighbors) > 0
+
+    # 反方向：get_neighbors(任意概念) 不含 root（单向 root→concept）
+    for concept in concepts:
+        concept_neighbors = {n.id for n in g.get_neighbors(concept.id)}
+        assert SEED_ROOT_ID not in concept_neighbors, (
+            f"概念 {concept.id} 的邻居不应包含 root，但发现 {concept_neighbors}"
+        )
+
+    # root→concept 边的 source_id == root，target_id == concept
     for edge in g.get_all_edges():
         if edge.source_id == SEED_ROOT_ID:
-            assert edge.direction == "out", (
-                f"root→{edge.target_id} should be out, got {edge.direction}"
-            )
+            assert edge.target_id != SEED_ROOT_ID
+            # Edge 不再有 direction 字段
+            assert not hasattr(edge, "direction") or getattr(edge, "direction", None) is None
 
 
-def test_directed_hierarchy_persisted_via_save_full(mock_llm):
-    """有向层级产物经 save_full 落库后方向保真。"""
+def test_hierarchy_persisted_via_save_full(mock_llm):
+    """单向层级产物经 save_full 落库后边保真（source_id / target_id 正确）。"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
@@ -168,30 +173,37 @@ def test_directed_hierarchy_persisted_via_save_full(mock_llm):
     # 保存
     storage.save_full()
 
-    # 加载并验证方向
+    # 加载并验证单向边
     loaded = SQLiteStore({"path": db_path})
     loaded.initialize()
     loaded.load()
-    for edge in loaded.get_all_edges():
-        if edge.source_id == SEED_ROOT_ID:
-            assert edge.direction == "out"
 
-    # 验证 out 邻居视图在加载后仍正确
+    # 加载后 root 存在
     root = loaded.get_node(SEED_ROOT_ID)
     assert root is not None
-    out_nb = {n.id for n in loaded.get_out_neighbors(SEED_ROOT_ID)}
-    all_nb = {n.id for n in loaded.get_neighbors(SEED_ROOT_ID)}
-    # out 邻居是全部邻居的子集
-    assert out_nb.issubset(all_nb)
+
+    # 验证 root→concept 边保真
+    for edge in loaded.get_all_edges():
+        if edge.source_id == SEED_ROOT_ID:
+            # Edge 只有 source_id / target_id，无 direction
+            assert edge.target_id is not None
+
+    # 验证 get_neighbors 加载后仍正确（单向：root→concept 成立，concept→root 不成立）
+    root_neighbors = {n.id for n in loaded.get_neighbors(SEED_ROOT_ID)}
+    assert len(root_neighbors) > 0
+    for cid in [f"c{i}" for i in range(20)]:
+        node = loaded.get_node(cid)
+        if node is not None:
+            concept_neighbors = {n.id for n in loaded.get_neighbors(cid)}
+            assert SEED_ROOT_ID not in concept_neighbors
 
     storage.shutdown()
     loaded.shutdown()
-    import os
     os.unlink(db_path)
 
 
-def test_semantic_edges_remain_bidirectional_after_reorganize():
-    """_reorganize 不影响语义边（bidirectional）。"""
+def test_semantic_edges_unaffected_by_reorganize():
+    """_reorganize 不影响未涉及的边（不在 members 中的边原样保留）。"""
     g = GraphStore()
     a = Node(id="a", name="A", content="x" * 400)
     b = Node(id="b", name="B", content="x" * 400)
@@ -200,15 +212,23 @@ def test_semantic_edges_remain_bidirectional_after_reorganize():
     d = Node(id="d", name="Hub D", content="cluster", role="hub")
     for n in [a, b, c, x, d]:
         g.add_node(n)
-    g.add_edge("a", "b", direction="bidirectional")
-    g.add_edge("a", "c", direction="bidirectional")
-    g.add_edge("a", "x", direction="bidirectional")  # 语义边，不在 members 中
+    g.add_edge("a", "b")
+    g.add_edge("a", "c")
+    g.add_edge("a", "x")  # 语义边，不在 members 中
 
     fr = FanoutReducerPlugin({"floor": 2})
     fr.token_budget = TokenBudget(500)
     fr._reorganize(a, d, [b, c], g)
 
-    # a↔x 语义边仍为 bidirectional
+    # a→x 边原样保留
     edge_ax = g.get_edge("a", "x")
     assert edge_ax is not None
-    assert edge_ax.direction == "bidirectional"
+    assert edge_ax.source_id == "a"
+    assert edge_ax.target_id == "x"
+
+    # 确认被重组的边已正确变更
+    assert g.get_edge("a", "d") is not None
+    assert g.get_edge("d", "b") is not None
+    assert g.get_edge("d", "c") is not None
+    assert g.get_edge("a", "b") is None
+    assert g.get_edge("a", "c") is None

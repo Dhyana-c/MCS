@@ -40,14 +40,14 @@ class SQLiteStore(StoreInterface):
         self._node_extensions: dict[str, Any] = {}
         # 内存图数据（与 InMemoryStore 同结构）
         self._nodes: dict[str, Node] = {}
-        self._edges: dict[tuple[str, str, str], Edge] = {}
+        self._edges: dict[tuple[str, str], Edge] = {}
         self._adjacency: dict[str, set[str]] = {}
         # 增量持久化的变更跟踪：自上次 flush/save 以来需 upsert / DELETE 的节点与边。
-        # 边以 (source_id, target_id, direction) 数据库坐标记录（与 _save_edge 写入一致）。
+        # 边以 (source_id, target_id) 数据库坐标记录（与 _save_edge 写入一致）。
         self._dirty_nodes: set[str] = set()
         self._deleted_nodes: set[str] = set()
-        self._dirty_edges: set[tuple[str, str, str]] = set()
-        self._deleted_edges: set[tuple[str, str, str]] = set()
+        self._dirty_edges: set[tuple[str, str]] = set()
+        self._deleted_edges: set[tuple[str, str]] = set()
 
     # === 初始化 ===
 
@@ -101,54 +101,48 @@ class SQLiteStore(StoreInterface):
     def delete_node(self, node_id: str) -> None:
         if node_id not in self._nodes:
             return
-        for other in list(self._adjacency.get(node_id, set())):
-            self.delete_edge(node_id, other)
+        # 删除以该节点为 source 的出边
+        for target_id in list(self._adjacency.get(node_id, set())):
+            edge_key = self._edge_key(node_id, target_id)
+            edge = self._edges.pop(edge_key, None)
+            if edge is not None:
+                self._track_edge_deleted(edge)
+        # 删除以该节点为 target 的入边
+        for other_id in list(self._adjacency):
+            if node_id in self._adjacency[other_id]:
+                edge_key = self._edge_key(other_id, node_id)
+                edge = self._edges.pop(edge_key, None)
+                if edge is not None:
+                    self._track_edge_deleted(edge)
+                self._adjacency[other_id].discard(node_id)
         self._adjacency.pop(node_id, None)
         self._nodes.pop(node_id, None)
         self._track_node_deleted(node_id)
 
     # === 边 CRUD ===
 
-    def add_edge(
-        self,
-        source_id: str,
-        target_id: str,
-        direction: str = "bidirectional",
-    ) -> None:
+    def add_edge(self, source_id: str, target_id: str) -> None:
         if source_id == target_id:
             return
         if source_id not in self._nodes or target_id not in self._nodes:
             return
-        key = self._edge_key(source_id, target_id, direction)
+        key = self._edge_key(source_id, target_id)
         if key in self._edges:
             return
         from mcs.core.graph import Edge
 
-        self._edges[key] = Edge(
-            source_id=source_id, target_id=target_id, direction=direction
-        )
+        self._edges[key] = Edge(source_id=source_id, target_id=target_id)
         self._adjacency.setdefault(source_id, set()).add(target_id)
-        if direction == "bidirectional":
-            self._adjacency.setdefault(target_id, set()).add(source_id)
         self._track_edge_dirty(self._edges[key])
 
     def get_edge(self, source_id: str, target_id: str) -> Edge | None:
-        for direction in ("bidirectional", "out"):
-            key = self._edge_key(source_id, target_id, direction)
-            edge = self._edges.get(key)
-            if edge is not None:
-                return edge
-        return None
+        return self._edges.get(self._edge_key(source_id, target_id))
 
     def delete_edge(self, source_id: str, target_id: str) -> None:
-        for direction in ("bidirectional", "out"):
-            key = self._edge_key(source_id, target_id, direction)
-            edge = self._edges.pop(key, None)
-            if edge is not None:
-                self._track_edge_deleted(edge)
-        if self.get_edge(source_id, target_id) is None:
-            self._adjacency.get(source_id, set()).discard(target_id)
-            self._adjacency.get(target_id, set()).discard(source_id)
+        edge = self._edges.pop(self._edge_key(source_id, target_id), None)
+        if edge is not None:
+            self._track_edge_deleted(edge)
+        self._adjacency.get(source_id, set()).discard(target_id)
 
     # === 查询 ===
 
@@ -157,13 +151,7 @@ class SQLiteStore(StoreInterface):
         return [self._nodes[i] for i in ids if i in self._nodes]
 
     def get_out_neighbors(self, node_id: str) -> list[Node]:
-        result: list[Node] = []
-        for edge in self._edges.values():
-            if edge.source_id == node_id and edge.direction == "out":
-                target = self._nodes.get(edge.target_id)
-                if target is not None:
-                    result.append(target)
-        return result
+        return self.get_neighbors(node_id)
 
     def get_subgraph(
         self, node_id: str, token_budget: TokenBudget | None = None
@@ -254,11 +242,9 @@ class SQLiteStore(StoreInterface):
                 Node(id=row[0], name=row[1], content=row[2] or "", role=row[3], extensions=ext)
             )
         for row in self.conn.execute(
-            "SELECT source_id, target_id, direction FROM edges"
+            "SELECT source_id, target_id FROM edges"
         ):
-            # add_edge 已按 direction 如实建边（含同对节点 out + bidirectional 共存）；
-            # 旧数据 direction 为 NULL 时回退 bidirectional（与 schema 默认一致）。
-            self.add_edge(row[0], row[1], direction=row[2] or "bidirectional")
+            self.add_edge(row[0], row[1])
         # 加载后内存与 db 一致：清空 add_node/add_edge 期间累积的跟踪，避免首次 flush 冗余重写
         self._clear_change_tracking()
 
@@ -286,10 +272,10 @@ class SQLiteStore(StoreInterface):
         """
         if self.conn is None:
             return
-        for src, tgt, direction in self._deleted_edges:
+        for src, tgt in self._deleted_edges:
             self.conn.execute(
-                "DELETE FROM edges WHERE source_id=? AND target_id=? AND direction=?",
-                (src, tgt, direction),
+                "DELETE FROM edges WHERE source_id=? AND target_id=?",
+                (src, tgt),
             )
         for nid in self._deleted_nodes:
             self.conn.execute("DELETE FROM nodes WHERE id=?", (nid,))
@@ -298,11 +284,9 @@ class SQLiteStore(StoreInterface):
             if node is not None:
                 self._save_node(node)
         for coord in self._dirty_edges:
-            edge = self._edges.get(self._edge_key(*coord))
+            edge = self._edges.get(coord)
             # 仅当该坐标的边仍在内存（未被后续删除/改向）时落盘
-            if edge is not None and (
-                edge.source_id, edge.target_id, edge.direction
-            ) == coord:
+            if edge is not None and (edge.source_id, edge.target_id) == coord:
                 self._save_edge(edge)
         self.conn.commit()
         self._clear_change_tracking()
@@ -333,8 +317,8 @@ class SQLiteStore(StoreInterface):
             return
         self.conn.execute(
             "INSERT OR REPLACE INTO edges "
-            "(source_id, target_id, direction) VALUES (?, ?, ?)",
-            (edge.source_id, edge.target_id, edge.direction),
+            "(source_id, target_id) VALUES (?, ?)",
+            (edge.source_id, edge.target_id),
         )
 
     # === 变更跟踪（增量持久化） ===
@@ -348,12 +332,12 @@ class SQLiteStore(StoreInterface):
         self._dirty_nodes.discard(node_id)
 
     def _track_edge_dirty(self, edge: Edge) -> None:
-        coord = (edge.source_id, edge.target_id, edge.direction)
+        coord = (edge.source_id, edge.target_id)
         self._dirty_edges.add(coord)
         self._deleted_edges.discard(coord)
 
     def _track_edge_deleted(self, edge: Edge) -> None:
-        coord = (edge.source_id, edge.target_id, edge.direction)
+        coord = (edge.source_id, edge.target_id)
         self._deleted_edges.add(coord)
         self._dirty_edges.discard(coord)
 
@@ -421,8 +405,7 @@ class SQLiteStore(StoreInterface):
             CREATE TABLE IF NOT EXISTS edges (
                 source_id TEXT,
                 target_id TEXT,
-                direction TEXT DEFAULT 'bidirectional',
-                PRIMARY KEY (source_id, target_id, direction)
+                PRIMARY KEY (source_id, target_id)
             )
         """
         idx_source_sql = "CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id)"
@@ -441,14 +424,5 @@ class SQLiteStore(StoreInterface):
         self.conn.commit()
 
     @staticmethod
-    def _edge_key(
-        source_id: str, target_id: str, direction: str
-    ) -> tuple[str, str, str]:
-        if direction == "bidirectional":
-            a, b = (
-                (source_id, target_id)
-                if source_id < target_id
-                else (target_id, source_id)
-            )
-            return (a, b, "bidirectional")
-        return (source_id, target_id, "out")
+    def _edge_key(source_id: str, target_id: str) -> tuple[str, str]:
+        return (source_id, target_id)

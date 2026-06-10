@@ -9,7 +9,7 @@ from mcs.plugins.llm.deepseek_llm import DeepSeekLLMPlugin
 
 def test_max_tokens_default_is_high():
     plugin = DeepSeekLLMPlugin({"api_key": "x"})
-    assert plugin.max_tokens == 8192
+    assert plugin.max_tokens == 32768
 
 
 def test_max_tokens_configurable():

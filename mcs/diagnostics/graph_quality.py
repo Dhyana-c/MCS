@@ -223,9 +223,9 @@ def diagnose_from_db(db_path: str) -> GraphQualityReport:
 
     # Load edges
     for row in conn.execute(
-        "SELECT source_id, target_id, direction FROM edges"
+        "SELECT source_id, target_id FROM edges"
     ):
-        graph.add_edge(row[0], row[1], direction=row[2] or "bidirectional")
+        graph.add_edge(row[0], row[1])
 
     conn.close()
     return diagnose_graph(graph)

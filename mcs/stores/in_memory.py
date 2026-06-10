@@ -1,7 +1,7 @@
 """基于 dict 的内存图存储。
 
 ``InMemoryStore`` 是 ``StoreInterface`` 的默认实现，
-邻接关系存储为以节点 id 为键的对称字典集合。
+邻接关系存储为以节点 id 为键的有向字典集合。
 持久化钩子（save/load/commit/save_full）为空操作。
 """
 
@@ -19,13 +19,13 @@ if TYPE_CHECKING:
 class InMemoryStore(StoreInterface):
     """基于 dict 的内存图存储。
 
-    邻接关系存储为以节点 id 为键的对称字典集合。
+    邻接关系存储为以节点 id 为键的有向字典集合。
     持久化钩子为空操作（不报错，不持久化）。
     """
 
     def __init__(self) -> None:
         self._nodes: dict[str, Node] = {}
-        self._edges: dict[tuple[str, str, str], Edge] = {}
+        self._edges: dict[tuple[str, str], Edge] = {}
         self._adjacency: dict[str, set[str]] = {}
 
     # === 节点 CRUD ===
@@ -49,50 +49,38 @@ class InMemoryStore(StoreInterface):
     def delete_node(self, node_id: str) -> None:
         if node_id not in self._nodes:
             return
-        for other in list(self._adjacency.get(node_id, set())):
-            self.delete_edge(node_id, other)
+        # 删除以该节点为 source 的出边
+        for target_id in list(self._adjacency.get(node_id, set())):
+            self._edges.pop(self._edge_key(node_id, target_id), None)
+        # 删除以该节点为 target 的入边
+        for other_id in list(self._adjacency):
+            if node_id in self._adjacency[other_id]:
+                self._edges.pop(self._edge_key(other_id, node_id), None)
+                self._adjacency[other_id].discard(node_id)
         self._adjacency.pop(node_id, None)
         self._nodes.pop(node_id, None)
 
     # === 边 CRUD ===
 
-    def add_edge(
-        self,
-        source_id: str,
-        target_id: str,
-        direction: str = "bidirectional",
-    ) -> None:
+    def add_edge(self, source_id: str, target_id: str) -> None:
         if source_id == target_id:
             return
         if source_id not in self._nodes or target_id not in self._nodes:
             return
-        key = self._edge_key(source_id, target_id, direction)
+        key = self._edge_key(source_id, target_id)
         if key in self._edges:
             return
         from mcs.core.graph import Edge
 
-        self._edges[key] = Edge(
-            source_id=source_id, target_id=target_id, direction=direction
-        )
+        self._edges[key] = Edge(source_id=source_id, target_id=target_id)
         self._adjacency.setdefault(source_id, set()).add(target_id)
-        if direction == "bidirectional":
-            self._adjacency.setdefault(target_id, set()).add(source_id)
 
     def get_edge(self, source_id: str, target_id: str) -> Edge | None:
-        for direction in ("bidirectional", "out"):
-            key = self._edge_key(source_id, target_id, direction)
-            edge = self._edges.get(key)
-            if edge is not None:
-                return edge
-        return None
+        return self._edges.get(self._edge_key(source_id, target_id))
 
     def delete_edge(self, source_id: str, target_id: str) -> None:
-        for direction in ("bidirectional", "out"):
-            key = self._edge_key(source_id, target_id, direction)
-            self._edges.pop(key, None)
-        if self.get_edge(source_id, target_id) is None:
-            self._adjacency.get(source_id, set()).discard(target_id)
-            self._adjacency.get(target_id, set()).discard(source_id)
+        self._edges.pop(self._edge_key(source_id, target_id), None)
+        self._adjacency.get(source_id, set()).discard(target_id)
 
     # === 查询 ===
 
@@ -101,19 +89,12 @@ class InMemoryStore(StoreInterface):
         return [self._nodes[i] for i in ids if i in self._nodes]
 
     def get_out_neighbors(self, node_id: str) -> list[Node]:
-        result: list[Node] = []
-        for edge in self._edges.values():
-            if edge.source_id == node_id and edge.direction == "out":
-                target = self._nodes.get(edge.target_id)
-                if target is not None:
-                    result.append(target)
-        return result
+        return self.get_neighbors(node_id)
 
     def get_subgraph(
         self, node_id: str, token_budget: TokenBudget | None = None
     ) -> Subgraph:
         from mcs.core.graph import Subgraph
-        from mcs.core.token_budget import TokenBudget as TB
 
         sub = Subgraph(focus_id=node_id)
         focus = self._nodes.get(node_id)
@@ -158,14 +139,5 @@ class InMemoryStore(StoreInterface):
     # === 内部方法 ===
 
     @staticmethod
-    def _edge_key(
-        source_id: str, target_id: str, direction: str
-    ) -> tuple[str, str, str]:
-        if direction == "bidirectional":
-            a, b = (
-                (source_id, target_id)
-                if source_id < target_id
-                else (target_id, source_id)
-            )
-            return (a, b, "bidirectional")
-        return (source_id, target_id, "out")
+    def _edge_key(source_id: str, target_id: str) -> tuple[str, str]:
+        return (source_id, target_id)

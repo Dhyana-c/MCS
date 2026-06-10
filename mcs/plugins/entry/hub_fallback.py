@@ -88,8 +88,8 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
         继续下钻；``visited`` 防环，``max_depth`` 封顶。返回最终落地节点（若一路
         未下钻成功则回退为 roots）。
 
-        **仅沿 out 边下钻**：取候选时用 get_out_neighbors，以区分"层级"与"语义"边、
-        避免在双向/缠绕结构中成环。
+        沿全部单向出边下钻（语义出边亦参与导航，提升可达性）。
+        ``visited`` 防环（每个节点每次遍历只检视一次）。
         """
         assert self.store is not None
         visited: set[str] = {n.id for n in roots}
@@ -102,8 +102,8 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
             candidates: list[Node] = []
             seen: set[str] = set()
             for node in frontier:
-                # 仅沿 out 边取候选（自顶向下下钻，不沿语义/上行边回退）
-                for neighbor in self.store.get_out_neighbors(node.id):
+                # 沿全部单向出边取候选（语义边参与导航）
+                for neighbor in self.store.get_neighbors(node.id):
                     if neighbor.id not in visited and neighbor.id not in seen:
                         seen.add(neighbor.id)
                         candidates.append(neighbor)

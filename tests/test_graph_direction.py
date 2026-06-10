@@ -1,10 +1,15 @@
-"""方向感知图原语测试：out 边邻接、out vs all 邻居视图、持久化 round-trip 方向保真。
+"""单向有向边图原语测试：add_edge(a,b) 仅 source→target、邻接查询、持久化 round-trip。
 
-覆盖 seed-graph-directional-hierarchy 任务 1.3 / 1.4。
+覆盖 unidirectional-edge 模型：
+  - add_edge(source, target) 无 direction 参数，边为单向 source→target
+  - get_neighbors / get_out_neighbors 只返回出边目标
+  - Edge dataclass 只有 source_id / target_id，无 direction 字段
+  - SQLite schema 边表为 (source_id, target_id)，无 direction 列
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
 
 from mcs.core.graph import Edge, Node
@@ -14,12 +19,12 @@ from mcs.stores.sqlite_store import SQLiteStore
 GraphStore = InMemoryStore
 
 
-def test_add_edge_out_is_unidirectional():
-    """out 边：source 能看到 target，但 target 不能看到 source。"""
+def test_add_edge_is_unidirectional():
+    """add_edge(a, b) 使 a 看到 b，但 b 不能看到 a。"""
     g = GraphStore()
     g.add_node(Node(id="a", name="A", content=""))
     g.add_node(Node(id="b", name="B", content=""))
-    g.add_edge("a", "b", direction="out")
+    g.add_edge("a", "b")
 
     # source a 能看到 target b
     assert {n.id for n in g.get_neighbors("a")} == {"b"}
@@ -27,58 +32,42 @@ def test_add_edge_out_is_unidirectional():
     assert {n.id for n in g.get_neighbors("b")} == set()
 
 
-def test_add_edge_bidirectional_is_symmetric():
-    """bidirectional 边：两端互为邻居。"""
-    g = GraphStore()
-    g.add_node(Node(id="a", name="A", content=""))
-    g.add_node(Node(id="b", name="B", content=""))
-    g.add_edge("a", "b", direction="bidirectional")
-
-    assert {n.id for n in g.get_neighbors("a")} == {"b"}
-    assert {n.id for n in g.get_neighbors("b")} == {"a"}
-
-
-def test_get_out_neighbors_only_returns_out_targets():
-    """get_out_neighbors 只返回 direction=out 的边目标，不含 bidirectional 邻居。"""
+def test_get_neighbors_returns_out_targets():
+    """get_neighbors(a) 只返回 a 作为 source 的出边目标。"""
     g = GraphStore()
     g.add_node(Node(id="a", name="A", content=""))
     g.add_node(Node(id="b", name="B", content=""))
     g.add_node(Node(id="c", name="C", content=""))
-    g.add_node(Node(id="x", name="X", content=""))
 
-    g.add_edge("a", "b", direction="out")      # a→b 有向下行
-    g.add_edge("a", "c", direction="out")      # a→c 有向下行
-    g.add_edge("a", "x", direction="bidirectional")  # a↔x 语义双向
+    g.add_edge("a", "b")
+    g.add_edge("a", "c")
+    g.add_edge("b", "c")
 
-    # get_neighbors（全部邻居）：b, c, x
-    assert {n.id for n in g.get_neighbors("a")} == {"b", "c", "x"}
-    # get_out_neighbors（仅 out）：b, c（不含 x）
-    assert {n.id for n in g.get_out_neighbors("a")} == {"b", "c"}
+    # a 的出边目标是 b 和 c
+    assert {n.id for n in g.get_neighbors("a")} == {"b", "c"}
+    # b 的出边目标是 c（不包含 a，因为 a→b 是 a 的出边）
+    assert {n.id for n in g.get_neighbors("b")} == {"c"}
+    # c 没有出边
+    assert {n.id for n in g.get_neighbors("c")} == set()
 
 
-def test_get_out_neighbors_empty_when_no_out_edges():
-    """只有 bidirectional 边时，get_out_neighbors 返回空。"""
+def test_get_out_neighbors_equals_get_neighbors():
+    """get_out_neighbors 与 get_neighbors 返回相同结果（单向边模型下二者等价）。"""
     g = GraphStore()
     g.add_node(Node(id="a", name="A", content=""))
     g.add_node(Node(id="b", name="B", content=""))
-    g.add_edge("a", "b", direction="bidirectional")
+    g.add_node(Node(id="c", name="C", content=""))
 
-    assert g.get_out_neighbors("a") == []
-    assert g.get_out_neighbors("b") == []
+    g.add_edge("a", "b")
+    g.add_edge("a", "c")
 
-
-def test_target_of_out_edge_has_no_out_neighbors_from_source():
-    """a→b（out）时，b 的 out_neighbors 不含 a。"""
-    g = GraphStore()
-    g.add_node(Node(id="a", name="A", content=""))
-    g.add_node(Node(id="b", name="B", content=""))
-    g.add_edge("a", "b", direction="out")
-
-    assert g.get_out_neighbors("b") == []
+    assert {n.id for n in g.get_out_neighbors("a")} == {n.id for n in g.get_neighbors("a")}
+    assert g.get_out_neighbors("b") == g.get_neighbors("b")
+    assert g.get_out_neighbors("c") == g.get_neighbors("c")
 
 
-def test_save_load_roundtrip_preserves_out_direction():
-    """save_full → load：out 边方向保真。"""
+def test_save_load_roundtrip():
+    """边经 save_full→load round-trip 后，邻接关系正确恢复。"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
@@ -87,8 +76,8 @@ def test_save_load_roundtrip_preserves_out_direction():
     storage.add_node(Node(id="a", name="A", content=""))
     storage.add_node(Node(id="b", name="B", content=""))
     storage.add_node(Node(id="c", name="C", content=""))
-    storage.add_edge("a", "b", direction="out")
-    storage.add_edge("b", "c", direction="bidirectional")
+    storage.add_edge("a", "b")
+    storage.add_edge("b", "c")
 
     storage.save_full()
 
@@ -97,96 +86,69 @@ def test_save_load_roundtrip_preserves_out_direction():
     loaded.initialize()
     loaded.load()
 
-    # out 边 a→b 方向保真
+    # 边保真
     edge_ab = loaded.get_edge("a", "b")
     assert edge_ab is not None
-    assert edge_ab.direction == "out"
+    assert edge_ab.source_id == "a"
+    assert edge_ab.target_id == "b"
 
-    # bidirectional 边 b↔c 方向保真
     edge_bc = loaded.get_edge("b", "c")
     assert edge_bc is not None
-    assert edge_bc.direction == "bidirectional"
+    assert edge_bc.source_id == "b"
+    assert edge_bc.target_id == "c"
 
-    # 验证邻接关系：out 边只有单向，bidirectional 双向
+    # 反向边不存在
+    assert loaded.get_edge("b", "a") is None
+    assert loaded.get_edge("c", "b") is None
+
+    # 邻接关系：单向保真
     assert {n.id for n in loaded.get_neighbors("a")} == {"b"}
-    assert {n.id for n in loaded.get_neighbors("b")} == {"c"}  # 只有 bidirectional 的 c
-    assert {n.id for n in loaded.get_neighbors("c")} == {"b"}
+    assert {n.id for n in loaded.get_neighbors("b")} == {"c"}
+    assert {n.id for n in loaded.get_neighbors("c")} == set()
+
+    # Edge dataclass 无 direction 字段
+    assert not hasattr(edge_ab, "direction")
 
     storage.shutdown()
     loaded.shutdown()
-
-    import os
     os.unlink(db_path)
 
 
-def test_mixed_direction_edges_coexist():
-    """不同节点对可混合 out / bidirectional 边，各自方向保真。"""
+def test_self_loop_ignored():
+    """add_edge(a, a) 被静默忽略，不产生自环边。"""
+    g = GraphStore()
+    g.add_node(Node(id="a", name="A", content=""))
+    g.add_edge("a", "a")
+
+    assert g.get_edge("a", "a") is None
+    assert g.get_neighbors("a") == []
+
+
+def test_duplicate_edge_ignored():
+    """重复添加同一条边是幂等的，不会产生重复。"""
     g = GraphStore()
     g.add_node(Node(id="a", name="A", content=""))
     g.add_node(Node(id="b", name="B", content=""))
-    g.add_node(Node(id="c", name="C", content=""))
+    g.add_edge("a", "b")
+    g.add_edge("a", "b")  # 重复添加
 
-    g.add_edge("a", "b", direction="out")
-    g.add_edge("a", "c", direction="bidirectional")
-    g.add_edge("b", "c", direction="out")
-
-    # 各边各自方向保真
-    assert g.get_edge("a", "b").direction == "out"
-    assert g.get_edge("a", "c").direction == "bidirectional"
-    assert g.get_edge("b", "c").direction == "out"
-
-    # a 的邻居：b（out）+ c（bidirectional）
-    assert {n.id for n in g.get_neighbors("a")} == {"b", "c"}
-    # a 的 out 邻居：只有 b
-    assert {n.id for n in g.get_out_neighbors("a")} == {"b"}
-
-
-def test_same_pair_out_and_bidirectional_coexist():
-    """同一对节点可同时持有 out 与 bidirectional 边（内存键含 direction，与 DB 主键对齐）。
-
-    覆盖边键加固：修复前 a→b(out) 会被已存在的 a↔b(bidi) 静默挡掉（key 冲突）。
-    """
-    g = GraphStore()
-    g.add_node(Node(id="a", name="A", content=""))
-    g.add_node(Node(id="b", name="B", content=""))
-    g.add_edge("a", "b", direction="bidirectional")
-    g.add_edge("a", "b", direction="out")
-
-    triples = {(e.source_id, e.target_id, e.direction) for e in g.get_all_edges()}
-    assert ("a", "b", "bidirectional") in triples
-    assert ("a", "b", "out") in triples
-    assert len(g.get_all_edges()) == 2
-
-    # 邻接去重：a 看到 b；a 的 out 邻居含 b
+    assert len(g.get_all_edges()) == 1
     assert {n.id for n in g.get_neighbors("a")} == {"b"}
-    assert {n.id for n in g.get_out_neighbors("a")} == {"b"}
-    # b 经双向边看到 a，但其 out 邻居不含 a（out 边是 a→b 单向）
+
+
+def test_opposite_edges_coexist():
+    """add_edge(a, b) 与 add_edge(b, a) 是两条独立的单向边，可共存。"""
+    g = GraphStore()
+    g.add_node(Node(id="a", name="A", content=""))
+    g.add_node(Node(id="b", name="B", content=""))
+    g.add_edge("a", "b")
+    g.add_edge("b", "a")
+
+    # 两条边共存
+    assert len(g.get_all_edges()) == 2
+    assert g.get_edge("a", "b") is not None
+    assert g.get_edge("b", "a") is not None
+
+    # 双向邻接：语义双向以两条对向单向边表达
+    assert {n.id for n in g.get_neighbors("a")} == {"b"}
     assert {n.id for n in g.get_neighbors("b")} == {"a"}
-    assert g.get_out_neighbors("b") == []
-
-
-def test_same_pair_dual_edge_roundtrip():
-    """同对节点 out + bidirectional 双边经 save_full→load 均保真、不互相覆盖。"""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = f.name
-
-    storage = SQLiteStore({"path": db_path})
-    storage.initialize()
-    storage.add_node(Node(id="a", name="A", content=""))
-    storage.add_node(Node(id="b", name="B", content=""))
-    storage.add_edge("a", "b", direction="bidirectional")
-    storage.add_edge("a", "b", direction="out")
-    storage.save_full()
-
-    loaded = SQLiteStore({"path": db_path})
-    loaded.initialize()
-    loaded.load()
-    triples = {(e.source_id, e.target_id, e.direction) for e in loaded.get_all_edges()}
-    assert ("a", "b", "bidirectional") in triples
-    assert ("a", "b", "out") in triples
-    assert len(loaded.get_all_edges()) == 2
-
-    storage.shutdown()
-    loaded.shutdown()
-    import os
-    os.unlink(db_path)
