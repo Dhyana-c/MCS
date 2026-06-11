@@ -19,6 +19,18 @@ The system SHALL provide a `query_postprocess` plugin that reranks, filters, and
 - **WHEN** 检查打分器
 - **THEN** 框架 MUST 提供一个打分器接口 `score(query: str, node: Node) -> float`；MUST 至少实装一个**词法**打分器（查询与节点 name/content 的 token 重叠，零额外 LLM 调用）；接口 MUST 允许替换为嵌入/LLM 打分器
 
+---
+
+### Requirement: LexicalScorer 仅从 node.content 提取词法 token
+
+`LexicalScorer` MUST NOT 从 `node.extensions["statements"]["items"]` 读取额外文本。所有词法匹配信息 MUST 来自 `node.content` 单一来源（content 已包含全部关系信息）。
+
+#### Scenario: scoring 不使用 statements
+
+- **WHEN** LexicalScorer 对节点打分
+- **THEN** 词法 token MUST 仅从 `node.name` 和 `node.content` 提取
+- **AND** MUST NOT 读取 `extensions["statements"]`
+
 #### Scenario: 默认 opt-in
 
 - **WHEN** 未显式启用该插件

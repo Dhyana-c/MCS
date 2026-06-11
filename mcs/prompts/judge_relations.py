@@ -15,7 +15,7 @@ from mcs.utils.text_utils import strip_json_fence
 SYSTEM_PROMPT = (
     "你是知识图谱关系判定助手。对每个新概念，结合「已知相关节点」判断:"
     "(a) merge 并入某已有节点; (b) create 新建并连边到锚点; "
-    "(c) attach_statement 把关系说法挂到属性节点; (d) no_op 不入图。"
+    "(c) no_op 不入图。"
     "宁可不合，不可错合——把握不大就 create。"
     "此外，新概念彼此之间若有直接关系，用 edges_to_names 列出与它直接相关的"
     "**其它新概念名**（仅限本次待判定列表中的名称），以建立篇内连接。"
@@ -27,14 +27,11 @@ USER_TEMPLATE = (
     "待判定的新概念列表:\n"
     "{concepts}\n\n"
     "请输出 JSON 数组，每项形如:\n"
-    '  {{"action": "merge|create|attach_statement|no_op",\n'
+    '  {{"action": "merge|create|no_op",\n'
     '   "concept_name": "...",\n'
     '   "target_id": "<相关节点id>",\n'
     '   "edges_to": ["<已存在锚点节点id>"],\n'
     '   "edges_to_names": ["<与之直接相关的其它新概念名>"],\n'
-    '   "initial_statements": ["..."],\n'
-    '   "statement": "...",\n'
-    '   "aliases_to_add": ["..."],\n'
     '   "reason": "..."}}\n'
     "字段按 action 类型按需填写; edges_to 用已存在节点的 id，"
     "edges_to_names 用本次新概念的名称; 只返回 JSON。"

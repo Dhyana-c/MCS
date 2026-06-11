@@ -55,10 +55,10 @@ def test_lexical_scorer_empty_query_is_zero():
     assert sc.score("", _node("1", "anything", "body")) == 0.0
 
 
-def test_lexical_scorer_uses_statements():
-    """statements 中的命中也应计入相关性。"""
+def test_lexical_scorer_uses_content():
+    """content 中的命中应计入相关性（statements 已废弃，不再使用）。"""
     sc = LexicalScorer()
-    node = _node("1", "Person X", "", statements=["X founded Acme Corporation"])
+    node = _node("1", "Person X", "X founded Acme Corporation")
     assert sc.score("Acme Corporation", node) > 0.0
 
 

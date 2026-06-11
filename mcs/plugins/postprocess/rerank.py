@@ -63,8 +63,8 @@ class LexicalScorer(Scorer):
     """词法重叠打分（零额外 LLM 调用）。
 
     分值 = ``(NAME_WEIGHT·|q∩name| + |q∩content|) / |q|``，其中 ``q`` 是去停用词后的
-    查询 token 集；name/标题匹配加权更高（POC 已证有效）。``content`` 含 ``node.content``
-    与 ``extensions["statements"]["items"]``。空查询 → 0.0。
+    查询 token 集；name/标题匹配加权更高（POC 已证有效）。``content`` 直接取
+    ``node.content``（已包含全部关系信息）。空查询 → 0.0。
     """
 
     NAME_WEIGHT: ClassVar[float] = 2.0
@@ -77,14 +77,7 @@ class LexicalScorer(Scorer):
         if not q:
             return 0.0
         name_tokens = _tokenize(getattr(node, "name", ""), self._tok)
-        content_parts: list[str] = [getattr(node, "content", "") or ""]
-        stmts = (
-            (getattr(node, "extensions", {}) or {})
-            .get("statements", {})
-            .get("items", [])
-        )
-        content_parts.extend(s for s in stmts if isinstance(s, str))
-        content_tokens = _tokenize(" ".join(content_parts), self._tok)
+        content_tokens = _tokenize(getattr(node, "content", "") or "", self._tok)
         name_overlap = len(q & name_tokens)
         content_overlap = len(q & content_tokens)
         return (self.NAME_WEIGHT * name_overlap + content_overlap) / len(q)

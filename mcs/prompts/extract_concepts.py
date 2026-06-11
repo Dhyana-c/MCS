@@ -13,8 +13,14 @@ from mcs.core.errors import LLMParseError
 from mcs.utils.text_utils import strip_json_fence
 
 SYSTEM_PROMPT = (
-    "你是知识图谱构建助手。从输入文本中识别独立的概念，"
+    "你是知识图谱构建助手。从输入文本中识别独立的概念。"
     "如果某概念已存在于「已知相关概念」中，请复用其名称。"
+    "\n\n对每个概念的 content 字段，请写 2-4 句自包含描述，必须包含：\n"
+    "- 这个概念是什么（定义/身份）\n"
+    "- 关键事实、数据或细节\n"
+    "- 与其他实体/概念的关系（谁做了什么、属于什么、影响了什么）\n"
+    "- 来源上下文（时间、地点、场景）\n\n"
+    "不要只写一句话的简短定义。content 应当让读者无需原文即可理解这个概念的核心信息。\n"
     "概念之间的关系用自然语言短语写在 relation_hints 里，不要做谓词归一。"
 )
 
@@ -23,7 +29,8 @@ USER_TEMPLATE = (
     "{material}\n\n"
     "输入文本:\n"
     "{text}\n\n"
-    '请输出 JSON 数组，每项形如 {{"name": "...", "content": "...", "relation_hints": ["..."]}}。'
+    '请输出 JSON 数组，每项形如 {{"name": "...", "content": "2-4句自包含描述", "relation_hints": ["..."]}}。'
+    "content 必须包含关键事实和关系，不要只写简短定义。"
     "只返回 JSON，不要其他解释。"
 )
 

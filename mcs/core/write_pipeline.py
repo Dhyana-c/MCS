@@ -226,18 +226,21 @@ class WritePipeline:
     def _sanitize_decisions(self, decisions: DecisionList) -> DecisionList:
         """丢弃结构上无法应用的 LLM 决策，避免单个坏决策使整次摄入失败。
 
-        merge / attach_statement 缺 target_id（LLM 偶尔返回 null）→ 丢弃并告警；
-        其余仍交由 ``_apply_decisions`` 严格处理，保持内部不变量与既有契约。
+        merge 缺 target_id（LLM 偶尔返回 null）→ 丢弃并告警；
+        attach_statement 缺 target_id → 丢弃（已废弃动作）；
+        其余仍交由 ``_apply_decisions`` 严格处理。
         """
         cleaned: DecisionList = []
         for d in decisions:
-            if d.action in ("merge", "attach_statement") and not d.target_id:
+            if d.action == "merge" and not d.target_id:
                 logger.warning(
                     "Dropping %s decision without target_id (concept=%r)",
                     d.action,
                     getattr(d.concept, "name", None),
                 )
                 continue
+            if d.action == "attach_statement" and not d.target_id:
+                continue  # deprecated，静默丢弃
             cleaned.append(d)
         return cleaned
 
@@ -274,14 +277,8 @@ class WritePipeline:
                 if decision.edges_to_names:
                     pending_named_edges.append((node.id, decision.edges_to_names))
             elif action == "attach_statement":
-                if decision.target_id is None:
-                    raise InvalidDecisionError("attach_statement without target_id")
+                # deprecated: no-op，日志在 _dispatch_attach 中
                 self._dispatch_attach(decision)
-                node = self.store.get_node(decision.target_id)
-                if node is not None:
-                    changed.append(node)
-                if cname:
-                    name_to_id[cname] = decision.target_id
             elif action == "no_op":
                 continue  # 显式无操作；无需处理
             else:
@@ -299,11 +296,10 @@ class WritePipeline:
 
     def _dispatch_merge(self, decision: Decision) -> None:
         """合并：把新概念的名称/别名并入 ``target_id`` 的别名槽，并把
-        ``initial_statements`` 追加到目标的 statements 槽。
+        concept content 追加到目标节点的 content（子串去重）。
 
-        直接 mutate ``node.extensions``（与 ``_dispatch_create`` /
-        ``_dispatch_attach`` 同风格）；写完后 ``_notify_indexes`` 会重新索引
-        该节点，使新别名立即可被 AliasEntry 查到。
+        直接 mutate ``node.extensions`` / ``node.content``；
+        写完后 ``_notify_indexes`` 会重新索引该节点。
         """
         node = self.store.get_node(decision.target_id)  # type: ignore[arg-type]
         if node is None:
@@ -318,10 +314,12 @@ class WritePipeline:
             for alias in aliases_to_add:
                 if alias and alias != node.name and alias not in existing:
                     existing.append(alias)
-        # 2) initial_statements 追加到 statements 槽
-        if decision.initial_statements:
-            sslot = node.extensions.setdefault("statements", {"items": []})
-            sslot.setdefault("items", []).extend(decision.initial_statements)
+        # 2) concept content 追加到目标节点 content（子串去重）
+        if decision.concept and decision.concept.content:
+            incoming = decision.concept.content.strip()
+            existing_content = (node.content or "").strip()
+            if incoming and incoming not in existing_content:
+                node.content = f"{existing_content}\n{incoming}" if existing_content else incoming
 
     def _dispatch_create(self, decision: Decision) -> Node:
         """创建：新节点 + 到 ``edges_to`` 中每个锚点的边。"""
@@ -340,23 +338,17 @@ class WritePipeline:
         for anchor_id in decision.edges_to or []:
             self.store.add_edge(node.id, anchor_id)
             self.store.add_edge(anchor_id, node.id)
-        # 初始陈述成为新节点上的附加陈述
-        if decision.initial_statements:
-            # 第一阶段将陈述保留在 extensions 中；第二阶段将其包装为属性节点
-            node.extensions.setdefault("statements", {"items": []})["items"].extend(
-                decision.initial_statements
-            )
         return node
 
     def _dispatch_attach(self, decision: Decision) -> None:
-        """将陈述附加到属性节点（第一阶段简单列表）。"""
-        if not decision.statement:
-            return
-        node = self.store.get_node(decision.target_id)  # type: ignore[arg-type]
-        if node is None:
-            return
-        slot = node.extensions.setdefault("statements", {"items": []})
-        slot.setdefault("items", []).append(decision.statement)
+        """Deprecated: attach_statement 已废弃，现为 no-op。
+
+        保留方法签名以向后兼容旧决策数据。所有信息应通过节点 content 表达。
+        """
+        logger.warning(
+            "attach_statement is deprecated (concept=%r); treating as no-op",
+            getattr(decision.concept, "name", None),
+        )
 
     def _guard_invariant(self, changed_nodes: list[Node]) -> None:
         """阶段 ⑤.5：立即守门检查，确保不变量不被破坏。

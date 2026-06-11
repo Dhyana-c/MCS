@@ -90,8 +90,8 @@ def test_create_decision_adds_node(empty_graph, mock_llm):
 
 
 def test_merge_decision_updates_existing_node(empty_graph, mock_llm):
-    """'merge' 决策指向已存在的目标；该目标的 statements 槽位
-    会追加 initial_statements。
+    """'merge' 决策指向已存在的目标；该目标的 content 应追加 concept.content，
+    concept.name 应作为别名并入目标。
     """
     target = Node(id="t1", name="目标节点", content="存量内容")
     empty_graph.add_node(target)
@@ -106,7 +106,6 @@ def test_merge_decision_updates_existing_node(empty_graph, mock_llm):
                 action="merge",
                 concept=concept,
                 target_id="t1",
-                initial_statements=["新事实"],
             )
         ],
     )
@@ -115,17 +114,17 @@ def test_merge_decision_updates_existing_node(empty_graph, mock_llm):
     assert ctx.changed[0].id == "t1"
     # 目标节点在图中仍然只有一个实例。
     assert len([n for n in empty_graph.get_all_nodes() if n.id == "t1"]) == 1
-    # initial_statements 必须真正落到目标的 statements 槽（回归 merge 丢数据 bug）。
-    items = empty_graph.get_node("t1").extensions.get("statements", {}).get("items", [])
-    assert items == ["新事实"]
+    # concept.content 应追加到目标节点的 content。
+    merged = empty_graph.get_node("t1")
+    assert "存量内容" in merged.content
+    assert "新内容" in merged.content
     # concept.name 应作为别名并入目标。
-    aliases = empty_graph.get_node("t1").extensions.get("alias_index", {}).get(
-        "aliases", []
-    )
+    aliases = merged.extensions.get("alias_index", {}).get("aliases", [])
     assert "新名字" in aliases
 
 
-def test_attach_statement_appends_to_target_extensions(empty_graph, mock_llm):
+def test_attach_statement_is_noop(empty_graph, mock_llm):
+    """attach_statement 已废弃，现为 no-op，不修改目标节点的 extensions。"""
     target = Node(id="attr1", name="小明的爱好", content="", role="attribute")
     empty_graph.add_node(target)
 
@@ -142,10 +141,11 @@ def test_attach_statement_appends_to_target_extensions(empty_graph, mock_llm):
         ],
     )
     wp.ingest("source text")
+    # attach_statement 现为 no-op，extensions 不应有 statements
     statements = (
         empty_graph.get_node("attr1").extensions.get("statements", {}).get("items", [])
     )
-    assert statements == ["喜欢红色@t1"]
+    assert statements == []
 
 
 def test_no_op_decision_changes_nothing(empty_graph, mock_llm):

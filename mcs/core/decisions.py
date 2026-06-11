@@ -17,8 +17,8 @@ class ConceptDraft:
     """从文本中提取的一个概念（写入阶段 ③ 输出）。
 
     ``relation_hints`` 是 LLM 在提取过程中识别的自然语言关系短语列表
-    （例如"属于机器学习"、"由小明发明"），阶段 ④ 将其转换为
-    ``attach_statement`` 决策。
+    （例如"属于机器学习"、"由小明发明"），用于阶段 ④ 判断概念间的边连接。
+    不再转化为 statements——所有关系信息直接包含在 content 中。
     """
 
     name: str
@@ -31,9 +31,9 @@ class Decision:
     """DecisionList 中的一个动作（写入阶段 ④ 输出，⑤ 输入）。
 
     字段有效性取决于 ``action``：
-      - merge:             concept, target_id, [aliases_to_add]
-      - create:            concept, [edges_to], [edges_to_names], [initial_statements]
-      - attach_statement:  target_id（属性节点）, statement
+      - merge:             concept, target_id
+      - create:            concept, [edges_to], [edges_to_names]
+      - attach_statement:  [DEPRECATED] 现为 no-op
       - no_op:             concept, reason
 
     ``edges_to`` 是到**已存在节点**的锚点 id；``edges_to_names`` 是到**同一批新概念**
@@ -46,9 +46,9 @@ class Decision:
     target_id: str | None = None
     edges_to: list[str] = field(default_factory=list)
     edges_to_names: list[str] = field(default_factory=list)
-    initial_statements: list[str] = field(default_factory=list)
-    statement: str | None = None
-    aliases_to_add: list[str] = field(default_factory=list)
+    initial_statements: list[str] = field(default_factory=list)  # DEPRECATED: 不再使用
+    statement: str | None = None  # DEPRECATED: 不再使用
+    aliases_to_add: list[str] = field(default_factory=list)  # DEPRECATED: 不再使用
     reason: str | None = None
 
 

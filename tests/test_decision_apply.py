@@ -115,9 +115,10 @@ def test_edges_to_names_can_link_to_merged_target(empty_graph, mock_llm):
     assert "t1" in neighbors
 
 
-def test_create_with_initial_statements_persists_them(empty_graph, mock_llm):
+def test_create_with_initial_statements_ignored(empty_graph, mock_llm):
+    """initial_statements 已废弃，create 时不再写入 extensions。"""
     wp = _make_pipeline(empty_graph, mock_llm)
-    concept = ConceptDraft(name="C", content="")
+    concept = ConceptDraft(name="C", content="some content")
     changed = wp._apply_decisions(
         [
             Decision(
@@ -129,7 +130,8 @@ def test_create_with_initial_statements_persists_them(empty_graph, mock_llm):
         ]
     )
     node = changed[0]
-    assert node.extensions["statements"]["items"] == ["s1", "s2"]
+    assert node.content == "some content"
+    assert "statements" not in node.extensions
 
 
 def test_merge_does_not_add_node(empty_graph, mock_llm):
@@ -175,9 +177,9 @@ def test_merge_adds_aliases_to_target(empty_graph, mock_llm):
     assert "深度学习" not in aliases
 
 
-def test_merge_appends_initial_statements(empty_graph, mock_llm):
-    """merge 的 initial_statements 必须追加到目标的 statements 槽。"""
-    target = Node(id="t1", name="目标", content="")
+def test_merge_appends_concept_content(empty_graph, mock_llm):
+    """merge 时 concept.content 应追加到目标节点的 content（子串去重）。"""
+    target = Node(id="t1", name="目标", content="已有内容")
     empty_graph.add_node(target)
 
     wp = _make_pipeline(empty_graph, mock_llm)
@@ -185,14 +187,14 @@ def test_merge_appends_initial_statements(empty_graph, mock_llm):
         [
             Decision(
                 action="merge",
-                concept=ConceptDraft(name="x", content=""),
+                concept=ConceptDraft(name="x", content="新增事实"),
                 target_id="t1",
-                initial_statements=["事实A", "事实B"],
             )
         ]
     )
-    items = empty_graph.get_node("t1").extensions["statements"]["items"]
-    assert items == ["事实A", "事实B"]
+    merged = empty_graph.get_node("t1")
+    assert "已有内容" in merged.content
+    assert "新增事实" in merged.content
 
 
 def test_merge_without_target_id_raises(empty_graph, mock_llm):
@@ -232,8 +234,9 @@ def test_sanitize_drops_targetless_merge_and_attach(empty_graph, mock_llm):
     assert changed[0].name == "好"
 
 
-def test_attach_statement_appends(empty_graph, mock_llm):
-    attr_node = Node(id="attr1", name="X的爱好", content="", role="attribute")
+def test_attach_statement_is_noop(empty_graph, mock_llm):
+    """attach_statement 已废弃，现为 no-op，不修改目标节点。"""
+    attr_node = Node(id="attr1", name="X的爱好", content="原始内容", role="attribute")
     empty_graph.add_node(attr_node)
 
     wp = _make_pipeline(empty_graph, mock_llm)
@@ -251,8 +254,10 @@ def test_attach_statement_appends(empty_graph, mock_llm):
             ),
         ]
     )
-    items = empty_graph.get_node("attr1").extensions["statements"]["items"]
-    assert items == ["说法1", "说法2"]
+    # attach_statement 为 no-op，content 不变，无 statements
+    node = empty_graph.get_node("attr1")
+    assert node.content == "原始内容"
+    assert "statements" not in node.extensions
 
 
 def test_no_op_changes_nothing(empty_graph, mock_llm):
