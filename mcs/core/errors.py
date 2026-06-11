@@ -13,8 +13,13 @@ class MCSError(Exception):
 class LLMCallError(MCSError):
     """当供应商级别的 LLM 调用失败时抛出（超时、非 200 状态码等）。
 
-    第一阶段不重试 — 管道在第一次调用失败时中止。
+    ``retryable=True`` 表示该错误适合重试（如 429 rate limit、网络瞬断），
+    由 ``LLMInterface._call_with_retry`` 使用。
     """
+
+    def __init__(self, *args: object, retryable: bool = False) -> None:
+        super().__init__(*args)
+        self.retryable = retryable
 
 
 class LLMParseError(MCSError):

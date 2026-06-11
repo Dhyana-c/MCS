@@ -34,8 +34,8 @@ os.environ["DEEPSEEK_MODEL"] = "deepseek-chat"
 os.environ["MCS_NO_SUMMARY_REGEN"] = "1"
 
 # 配置
-DB_PATH = BENCH_ROOT / "outputs" / "v4flash_full_v2" / "multihop_v4flash_full.db"
-OUTPUT_DIR = BENCH_ROOT / "outputs" / "v4flash_full_v2"
+DB_PATH = BENCH_ROOT / "outputs" / "full_32k" / "multihop_full.db"
+OUTPUT_DIR = BENCH_ROOT / "outputs" / "full_32k"
 TOKEN_BUDGET = 32000
 
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)

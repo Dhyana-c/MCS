@@ -74,7 +74,7 @@
 | `core/context_renderer.py` | 实例复用（无 API 变更） |
 | `stores/sqlite_store.py` | 反向邻接表、add_bidirectional |
 | `plugins/llm/deepseek_llm.py` | 重试 + 退避 |
-| `plugins/index/rerank.py` | token set 缓存 |
+| `plugins/postprocess/rerank.py` | token set 缓存 |
 | `plugins/maintenance/fanout_reducer.py` | 私有方法提升为接口方法 |
 | `prompts/select_nodes.py` | 新增 BATCH_USER_TEMPLATE 注册为独立 purpose |
 

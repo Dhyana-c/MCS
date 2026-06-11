@@ -48,7 +48,7 @@ class Decision:
     edges_to_names: list[str] = field(default_factory=list)
     initial_statements: list[str] = field(default_factory=list)  # DEPRECATED: 不再使用
     statement: str | None = None  # DEPRECATED: 不再使用
-    aliases_to_add: list[str] = field(default_factory=list)  # DEPRECATED: 不再使用
+    aliases_to_add: list[str] = field(default_factory=list)
     reason: str | None = None
 
 

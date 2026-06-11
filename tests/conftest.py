@@ -78,6 +78,12 @@ class MockLLM(LLMInterface):
             if callable(value):
                 return value(nodes_in, free_args)
             return value
+        # select_nodes_batch 回退到 select_nodes 的 mock 响应
+        if purpose == "select_nodes_batch" and "select_nodes" in self._typed:
+            value = self._typed["select_nodes"]
+            if callable(value):
+                return value(nodes_in, free_args)
+            return value
         return _default_for_purpose(purpose)
 
     def _raw_call(self, system: str, user: str) -> str:

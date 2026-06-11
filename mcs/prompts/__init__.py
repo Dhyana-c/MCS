@@ -72,6 +72,11 @@ DEFAULT_PROMPTS: dict[str, PromptBundle] = {
         template=select_nodes.USER_TEMPLATE,
         parse=select_nodes.parse,
     ),
+    "select_nodes_batch": PromptBundle(
+        system=select_nodes.SYSTEM_PROMPT,
+        template=select_nodes.BATCH_USER_TEMPLATE,
+        parse=select_nodes.parse,
+    ),
 }
 
 

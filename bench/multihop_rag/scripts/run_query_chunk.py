@@ -41,8 +41,8 @@ os.environ["DEEPSEEK_MODEL"] = "deepseek-chat"
 os.environ["MCS_NO_SUMMARY_REGEN"] = "1"
 
 # 配置
-DB_PATH = BENCH_ROOT / "outputs" / "v4flash_full_v2" / "multihop_v4flash_full.db"
-OUTPUT_DIR = BENCH_ROOT / "outputs" / "v4flash_full_v2"
+DB_PATH = BENCH_ROOT / "outputs" / "full_32k" / "multihop_full.db"
+OUTPUT_DIR = BENCH_ROOT / "outputs" / "full_32k"
 TOKEN_BUDGET = 32000
 CHUNK_SIZE = 500
 
@@ -65,8 +65,8 @@ from bench.multihop_rag.metrics import retrieved_docs
 
 # 延迟导入 doc_rerank（bench-only 插件，避免循环依赖）
 def _doc_rerank(nodes, query, top_n):
-    from bench.plugins.doc_rerank import doc_rerank
-    return doc_rerank(nodes, query, top_n=top_n)
+    from bench.plugins.doc_rerank import llm_doc_rerank
+    return llm_doc_rerank(nodes, query, top_n=top_n)
 
 
 def main() -> None:

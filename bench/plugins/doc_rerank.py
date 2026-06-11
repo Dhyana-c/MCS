@@ -1,17 +1,19 @@
 """文档级重排（bench 专用，**不进核心 query 插件链、不改 mcs 核心**）。
 
-对 `query()` 召回的 `List[Node]` 按 `source_tracking` 反向聚合成候选文档，对每篇文档用
-查询对「文档级文本」（`doc_id` 标题 + 该文档下召回节点的 name/content/statements 聚合）
-打**词法**相关性分，重排 + 截断，产出文档 id 列表。绕过节点→文档映射的稀释/错位。
+两种模式：
+  - ``doc_rerank``: 词法打分（零额外 LLM 调用，同口径对比 baseline）
+  - ``llm_doc_rerank``: LLM 语义重排（把 node + 关联文档喂给大模型挑选相关文章）
 
 与核心节点级 reranker（`mcs/plugins/postprocess/rerank.py`）**正交**：那个排节点、这个排文档。
-词法打分复用 rerank 的 `_tokenize`（同口径、零额外 LLM 调用，便于公平对比）。
 
 参见 openspec/changes/bench-doc-rerank/。
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import re
 from typing import TYPE_CHECKING, Any
 
 # 复用节点级 reranker 的 tokenize（去停用词/小写），保证文档级与节点级**同口径**对比
@@ -20,6 +22,8 @@ from mcs.utils.tokenizer import ChineseTokenizer
 
 if TYPE_CHECKING:
     from mcs.core.graph import Node
+
+logger = logging.getLogger(__name__)
 
 # 标题（doc_id）加权，与 LexicalScorer.NAME_WEIGHT 保持一致
 _TITLE_WEIGHT = 2.0
@@ -112,6 +116,121 @@ def doc_rerank(
     scored = [t for t in scored if t[0] >= min_score]
     scored.sort(key=lambda t: (-t[0], t[1]))
     result = [t[2] for t in scored]
+    if top_n is not None and top_n >= 0:
+        result = result[:top_n]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# LLM 语义文档重排
+# ---------------------------------------------------------------------------
+
+# prompt 模板 — system
+_LLM_RERANK_SYSTEM = """\
+你是一个文档检索专家。用户会给出一个查询（query）和一组候选节点。每个节点有一个编号、名称、内容，以及它所属的来源文档。
+
+你的任务：根据查询，从候选节点中选出与查询**最相关**的节点编号，按相关性从高到低排列。
+
+规则：
+1. 只返回相关节点的编号，用逗号分隔（如：3, 1, 7）
+2. 如果没有相关节点，返回 none
+3. 不要返回任何其他内容"""
+
+# prompt 模板 — user
+_LLM_RERANK_USER = """\
+查询：{query}
+
+候选节点：
+{candidates}
+
+请返回最相关的节点编号（从高到低），用逗号分隔："""
+
+
+def _format_candidates(nodes: list[Node]) -> str:
+    """把 node 列表格式化为 LLM 可读的候选列表。"""
+    parts: list[str] = []
+    for i, node in enumerate(nodes, 1):
+        name = getattr(node, "name", "") or ""
+        content = getattr(node, "content", "") or ""
+        doc_ids = _source_doc_ids(node)
+        doc_str = doc_ids[0] if doc_ids else "未知文档"
+        parts.append(f"[{i}] 名称：{name}\n    内容：{content}\n    来源文档：{doc_str}")
+    return "\n".join(parts)
+
+
+def _parse_llm_indices(raw: str, max_idx: int) -> list[int]:
+    """从 LLM 返回文本中解析出节点编号列表（1-based → 0-based）。"""
+    raw = raw.strip()
+    if not raw or raw.lower() == "none":
+        return []
+    # 尝试提取逗号/空格分隔的数字
+    nums: list[int] = []
+    for token in re.split(r"[,，\s]+", raw):
+        token = token.strip()
+        if token.isdigit():
+            n = int(token)
+            if 1 <= n <= max_idx:
+                nums.append(n - 1)  # 转为 0-based
+    return nums
+
+
+def llm_doc_rerank(
+    nodes: list[Node],
+    query: str,
+    top_n: int | None = None,
+) -> list[str]:
+    """用 LLM 从召回 node 中挑选相关节点，返回对应的**去重文档 ID 列表**。
+
+    流程：
+      1. 把全部召回 node 的 name/content/来源文档 格式化为候选列表
+      2. 喂给 deepseek-chat，让 LLM 按相关性挑选
+      3. 按选中顺序提取 node 对应的 doc_id（去重、保序）
+
+    解析失败时降级回词法排序。
+    """
+    if not nodes:
+        return []
+
+    # 候选为空 doc_id 的 node 无法映射文档，但仍参与 LLM 评选
+    candidates_str = _format_candidates(nodes)
+
+    system = _LLM_RERANK_SYSTEM
+    user = _LLM_RERANK_USER.format(query=query, candidates=candidates_str)
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        )
+        resp = client.chat.completions.create(
+            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.0,
+        )
+        raw = resp.choices[0].message.content or ""
+    except Exception:
+        logger.warning("LLM doc_rerank 调用失败，降级到词法排序", exc_info=True)
+        return doc_rerank(nodes, query, top_n=top_n)
+
+    indices = _parse_llm_indices(raw, len(nodes))
+    if not indices:
+        logger.warning("LLM doc_rerank 解析为空 (raw=%r)，降级到词法排序", raw[:100])
+        return doc_rerank(nodes, query, top_n=top_n)
+
+    # 按选中顺序提取 doc_id（去重、保序）
+    seen: set[str] = set()
+    result: list[str] = []
+    for idx in indices:
+        for doc_id in _source_doc_ids(nodes[idx]):
+            if doc_id not in seen:
+                seen.add(doc_id)
+                result.append(doc_id)
+
     if top_n is not None and top_n >= 0:
         result = result[:top_n]
     return result

@@ -65,19 +65,34 @@ class LexicalScorer(Scorer):
     分值 = ``(NAME_WEIGHT·|q∩name| + |q∩content|) / |q|``，其中 ``q`` 是去停用词后的
     查询 token 集；name/标题匹配加权更高（POC 已证有效）。``content`` 直接取
     ``node.content``（已包含全部关系信息）。空查询 → 0.0。
+
+    节点 token set 在查询间缓存（节点内容不变，缓存永有效）。
     """
 
     NAME_WEIGHT: ClassVar[float] = 2.0
 
     def __init__(self) -> None:
         self._tok = ChineseTokenizer()
+        # (node_id, content_hash) -> (name_tokens, content_tokens) 缓存。
+        # content_hash 确保 merge 原地改写 node.content 后缓存自动失效。
+        self._token_cache: dict[tuple[str, int], tuple[set[str], set[str]]] = {}
+
+    def _get_node_tokens(self, node: Node) -> tuple[set[str], set[str]]:
+        """获取节点的 (name_tokens, content_tokens)，优先查缓存。"""
+        cache_key = (node.id, hash(node.content or ""))
+        cached = self._token_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        name_tokens = _tokenize(getattr(node, "name", ""), self._tok)
+        content_tokens = _tokenize(getattr(node, "content", "") or "", self._tok)
+        self._token_cache[cache_key] = (name_tokens, content_tokens)
+        return (name_tokens, content_tokens)
 
     def score(self, query: str, node: Node) -> float:
         q = _tokenize(query, self._tok)
         if not q:
             return 0.0
-        name_tokens = _tokenize(getattr(node, "name", ""), self._tok)
-        content_tokens = _tokenize(getattr(node, "content", "") or "", self._tok)
+        name_tokens, content_tokens = self._get_node_tokens(node)
         name_overlap = len(q & name_tokens)
         content_overlap = len(q & content_tokens)
         return (self.NAME_WEIGHT * name_overlap + content_overlap) / len(q)

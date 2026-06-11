@@ -312,7 +312,7 @@ def test_context_renderer_get_summary_fallback() -> None:
 
 
 def test_default_prompts_has_9_purposes() -> None:
-    """DEFAULT_PROMPTS 注册了全部 10 个 Phase 1 目的。"""
+    """DEFAULT_PROMPTS 注册了全部 11 个 Phase 1 目的（含 select_nodes_batch）。"""
     from mcs.prompts import DEFAULT_PROMPTS
 
     expected_purposes = {
@@ -326,6 +326,7 @@ def test_default_prompts_has_9_purposes() -> None:
         "gen_aliases",
         "gen_summary",
         "select_nodes",
+        "select_nodes_batch",
     }
     assert set(DEFAULT_PROMPTS.keys()) == expected_purposes
 

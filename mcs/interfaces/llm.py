@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import random
 import time
 from abc import abstractmethod
 from collections.abc import Callable
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from mcs.core.errors import LLMCallError
 from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
@@ -74,6 +76,37 @@ class LLMInterface(Plugin):
     def _raw_call(self, system: str, user: str) -> str:
         """供应商特定的原始调用。返回原始响应文本。"""
         pass
+
+    def _call_with_retry(
+        self,
+        fn: Callable[..., str],
+        *args: Any,
+        **kwargs: Any,
+    ) -> str:
+        """对可重试错误（429 / 网络瞬断）进行指数退避 + jitter 重试。
+
+        ``fn`` 是供应商特定的原始调用（如 ``self._do_raw_call``）。
+        重试参数从 ``self.config`` 读取，默认 ``max_retries=3``, ``base_delay=1.0``。
+        """
+        max_retries: int = int(self.config.get("max_retries", 3))
+        base_delay: float = float(self.config.get("base_delay", 1.0))
+
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                return fn(*args, **kwargs)
+            except LLMCallError as exc:
+                last_exc = exc
+                if not exc.retryable or attempt >= max_retries:
+                    raise
+                delay = base_delay * (2 ** attempt) + random.uniform(0, base_delay)
+                logger.warning(
+                    "LLM 可重试错误 (attempt %d/%d)，%.1fs 后重试: %s",
+                    attempt + 1, max_retries, delay, exc,
+                )
+                time.sleep(delay)
+        # 理论不可达，但为类型安全保留
+        raise last_exc  # type: ignore[misc]
 
     # === 公共入口：实现5步编排 ===
 

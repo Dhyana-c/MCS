@@ -93,6 +93,11 @@ class WritePipeline:
         self.token_budget = token_budget
         self.config = config
         self.system_prompt = system_prompt
+        # merge 后 content 超此阈值触发 LLM 压缩（0 = 禁用）
+        cfg_dict = config.model_dump() if config and hasattr(config, "model_dump") else {}
+        self.merge_content_threshold: int = int(
+            cfg_dict.get("merge_content_threshold", 500)
+        )
 
     # === 公共 API ===
 
@@ -114,9 +119,8 @@ class WritePipeline:
             return ctx
         ctx.processed = processed
 
-        # 阶段 ②: 关联节点定位（复用查询管道）
-        related = self.query_engine.query(processed)
-        ctx.related = related if isinstance(related, list) else []
+        # 阶段 ②: 关联节点定位（轻量查询模式）
+        ctx.related = self.query_engine.query_nodes(processed)
 
         # 阶段 ③: 概念提取
         concepts = self.llm.call(
@@ -320,6 +324,25 @@ class WritePipeline:
             existing_content = (node.content or "").strip()
             if incoming and incoming not in existing_content:
                 node.content = f"{existing_content}\n{incoming}" if existing_content else incoming
+        # 3) content 压缩：追加后超阈值时调用 LLM 压缩，防止单节点 content 无界增长
+        if (
+            self.merge_content_threshold > 0
+            and len(node.content or "") > self.merge_content_threshold
+        ):
+            try:
+                compressed = self.llm.call(
+                    purpose="gen_summary",
+                    nodes_in=[node],
+                    free_args={"max_tokens": 200},
+                )
+                if isinstance(compressed, str) and compressed.strip():
+                    node.content = compressed.strip()
+            except Exception:
+                logger.warning(
+                    "merge content 压缩失败，保留原始 content (node=%s)",
+                    node.id,
+                    exc_info=True,
+                )
 
     def _dispatch_create(self, decision: Decision) -> Node:
         """创建：新节点 + 到 ``edges_to`` 中每个锚点的边。"""
@@ -354,25 +377,19 @@ class WritePipeline:
         """阶段 ⑤.5：立即守门检查，确保不变量不被破坏。
 
         检查 root 和所有 changed_nodes 的一跳邻域是否 ≤ T。
-        如果超预算，立即触发 FanoutReducer 的守门逻辑，
+        如果超预算，立即触发 CompactionPlugin.guard 逻辑，
         而非等阶段 ⑥ 的 should_run（后者可能因 floor 阈值跳过）。
         """
         from mcs.core.plugin import PluginType
-        from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin, SEED_ROOT_ID
 
-        fanout_plugin = None
-        for plugin in self.plugin_manager.get_all(PluginType.COMPACTION):
-            if isinstance(plugin, FanoutReducerPlugin):
-                fanout_plugin = plugin
-                break
-
-        if fanout_plugin is None or fanout_plugin.token_budget is None:
+        compaction_plugins = self.plugin_manager.get_all(PluginType.COMPACTION)
+        if not compaction_plugins:
             return
 
         # 收集需检查的节点：root + changed
         nodes_to_check: list[Node] = []
         seen: set[str] = set()
-        root = self.store.get_node(SEED_ROOT_ID)
+        root = self.store.get_node("__seed_root__")
         if root is not None and root.id not in seen:
             nodes_to_check.append(root)
             seen.add(root.id)
@@ -381,11 +398,10 @@ class WritePipeline:
                 nodes_to_check.append(n)
                 seen.add(n.id)
 
-        # 对每个超预算节点立即触发裂变
+        # 对每个节点调用所有 CompactionPlugin 的 guard
         for node in nodes_to_check:
-            neighbors = self.store.get_neighbors(node.id)
-            if fanout_plugin._exceeds_budget(node, neighbors):
-                fanout_plugin._compact_node(node, self.store, self.llm.call)
+            for plugin in compaction_plugins:
+                plugin.guard(node, self.store, self.llm.call)
 
     def _run_compaction(self, changed_nodes: list[Node]) -> None:
         """阶段 ⑥：每个 CompactionPlugin 检查 should_run，然后运行。"""

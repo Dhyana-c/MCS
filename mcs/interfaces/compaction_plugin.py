@@ -57,3 +57,17 @@ class CompactionPluginInterface(Plugin):
         call(purpose: str, nodes_in: list[Node], free_args: dict) -> Any。
         """
         pass
+
+    def guard(
+        self,
+        node: Node,
+        store: StoreInterface,
+        llm_caller: Callable,
+    ) -> None:
+        """对单个节点执行守门检查 + 即时裂变（如果超预算）。
+
+        默认为空操作。需要守门的插件（如 FanoutReducer）应覆写此方法。
+        框架在 _guard_invariant 中遍历所有 CompactionPlugin 并调用 guard，
+        不再 import 具体插件类或调用私有方法。
+        """
+        return None

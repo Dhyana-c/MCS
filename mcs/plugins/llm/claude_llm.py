@@ -4,6 +4,9 @@
 ``_raw_call(system, user) -> str``；其余所有内容（渲染、prompt 组装、
 解析）均由 ``LLMInterface`` 的基类实现处理。
 
+重试 + 退避由 ``LLMInterface._call_with_retry`` 共享机制提供，
+通过 ``max_retries`` / ``base_delay`` 配置项覆盖。
+
 可用于官方 Anthropic 端点，也可通过 ``base_url`` 指向兼容网关
 （如反代第三方模型的 Messages 协议网关）。
 
@@ -14,14 +17,19 @@
   - ``base_url``   (默认: ``"https://api.anthropic.com"``)
   - ``timeout``    (默认: 60 秒)
   - ``max_tokens`` (默认: 4096；Messages API 必填项)
+  - ``max_retries`` (默认: 3)
+  - ``base_delay``  (默认: 1.0 秒)
 """
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.errors import LLMCallError
 from mcs.interfaces.llm import LLMInterface
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginContext
@@ -80,6 +88,9 @@ class ClaudeLLMPlugin(LLMInterface):
     # === LLMInterface ===
 
     def _raw_call(self, system: str, user: str) -> str:
+        return self._call_with_retry(self._do_raw_call, system, user)
+
+    def _do_raw_call(self, system: str, user: str) -> str:
         if self.client is None:
             raise LLMCallError(
                 "Claude 客户端未初始化；请安装 ``anthropic`` 并在插件配置中"
@@ -97,8 +108,34 @@ class ClaudeLLMPlugin(LLMInterface):
                 kwargs["system"] = [{"type": "text", "text": system}]
             resp = self.client.messages.create(**kwargs)
             return _collect_text(resp)
-        except Exception as e:  # pragma: no cover - 网络错误
-            raise LLMCallError(f"Claude call failed: {e}") from e
+        except Exception as e:
+            retryable = _is_retryable_anthropic_error(e)
+            raise LLMCallError(
+                f"Claude call failed: {e}", retryable=retryable
+            ) from e
+
+
+def _is_retryable_anthropic_error(exc: Exception) -> bool:
+    """Check if an Anthropic exception is retryable (429 / network / 529 overload)."""
+    try:
+        import anthropic  # type: ignore[import]
+
+        if isinstance(exc, anthropic.RateLimitError):
+            return True
+        if isinstance(exc, anthropic.APIConnectionError):
+            return True
+        if isinstance(exc, anthropic.InternalServerError):
+            return True  # 529 overloading 等
+    except ImportError:
+        pass
+    # fallback: check status code
+    status = getattr(exc, "status_code", None)
+    if status in (429, 503, 529):
+        return True
+    msg = str(exc).lower()
+    if "connection" in msg or "timeout" in msg or "overloaded" in msg:
+        return True
+    return False
 
 
 def _collect_text(resp: Any) -> str:

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -109,6 +110,47 @@ class QueryEngine:
         # 阶段 ⑤: 后置处理链
         return self._run_postprocess(ctx.result_set, ctx)
 
+    def query_nodes(
+            self,
+            text: str,
+            max_rounds: int = 1,
+            skip_postprocess: bool = True,
+    ) -> list[Node]:
+        """轻量查询模式：仅执行 ①②③ 阶段，返回 List[Node]。
+
+        供写管线阶段②关联定位使用，跳过仲裁和后处理链。
+        默认 max_rounds=1 限制遍历深度，skip_postprocess=True 跳过 ④⑤。
+        """
+        ctx = QueryContext(
+            system_prompt=self.system_prompt,
+            user_input=text,
+        )
+
+        # 阶段 ①: 前置插件链
+        processed_text = self._run_preprocess(text, ctx)
+
+        # 阶段 ②: 种子定位
+        seeds = self._locate_seeds(processed_text, ctx)
+
+        # 阶段 ③: 遍历（限制 max_rounds）
+        saved_max_rounds = self.max_rounds
+        try:
+            self.max_rounds = max_rounds
+            ctx.intermediate = self._traverse(seeds, processed_text, ctx)
+        finally:
+            self.max_rounds = saved_max_rounds
+
+        # 跳过 ④⑤，直接返回 result_set
+        if skip_postprocess:
+            return list(ctx.intermediate)
+
+        # 阶段 ④: 仲裁
+        ctx.result_set = self._arbitrate(ctx.intermediate, processed_text, ctx)
+
+        # 阶段 ⑤: 后置处理链
+        result = self._run_postprocess(ctx.result_set, ctx)
+        return result if isinstance(result, list) else ctx.result_set
+
     # === 阶段辅助方法 ===
 
     def _run_preprocess(self, text: str, ctx: QueryContext) -> str:
@@ -143,7 +185,15 @@ class QueryEngine:
             if exclusive_hit and not plugin.exclusive:
                 # 更高优先级的独占插件已获胜；跳过低优先级插件
                 continue
-            candidates = plugin.locate(query, ctx) or []
+            try:
+                candidates = plugin.locate(query, ctx) or []
+            except Exception:
+                logger.warning(
+                    "EntryPlugin %s locate 失败，跳过",
+                    plugin.get_name(),
+                    exc_info=True,
+                )
+                continue
             if not candidates:
                 continue
             for node in candidates:
@@ -191,30 +241,42 @@ class QueryEngine:
         """阶段 ③：批量邻居扩展的 token 预算驱动 BFS 遍历。
 
         核心优化：多个节点及其邻居合并后一次 LLM 调用，只要总 token ≤ T*0.8。
-        核心不变量保证「任一节点 + 其全部一跳邻居 ≤ 窗口 T」，因此多节点合并后
-        单次 select_nodes 调用天然 ≤ T*0.8（80% 余量防估算误差）。
+        核心不变量保证「任一节点 + 其全部一跳子节点 ≤ 窗口 T」，因此多节点合并后
+        单次 select_nodes_batch 调用天然 ≤ T*0.8（80% 余量防估算误差）。
 
-        LLM 选中的邻居里，**已访问的去重丢弃**，未访问的加入 accumulated 并入队。
-        ``max_rounds`` 限制 BFS 深度；token 预算 / ``max_accumulated_nodes`` 兜底终止。
+        性能优化：
+        - estimate_node 带 memoization（查询期节点不变，缓存安全）
+        - used_tokens 增量累加（节点进 accumulated 时加一次）
+        - queue 使用 deque（popleft/appendleft O(1)）
+        - batch_neighbor_map 使用 dict O(1) 查找
+        - ContextRenderer 循环外复用
+        - 共享邻居 token 不重复计入批次估算
+        - 独立 select_nodes_batch purpose（无需 try/finally 换装）
         """
         if not seeds:
             return []
 
         from mcs.core.context_renderer import ContextRenderer
         from mcs.core.errors import LLMParseError
-        from mcs.prompts.select_nodes import BATCH_USER_TEMPLATE
 
         visited: set[str] = set()
         accumulated: list[Node] = []
-        queue: list[tuple[Node, int]] = []  # (节点, 自种子起算的深度)
+        queue: deque[tuple[Node, int]] = deque()  # (节点, 自种子起算的深度)
+        estimate_cache: dict[str, int] = {}
+        used_tokens = 0
+
         for seed in seeds:
             if seed.id not in visited:
                 visited.add(seed.id)
                 accumulated.append(seed)
+                used_tokens += self.token_budget.estimate_node(
+                    seed, estimate_cache
+                )
                 queue.append((seed, 0))
 
         budget = self.token_budget.T
         pack_threshold = budget * 0.8  # 打包阈值，留 20% 余量
+        renderer = ContextRenderer(self.plugin_manager)  # 循环外复用
 
         while queue:
             # 安全阀：节点数硬上限
@@ -224,10 +286,7 @@ class QueryEngine:
                     self.max_accumulated_nodes,
                 )
                 break
-            # token 预算：accumulated 子图渲染量超窗口则停
-            used_tokens = sum(
-                self.token_budget.estimate_node(n) for n in accumulated
-            )
+            # token 预算：增量维护的 used_tokens 超窗口则停
             if used_tokens >= budget:
                 logger.info(
                     "accumulated token=%d >= budget=%d, 终止", used_tokens, budget
@@ -236,13 +295,13 @@ class QueryEngine:
 
             # === 批量打包 ===
             batch_centers: list[tuple[Node, int]] = []  # (中心节点, 深度)
-            batch_neighbors: list[Node] = []
+            batch_neighbor_map: dict[str, Node] = {}  # neighbor_id -> Node (O(1) lookup)
             neighbor_to_center: dict[str, tuple[str, int]] = {}  # neighbor_id -> (center_id, center_depth)
             batch_tokens = 0
 
             # 贪心打包：从 queue 取节点直到接近 pack_threshold
             while queue and batch_tokens < pack_threshold:
-                node, depth = queue.pop(0)
+                node, depth = queue.popleft()
                 if depth >= self.max_rounds:
                     continue  # 达深度上限：不加入本批次，跳过扩展
 
@@ -250,57 +309,59 @@ class QueryEngine:
                 if not neighbors:
                     continue  # 无邻居：不加入本批次
 
-                # 估算本节点的 token（中心 + 邻居）
-                node_tokens = self.token_budget.estimate_node(node)
-                neighbor_tokens = sum(
-                    self.token_budget.estimate_node(n) for n in neighbors
+                # 估算本节点的 token（中心节点）
+                node_tokens = self.token_budget.estimate_node(
+                    node, estimate_cache
                 )
-                total_tokens = node_tokens + neighbor_tokens
+                # 仅估算首次出现的邻居 token（共享邻居不重复计）
+                new_nb_tokens = 0
+                for nb in neighbors:
+                    if nb.id not in neighbor_to_center:
+                        new_nb_tokens += self.token_budget.estimate_node(
+                            nb, estimate_cache
+                        )
+                total_new_tokens = node_tokens + new_nb_tokens
 
                 # 检查是否超预算
-                if batch_tokens + total_tokens > budget:
+                if batch_tokens + total_new_tokens > budget:
                     # 单节点超预算 → 仍可加入（不变量保证 ≤ T）
                     if batch_tokens == 0:  # 空批次，加入这单个节点
                         batch_centers.append((node, depth))
                         for neighbor in neighbors:
                             if neighbor.id not in neighbor_to_center:
-                                batch_neighbors.append(neighbor)
+                                batch_neighbor_map[neighbor.id] = neighbor
                                 neighbor_to_center[neighbor.id] = (node.id, depth)
-                        batch_tokens = total_tokens
+                        batch_tokens = total_new_tokens
                     else:
                         # 预算不足且已有节点，把当前节点放回队列头部
-                        queue.insert(0, (node, depth))
+                        queue.appendleft((node, depth))
                     break  # 预算不足，停止打包
 
                 # 加入批次
                 batch_centers.append((node, depth))
                 for neighbor in neighbors:
                     if neighbor.id not in neighbor_to_center:
-                        batch_neighbors.append(neighbor)
+                        batch_neighbor_map[neighbor.id] = neighbor
                         neighbor_to_center[neighbor.id] = (node.id, depth)
-                batch_tokens += total_tokens
+                batch_tokens += total_new_tokens
 
             if not batch_centers:
                 continue  # 本轮无可扩展节点
 
             # === 渲染中心和邻居 ===
-            renderer = ContextRenderer(self.plugin_manager)
+            batch_neighbors = list(batch_neighbor_map.values())
             centers_text = renderer.render(
                 [n for n, _ in batch_centers], purpose="select_nodes"
             )
             neighbors_text = renderer.render(batch_neighbors, purpose="select_nodes")
 
-            # === 批量 LLM 调用 ===
+            # === 批量 LLM 调用（使用独立 purpose，无需 try/finally 换装）===
             selected_ids: list[str] = []
             # 构造 nodes_in：所有中心节点 + 所有邻居（保持兼容 LLMInterface.call 标准）
             all_nodes_in = [n for n, _ in batch_centers] + batch_neighbors
-            # 保存原模板以便恢复
-            original_prompt = self.llm.get_prompt("select_nodes")
             try:
-                # 临时注册批量模板
-                self.llm.register_prompt("select_nodes", template=BATCH_USER_TEMPLATE)
                 selected_ids = self.llm.call(
-                    purpose="select_nodes",
+                    purpose="select_nodes_batch",
                     nodes_in=all_nodes_in,
                     free_args={
                         "query": query,
@@ -315,13 +376,6 @@ class QueryEngine:
                 selected_ids = self._fallback_single_node_select(
                     batch_centers, query, accumulated
                 )
-            finally:
-                # 恢复原模板
-                self.llm.register_prompt(
-                    "select_nodes",
-                    template=original_prompt.template,
-                    system=original_prompt.system,
-                )
 
             selected = set(selected_ids)
 
@@ -329,13 +383,14 @@ class QueryEngine:
             for neighbor_id in selected:
                 if neighbor_id not in visited and neighbor_id in neighbor_to_center:
                     center_id, center_depth = neighbor_to_center[neighbor_id]
-                    # 找到 neighbor 节点对象
-                    neighbor_node = next(
-                        (n for n in batch_neighbors if n.id == neighbor_id), None
-                    )
+                    # O(1) dict 查找 neighbor 节点对象
+                    neighbor_node = batch_neighbor_map.get(neighbor_id)
                     if neighbor_node:
                         visited.add(neighbor_id)
                         accumulated.append(neighbor_node)
+                        used_tokens += self.token_budget.estimate_node(
+                            neighbor_node, estimate_cache
+                        )
                         queue.append((neighbor_node, center_depth + 1))
                         if len(accumulated) >= self.max_accumulated_nodes:
                             break

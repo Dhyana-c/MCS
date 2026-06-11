@@ -63,6 +63,14 @@ class StoreInterface(ABC):
         """删除两个节点之间的边。"""
         ...
 
+    def add_bidirectional(self, source_id: str, target_id: str) -> None:
+        """一次性添加两条单向边 source→target + target→source（语义边）。
+
+        默认实现调用两次 ``add_edge``；子类可覆写以优化。
+        """
+        self.add_edge(source_id, target_id)
+        self.add_edge(target_id, source_id)
+
     # === 查询 ===
 
     @abstractmethod

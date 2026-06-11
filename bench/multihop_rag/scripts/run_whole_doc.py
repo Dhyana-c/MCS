@@ -38,6 +38,9 @@ OUTPUT_DIR = BENCH_ROOT / "outputs" / "whole_doc"
 CORPUS_SUBSET = 200
 K_VALUES = [2, 4, 10]
 
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
 import logging
 
 logging.basicConfig(
@@ -56,9 +59,6 @@ print("Multihop RAG (DeepSeek-chat) — 200 文档, 整篇摄入")
 print("=" * 60)
 
 from bench.multihop_rag import MultiHopEvalConfig, MultiHopEvalRunner
-
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 config = MultiHopEvalConfig(
     llm_backend="deepseek",

@@ -4,19 +4,27 @@
 ``_raw_call(system, user) -> str``；其余所有内容（渲染、
 提示词组装、解析）均由 ``LLMInterface`` 的基类实现处理。
 
+重试 + 退避由 ``LLMInterface._call_with_retry`` 共享机制提供，
+通过 ``max_retries`` / ``base_delay`` 配置项覆盖。
+
 配置键：
   - ``api_key``  (实际调用时必需)
   - ``model``    (默认: ``"deepseek-chat"``)
   - ``base_url`` (默认: ``"https://api.deepseek.com"``)
   - ``timeout``  (默认: 60 秒)
+  - ``max_retries`` (默认: 3)
+  - ``base_delay``  (默认: 1.0 秒)
 """
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.errors import LLMCallError
 from mcs.interfaces.llm import LLMInterface
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginContext
@@ -68,6 +76,9 @@ class DeepSeekLLMPlugin(LLMInterface):
     # === LLMInterface ===
 
     def _raw_call(self, system: str, user: str) -> str:
+        return self._call_with_retry(self._do_raw_call, system, user)
+
+    def _do_raw_call(self, system: str, user: str) -> str:
         if self.client is None:
             raise LLMCallError(
                 "DeepSeek 客户端未初始化；"
@@ -82,5 +93,29 @@ class DeepSeekLLMPlugin(LLMInterface):
                 model=self.model, messages=messages, max_tokens=self.max_tokens
             )
             return resp.choices[0].message.content or ""
-        except Exception as e:  # pragma: no cover - 网络错误
-            raise LLMCallError(f"DeepSeek call failed: {e}") from e
+        except Exception as e:
+            retryable = _is_retryable_openai_error(e)
+            raise LLMCallError(
+                f"DeepSeek call failed: {e}", retryable=retryable
+            ) from e
+
+
+def _is_retryable_openai_error(exc: Exception) -> bool:
+    """判断 OpenAI 兼容异常是否可重试（429 / 网络错误）。"""
+    try:
+        import openai  # type: ignore[import]
+
+        if isinstance(exc, openai.RateLimitError):
+            return True
+        if isinstance(exc, openai.APIConnectionError):
+            return True
+    except ImportError:
+        pass
+    # 回退：按状态码 / 错误信息判断
+    status = getattr(exc, "status_code", None)
+    if status == 429:
+        return True
+    msg = str(exc).lower()
+    if "connection" in msg or "timeout" in msg:
+        return True
+    return False

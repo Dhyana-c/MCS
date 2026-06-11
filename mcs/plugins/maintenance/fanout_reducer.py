@@ -367,6 +367,25 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                     node.name, hub.name, len(hub_members),
                 )
 
+    # === CompactionPluginInterface.guard ===
+
+    def guard(
+        self,
+        node: Node,
+        store: StoreInterface,
+        llm_caller: Callable,
+    ) -> None:
+        """守门检查 + 即时裂变：如果 node 邻域超预算，立即触发裂变。
+
+        框架通过 CompactionPluginInterface.guard 统一调用，
+        不再直接调用 _exceeds_budget / _compact_node。
+        """
+        if self.token_budget is None:
+            return
+        neighbors = store.get_neighbors(node.id)
+        if self._exceeds_budget(node, neighbors):
+            self._compact_node(node, store, llm_caller)
+
     # === 邻域估算 ===
 
     def _neighborhood_tokens(self, node: Node, neighbors: list[Node]) -> int:

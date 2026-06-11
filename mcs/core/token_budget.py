@@ -46,7 +46,9 @@ class TokenBudget:
         cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
         return max(1, cjk + (len(text) - cjk) // 4)
 
-    def estimate_node(self, node: Node) -> int:
+    def estimate_node(
+        self, node: Node, cache: dict[str, int] | None = None
+    ) -> int:
         """估算单个节点的渲染 token（含格式行、body、extensions）。
 
         与 ContextRenderer.render_node_full 口径一致，确保估算值 == 实际渲染 token。
@@ -56,13 +58,26 @@ class TokenBudget:
 
         对于 decide_hub 场景的守门检查，此口径足够准确：焦点节点（中心节点）用完整内容，
         邻居用 summary（实际渲染也是这样）。
+
+        当 cache 非空时，先以 node.id 查缓存；命中直接返回，未命中则计算后写入。
+        查询期间节点不变，缓存天然有效。写路径上节点会变，不应使用缓存。
         """
+        if cache is not None:
+            nid = node.id
+            if nid in cache:
+                return cache[nid]
+
         from mcs.core.context_renderer import ContextRenderer
 
         rendered = ContextRenderer.render_node_full(
             node, purpose="decide_hub", is_focus=True, extensions=None
         )
-        return self.estimate(rendered)
+        val = self.estimate(rendered)
+
+        if cache is not None:
+            cache[node.id] = val
+
+        return val
 
     def check_subgraph(self, nodes: list[Node]) -> bool:
         """如果 ``nodes`` 的组合内容适合 ``T`` 则返回 True。"""

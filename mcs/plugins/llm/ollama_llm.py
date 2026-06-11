@@ -92,6 +92,9 @@ class OllamaLLMPlugin(LLMInterface):
     # === LLMInterface ===
 
     def _raw_call(self, system: str, user: str) -> str:
+        return self._call_with_retry(self._do_raw_call, system, user)
+
+    def _do_raw_call(self, system: str, user: str) -> str:
         if self.client is None:
             raise LLMCallError(
                 "Ollama 客户端未初始化；请安装 ``httpx``。"
@@ -123,11 +126,14 @@ class OllamaLLMPlugin(LLMInterface):
             raise LLMCallError(
                 f"Ollama 连接失败: {e}\n"
                 "提示: Ollama 服务未运行或地址不可达；请确认 ``ollama serve`` "
-                "已启动、base_url 正确。"
+                "已启动、base_url 正确。",
+                retryable=True,
             ) from e
 
         if resp.status_code >= 400:
             body = (resp.text or "")[:300]
+            # 429 / 5xx 为可重试错误
+            retryable = resp.status_code == 429 or resp.status_code >= 500
             if resp.status_code == 404 or "not found" in body.lower():
                 hint = (
                     f"模型 '{self.model}' 未拉取；请先执行 "
@@ -136,7 +142,8 @@ class OllamaLLMPlugin(LLMInterface):
             else:
                 hint = "检查 Ollama 服务是否运行、模型是否已拉取。"
             raise LLMCallError(
-                f"Ollama call failed: HTTP {resp.status_code} {body}\n提示: {hint}"
+                f"Ollama call failed: HTTP {resp.status_code} {body}\n提示: {hint}",
+                retryable=retryable,
             )
 
         data = resp.json()

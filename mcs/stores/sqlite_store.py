@@ -42,6 +42,8 @@ class SQLiteStore(StoreInterface):
         self._nodes: dict[str, Node] = {}
         self._edges: dict[tuple[str, str], Edge] = {}
         self._adjacency: dict[str, set[str]] = {}
+        # 反向邻接表：target_id -> {source_id, ...}，加速 delete_node 入边查找
+        self._reverse_adjacency: dict[str, set[str]] = {}
         # 增量持久化的变更跟踪：自上次 flush/save 以来需 upsert / DELETE 的节点与边。
         # 边以 (source_id, target_id) 数据库坐标记录（与 _save_edge 写入一致）。
         self._dirty_nodes: set[str] = set()
@@ -107,15 +109,16 @@ class SQLiteStore(StoreInterface):
             edge = self._edges.pop(edge_key, None)
             if edge is not None:
                 self._track_edge_deleted(edge)
-        # 删除以该节点为 target 的入边
-        for other_id in list(self._adjacency):
-            if node_id in self._adjacency[other_id]:
-                edge_key = self._edge_key(other_id, node_id)
-                edge = self._edges.pop(edge_key, None)
-                if edge is not None:
-                    self._track_edge_deleted(edge)
-                self._adjacency[other_id].discard(node_id)
+            self._reverse_adjacency.get(target_id, set()).discard(node_id)
+        # 删除以该节点为 target 的入边（使用反向邻接表，O(degree)）
+        for source_id in list(self._reverse_adjacency.get(node_id, set())):
+            edge_key = self._edge_key(source_id, node_id)
+            edge = self._edges.pop(edge_key, None)
+            if edge is not None:
+                self._track_edge_deleted(edge)
+            self._adjacency.get(source_id, set()).discard(node_id)
         self._adjacency.pop(node_id, None)
+        self._reverse_adjacency.pop(node_id, None)
         self._nodes.pop(node_id, None)
         self._track_node_deleted(node_id)
 
@@ -133,6 +136,7 @@ class SQLiteStore(StoreInterface):
 
         self._edges[key] = Edge(source_id=source_id, target_id=target_id)
         self._adjacency.setdefault(source_id, set()).add(target_id)
+        self._reverse_adjacency.setdefault(target_id, set()).add(source_id)
         self._track_edge_dirty(self._edges[key])
 
     def get_edge(self, source_id: str, target_id: str) -> Edge | None:
@@ -143,6 +147,7 @@ class SQLiteStore(StoreInterface):
         if edge is not None:
             self._track_edge_deleted(edge)
         self._adjacency.get(source_id, set()).discard(target_id)
+        self._reverse_adjacency.get(target_id, set()).discard(source_id)
 
     # === 查询 ===
 
@@ -245,6 +250,8 @@ class SQLiteStore(StoreInterface):
             "SELECT source_id, target_id FROM edges"
         ):
             self.add_edge(row[0], row[1])
+        # 重建反向邻接表（add_edge 已在维护，但显式确认一致性）
+        self._rebuild_reverse_adjacency()
         # 加载后内存与 db 一致：清空 add_node/add_edge 期间累积的跟踪，避免首次 flush 冗余重写
         self._clear_change_tracking()
 
@@ -426,3 +433,15 @@ class SQLiteStore(StoreInterface):
     @staticmethod
     def _edge_key(source_id: str, target_id: str) -> tuple[str, str]:
         return (source_id, target_id)
+
+    def _rebuild_reverse_adjacency(self) -> None:
+        """从 _adjacency 重建 _reverse_adjacency，确保一致性。"""
+        self._reverse_adjacency.clear()
+        for source_id, targets in self._adjacency.items():
+            for target_id in targets:
+                self._reverse_adjacency.setdefault(target_id, set()).add(source_id)
+
+    def add_bidirectional(self, source_id: str, target_id: str) -> None:
+        """一次性添加两条单向边 source→target + target→source（语义边）。"""
+        self.add_edge(source_id, target_id)
+        self.add_edge(target_id, source_id)
