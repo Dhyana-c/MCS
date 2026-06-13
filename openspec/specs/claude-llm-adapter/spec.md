@@ -1,7 +1,7 @@
 # claude-llm-adapter Specification
 
 ## Purpose
-TBD - created by archiving change add-claude-llm-adapter. Update Purpose after archive.
+定义 Anthropic Claude LLM 适配器插件，实现统一 LLMInterface，仅负责 `_raw_call` 厂商调用，零 prompt 模板，支持 auth_token/api_key 双凭证。
 ## Requirements
 ### Requirement: ClaudeLLMPlugin 实现统一 LLMInterface
 

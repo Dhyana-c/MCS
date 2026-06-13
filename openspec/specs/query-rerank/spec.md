@@ -2,7 +2,7 @@
 
 ## Purpose
 
-TBD - created by archiving change query-rerank. Update Purpose after archive.
+提供查询输出相关性重排插件，按查询文本对节点打分、降序重排并截断 top-N，内置词法打分器，打分器接口可插拔替换为嵌入/LLM 方案。
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # plugin-protocol Specification
 
 ## Purpose
-TBD - created by archiving change unified-workflow-architecture. Update Purpose after archive.
+定义插件体系基类 Plugin 与 PluginType 枚举，以及各阶段插件接口（Entry、Trim、Arbitration、Preprocess、Postprocess、Compaction、Index、LLM、NodeExtension 等），统一插件注册与生命周期管理。
 ## Requirements
 ### Requirement: 提供 EntryPluginInterface 用于种子定位
 

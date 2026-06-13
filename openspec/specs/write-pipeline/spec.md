@@ -1,7 +1,7 @@
 # write-pipeline Specification
 
 ## Purpose
-TBD - created by archiving change unified-workflow-architecture. Update Purpose after archive.
+定义写流程为 7 段固定管线（前置插件→关联节点定位→概念提取→关系判定→图更新→压缩判定→自动落盘），线性执行无内部 Loop。
 ## Requirements
 ### Requirement: 写流程为 7 段固定管线
 

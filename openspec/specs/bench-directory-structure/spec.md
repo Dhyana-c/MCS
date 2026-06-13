@@ -1,18 +1,31 @@
-## ADDED Requirements
+## Purpose
+定义 bench 评测目录按类型分类的组织结构，规定启动脚本无命令行参数、命名规范及输出文件集中管理。
 
-### Requirement: Bench 目录按评测类型分类
+## Requirements
 
-Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类型一个子目录。每个子目录 SHALL 包含 `scripts/`、`reports/` 子目录，可包含 `config/`、`data/`、`outputs/` 子目录。
+### Requirement: 评测目录结构
 
-#### Scenario: 目录结构完整性
+The system SHALL maintain a bench directory structure with `bench/README.md` serving as the evaluation entry document.
 
-- **WHEN** 创建新的评测类型目录
-- **THEN** 目录下 MUST 包含 `scripts/` 和 `reports/` 子目录
+#### Scenario: bench 顶层目录结构
 
-#### Scenario: 评测代码位于 bench/ 目录
+- **WHEN** 检查 `bench/` 目录
+- **THEN** 存在 `multihop_rag/`（含 `scripts/`、`reports/`、`README.md`）和 `plugins/`
+- **AND** 存在顶层 `README.md`（评测入口文档）
 
-- **WHEN** 评测代码需要被外部导入
-- **THEN** 代码 SHALL 位于 `bench/` 目录下（如 `bench/multihop_rag/`、`bench/plugins/`），启动脚本通过 `from bench.xxx import ...` 调用
+#### Scenario: bench README 为评测入口
+
+- **WHEN** 打开 `bench/README.md`
+- **THEN** 包含目录结构说明、评测类型导航、各评测类型简介
+- **AND** 不包含与具体评测类型重复的详细配置说明
+- **AND** 每种评测类型通过链接指向各自的 `README.md`
+
+#### Scenario: 评测报告集中管理
+
+- **WHEN** 检查评测报告文件位置
+- **THEN** 所有实验报告位于 `bench/<评测类型>/reports/` 目录下
+
+---
 
 ### Requirement: 启动脚本无命令行参数
 
@@ -28,6 +41,8 @@ Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类
 - **WHEN** 需要运行文档级重排评测
 - **THEN** SHALL 使用 `run_doc_rerank.py` 而非在基线脚本上传递参数
 
+---
+
 ### Requirement: 启动脚本命名规范
 
 脚本文件名 SHALL 使用 `run_<实验配置>.py` 格式，名称清晰表达评测类型和配置差异。
@@ -36,6 +51,8 @@ Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类
 
 - **WHEN** 创建新的启动脚本
 - **THEN** 文件名 SHALL 匹配 `run_<kebab-case-描述>.py` 格式
+
+---
 
 ### Requirement: 输出文件集中管理
 
@@ -46,14 +63,7 @@ Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类
 - **WHEN** 运行启动脚本
 - **THEN** 所有输出文件 SHALL 写入 `bench/<评测类型>/outputs/<实验名>/` 目录
 
-### Requirement: 报告归档
-
-评测报告 SHALL 存放在对应评测类型的 `reports/` 目录，并提交到版本控制。
-
-#### Scenario: 报告存放
-
-- **WHEN** 生成评测报告
-- **THEN** 报告 SHALL 存放在 `bench/<评测类型>/reports/` 目录下
+---
 
 ### Requirement: 根目录散落文件清理
 
@@ -68,12 +78,3 @@ Bench 评测 SHALL 按类型组织在顶层 `bench/` 目录下，每种评测类
 
 - **WHEN** 项目根目录存在 `_run_*.py` 文件
 - **THEN** 这些文件 SHALL 迁移到 `bench/multihop_rag/scripts/` 后删除原文件
-
-### Requirement: 评测目录 README
-
-每个评测类型目录 SHALL 包含 `README.md`，说明评测目的、数据来源、运行方式和指标口径。
-
-#### Scenario: README 内容
-
-- **WHEN** 查看 `bench/multihop_rag/README.md`
-- **THEN** 文档 SHALL 包含评测目的、数据下载说明、可用脚本列表和指标说明

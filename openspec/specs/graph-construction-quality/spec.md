@@ -1,7 +1,7 @@
 # graph-construction-quality Specification
 
 ## Purpose
-TBD - created by archiving change graph-construction-quality. Update Purpose after archive.
+提供图质量诊断工具，计算结构连通性指标（节点数、边数、孤立率、跨文档边比例等），并以对照实验量化验证构建增强的净收益。
 ## Requirements
 ### Requirement: 图质量诊断
 

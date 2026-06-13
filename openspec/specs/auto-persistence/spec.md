@@ -1,3 +1,6 @@
+## Purpose
+规定写入管线在图更新后自动持久化变更，通过 auto_persist 配置开关控制是否执行增量落盘，落盘失败不阻塞返回。
+
 ## ADDED Requirements
 
 ### Requirement: 写入管线在图更新后自动持久化变更

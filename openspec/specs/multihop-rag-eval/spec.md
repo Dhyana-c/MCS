@@ -1,3 +1,6 @@
+## Purpose
+定义 MultiHop-RAG 评测流程，包括数据加载与子集过滤、共享图构建（build-once）、查询评测及 Hit/MRR 指标计算。
+
 ## ADDED Requirements
 
 ### Requirement: MultiHop-RAG 数据加载

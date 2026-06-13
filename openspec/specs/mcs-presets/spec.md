@@ -1,7 +1,7 @@
 # mcs-presets Specification
 
 ## Purpose
-TBD - created by archiving change mcs-builder-abstraction. Update Purpose after archive.
+提供 Phase1Builder 构建器和 create_mcs() 快捷工厂函数，按插件类型注册表查找并组装默认插件，一键创建已初始化的 MCS 实例。
 
 ## Requirements
 

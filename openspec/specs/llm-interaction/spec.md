@@ -1,7 +1,7 @@
 # llm-interaction Specification
 
 ## Purpose
-TBD - created by archiving change unified-workflow-architecture. Update Purpose after archive.
+定义统一 LLM 调用签名 `call(purpose, nodes_in, free_args)` 和固定 purpose 枚举，所有语义 LLM 调用必须经此入口，杜绝厂商 SDK 直接调用。
 ## Requirements
 ### Requirement: LLM 调用使用统一签名
 

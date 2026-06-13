@@ -1,7 +1,7 @@
 # query-pipeline Specification
 
 ## Purpose
-TBD - created by archiving change unified-workflow-architecture. Update Purpose after archive.
+定义读流程为 5 段固定管线（前置插件→种子定位→语义理解 Loop→仲裁→后置处理），默认返回 List[Node]，各段独立可观察。
 ## Requirements
 ### Requirement: 读流程为 5 段固定管线
 

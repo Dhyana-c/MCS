@@ -1,7 +1,7 @@
 # phase1-defaults Specification
 
 ## Purpose
-TBD - created by archiving change phase1-implement-unified-workflow. Update Purpose after archive.
+定义知识图谱模式的默认插件清单及优先级配置，包括索引、入口、裁剪、压缩、存储、LLM 等全部 Phase1 插件实例。
 ## Requirements
 ### Requirement: 知识图谱模式默认插件清单
 
