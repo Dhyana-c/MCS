@@ -40,7 +40,7 @@ def get_phase1_plugin_registry() -> dict[str, type["Plugin"]]:
         IdempotencyCheckPlugin,
         SourceTrackingPlugin,
     )
-    from mcs.plugins.seed_selector.llm_seed_selector import LLMSeedSelectorPlugin
+    from mcs.plugins.seed_selector.llm_seed_selector import SemanticTrimPlugin
     from mcs.plugins.trim.priority_trim import PriorityTrimPlugin
 
     return {
@@ -56,7 +56,7 @@ def get_phase1_plugin_registry() -> dict[str, type["Plugin"]]:
         "alias_entry": AliasEntryPlugin,
         "hub_fallback": HubFallbackEntryPlugin,
         "priority_trim": PriorityTrimPlugin,
-        "llm_seed_selector": LLMSeedSelectorPlugin,
+        "semantic_trim": SemanticTrimPlugin,  # opt-in：需语义筛选时手动注册
         # LLM
         "deepseek_llm": DeepSeekLLMPlugin,
         "claude_llm": ClaudeLLMPlugin,

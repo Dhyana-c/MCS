@@ -22,8 +22,6 @@ class WritePreprocessPluginInterface(Plugin):
 
     链中的插件串行执行；每个插件的输出成为下一个插件的输入。
     输入/输出类型均为 str，确保链式调用类型安全。
-
-    短路：插件可设置 ctx.skip = True 以终止整个 ingest。
     """
 
     def get_type(self) -> PluginType:
@@ -41,6 +39,5 @@ class WritePreprocessPluginInterface(Plugin):
         """预处理文本并返回处理后的结果。
 
         返回值必须是 str 类型。
-        设置 ctx.skip = True 可短路写入管线。
         """
         pass

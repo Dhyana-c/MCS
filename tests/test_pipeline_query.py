@@ -303,46 +303,46 @@ def test_query_engine_preprocess_and_postprocess_independent(seeded_graph, mock_
     assert processed_text.get("value") == "my query"
 
 
-def test_seed_selector_plugin_chain(seeded_graph, mock_llm):
-    """SeedSelectorPlugin 链在 TrimPlugin 之后执行。"""
-    from mcs.interfaces.seed_selector_plugin import SeedSelectorPluginInterface
+def test_trim_plugin_chain(seeded_graph, mock_llm):
+    """TrimPlugin 链在 EntryPlugin 之后执行，多个 TrimPlugin 按优先级依次运行。"""
+    from mcs.interfaces.trim_plugin import TrimPluginInterface
 
-    selector_calls: list[list[str]] = []
+    trim_calls: list[list[str]] = []
 
-    class _SpySelector(SeedSelectorPluginInterface):
+    class _SpyTrim(TrimPluginInterface):
         def get_name(self) -> str:
-            return "spy_selector"
+            return "spy_trim"
 
         def get_priority(self) -> int:
             return 10
 
-        def select(self, seeds, query, budget, ctx=None):
-            selector_calls.append([n.id for n in seeds])
-            return seeds[:1]  # 只保留第一个
+        def trim(self, nodes, budget, *, query="", ctx=None):
+            trim_calls.append([n.id for n in nodes])
+            return nodes[:1]  # 只保留第一个
 
     engine = _build_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl", "nn"], seeded_graph),
-        _SpySelector(),
+        _SpyTrim(),
     )
     mock_llm.set_response("select_nodes", [])
     result = engine.query("test")
-    # SeedSelector 应被调用
-    assert len(selector_calls) > 0
-    # 结果应只包含 SeedSelector 筛选后的种子
+    # TrimPlugin 应被调用
+    assert len(trim_calls) > 0
+    # 结果应只包含 TrimPlugin 筛选后的种子
     assert len(result) <= 1
 
 
-def test_seed_selector_chain_empty_skips(seeded_graph, mock_llm):
-    """未注册 SeedSelectorPlugin 时跳过语义筛选。"""
+def test_trim_chain_empty_skips(seeded_graph, mock_llm):
+    """未注册 TrimPlugin 时仍正常执行（TrimPlugin 链为空则跳过裁剪）。"""
     engine = _build_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
     )
     mock_llm.set_response("select_nodes", [])
-    # 无 SeedSelectorPlugin → 不报错，正常执行
+    # 无 TrimPlugin → 不报错，正常执行
     result = engine.query("test")
     assert isinstance(result, list)
 

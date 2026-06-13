@@ -26,12 +26,12 @@ The system SHALL define a unified LLM call signature: `call(purpose: str, nodes_
 
 ### Requirement: purpose 枚举固定且与流程位置对应
 
-The `purpose` parameter SHALL be one of a fixed set of named purposes. Phase 1 MUST support at least: `extract_concepts`, `judge_relations`, `decide_directions`, `decide_hub`, `navigate_hub`, `arbitrate`, `synthesize`, `gen_aliases`, `gen_summary`.
+The `purpose` parameter SHALL be one of a fixed set of named purposes. Phase 1 MUST support at least: `extract_concepts`, `judge_relations`, `decide_directions`, `decide_hub`, `navigate_hub`, `arbitrate`, `synthesize`, `gen_aliases`, `gen_summary`, `select_nodes`, `select_nodes_batch`. The `select_nodes_batch` purpose SHALL use the `BATCH_USER_TEMPLATE` prompt template, separate from `select_nodes`.
 
-#### Scenario: 9 个 purpose 在 Phase 1 范围内
+#### Scenario: purpose 取值完整
 
 - **WHEN** 检查 LLMInterface 与文档
-- **THEN** 上述 9 个 purpose MUST 被明确定义；每个 MUST 对应到读/写流程中的一个具体调用位置
+- **THEN** 上述 11 个 purpose MUST 被明确定义；每个 MUST 对应到读/写流程中的一个具体调用位置
 
 #### Scenario: 未注册的 purpose 报错
 
@@ -42,6 +42,16 @@ The `purpose` parameter SHALL be one of a fixed set of named purposes. Phase 1 M
 
 - **WHEN** 同样的 `nodes_in` 被以不同 purpose 调用
 - **THEN** ContextRenderer 渲染出的内容 MUST 可能不同；prompt 模板 MUST 不同
+
+#### Scenario: select_nodes_batch 有独立模板
+
+- **WHEN** `_traverse` 批量扩展阶段调用 LLM
+- **THEN** MUST 使用 `purpose="select_nodes_batch"` 和对应的 `BATCH_USER_TEMPLATE`；MUST NOT 通过 try/finally 动态替换 `select_nodes` 的模板
+
+#### Scenario: select_nodes_batch 在初始化时注册
+
+- **WHEN** LLM 适配器初始化
+- **THEN** `select_nodes_batch` purpose 及其模板 MUST 在初始化时一次性注册；MUST NOT 在运行时动态换装
 
 ---
 
@@ -115,11 +125,11 @@ For each `purpose`, the system SHALL allow the user to override three artifacts:
 
 ### Requirement: 厂商适配层只做调用与解析
 
-LLM vendor adapter (e.g., `DeepSeekLLMPlugin`) SHALL implement ONLY the vendor-specific `call(system: str, user: str) -> str` method (raw HTTP/SDK invocation). It MUST NOT contain prompt templates or business semantics.
+LLM vendor adapter (e.g., `DeepSeekLLMPlugin`) SHALL implement ONLY the vendor-specific `call(system: str, user: str) -> str` method (raw HTTP/SDK invocation). It MUST NOT contain prompt templates or business semantics. 共享重试机制 MUST 由 `LLMInterface` 基类提供，所有厂商适配器统一覆盖。
 
 #### Scenario: 厂商插件无 prompt 模板
 
-- **WHEN** 审查 `mcs/plugins/phase1/deepseek_llm.py`
+- **WHEN** 审查 `mcs/plugins/llm/deepseek_llm.py`
 - **THEN** 它 MUST NOT 含 `EXTRACT_CONCEPTS_PROMPT` 等字符串模板；模板 MUST 全部放在 `mcs/prompts/` 下且由框架装配
 
 #### Scenario: 换厂商不动业务
@@ -127,10 +137,22 @@ LLM vendor adapter (e.g., `DeepSeekLLMPlugin`) SHALL implement ONLY the vendor-s
 - **WHEN** 用户把 DeepSeek 换成另一个厂商
 - **THEN** 仅需新增/替换厂商适配插件；MUST NOT 改动 9 个 purpose 的模板或 parser；MUST NOT 改动读写流程代码
 
-#### Scenario: 厂商插件可加扩展（非业务）
+#### Scenario: 共享重试由基类提供
 
-- **WHEN** 厂商插件需要支持重试、限流、缓存
-- **THEN** 这些 MAY 添加在厂商插件内；它们是 transport 层关注点，不涉及业务语义
+- **WHEN** 任意厂商适配器的 `_raw_call` 遇到可重试错误（429 rate limit / 网络错误）
+- **THEN** `LLMInterface` 基类 MUST 提供指数退避 + jitter 重试机制
+- **AND** 所有厂商适配器 MUST 统一使用此共享机制
+
+#### Scenario: 重试参数可配置
+
+- **WHEN** 厂商适配器配置中指定 `max_retries` 和 `base_delay`
+- **THEN** 重试机制 MUST 使用配置值
+- **AND** 默认 MUST 为 `max_retries=3`, `base_delay=1.0` 秒
+
+#### Scenario: 不可重试错误直接抛出
+
+- **WHEN** LLM 调用失败且错误类型不可重试（如认证失败、请求格式错误）
+- **THEN** MUST NOT 重试，直接抛出 `LLMCallError`
 
 ---
 

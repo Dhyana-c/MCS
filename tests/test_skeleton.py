@@ -272,20 +272,19 @@ def test_default_phase1_config_plugins() -> None:
     assert config.max_rounds == 5
     assert config.max_accumulated_nodes == 1000
 
-    # 健全性检查：按规范应有 11 个插件（移除了 sqlite_storage，它不是插件）
+    # 健全性检查：按规范应有 9 个插件（移除了 sqlite_storage，它不是插件）
     # shared: source_tracking, summary (2)
     # write: idempotency_check, fanout_reducer, summary_regen (3)
-    # read: alias_index, alias_entry, hub_fallback, priority_trim, llm_seed_selector (5)
-    # total: 2 + 3 + 5 = 10 个插件
+    # read: alias_index, alias_entry, hub_fallback, priority_trim (4)
+    # total: 2 + 3 + 4 = 9 个插件
     assert len(PHASE1_SHARED_PLUGINS) == 2
     assert len(PHASE1_WRITE_PLUGINS) == 3
-    assert len(PHASE1_READ_PLUGINS) == 5
-    assert len(PHASE1_DEFAULT_PLUGINS) == 10
+    assert len(PHASE1_READ_PLUGINS) == 4
+    assert len(PHASE1_DEFAULT_PLUGINS) == 9
 
     assert "alias_entry" in PHASE1_READ_PLUGINS
     assert "hub_fallback" in PHASE1_READ_PLUGINS
     assert "priority_trim" in PHASE1_READ_PLUGINS
-    assert "llm_seed_selector" in PHASE1_READ_PLUGINS
     assert "idempotency_check" in PHASE1_WRITE_PLUGINS
     assert "fanout_reducer" in PHASE1_WRITE_PLUGINS
     assert "summary_regen" in PHASE1_WRITE_PLUGINS

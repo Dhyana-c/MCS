@@ -74,7 +74,7 @@ The system SHALL accept an optional `existing_context` parameter on `query()`. W
 
 ### Requirement: 入口插件链累积合并并按优先级排序
 
-In stage ②, all registered `EntryPluginInterface` instances SHALL execute. Their outputs MUST be merged and sorted by plugin priority (descending). A plugin MAY declare `exclusive=True` to short-circuit lower-priority plugins on non-empty hit.
+In stage ②, all registered `EntryPluginInterface` instances SHALL execute. Their outputs MUST be merged and sorted by plugin priority (descending). A plugin MAY declare `exclusive=True` to short-circuit lower-priority plugins on non-empty hit. Each plugin's `locate` call SHALL be independently wrapped in try/except; a single plugin failure MUST NOT prevent other plugins from executing.
 
 #### Scenario: 多个入口插件全部执行
 
@@ -90,6 +90,16 @@ In stage ②, all registered `EntryPluginInterface` instances SHALL execute. The
 
 - **WHEN** 所有入口插件（含 priority=0 的兜底）都返回空
 - **THEN** 框架 MUST 返回空 `seeds`；后续 ③ Loop 立即终止；最终 `result_set` 为空
+
+#### Scenario: 单插件异常隔离
+
+- **WHEN** 入口插件 A（priority=100）的 `locate` 方法抛出异常
+- **THEN** 框架 MUST 记录 WARNING 日志（含插件名和错误信息），继续执行后续入口插件 B/C；MUST NOT 让 A 的异常拖垮整次种子定位
+
+#### Scenario: 所有插件异常时返回空
+
+- **WHEN** 所有入口插件均抛出异常
+- **THEN** 框架 MUST 返回空 `seeds`；后续遍历 MUST 自然终止；MUST 记录每次异常的 WARNING 日志
 
 ---
 
@@ -109,35 +119,29 @@ The system SHALL provide a `HubFallbackEntryPlugin` with `priority=0` and `exclu
 
 ---
 
-### Requirement: 种子裁剪使用统一 TrimPluginInterface
+### Requirement: 种子裁剪使用 TrimPlugin 链
 
-In stage ②, after entry plugin merge, seeds exceeding token budget T MUST be reduced by a `TrimPluginInterface` instance (default `PriorityTrimPlugin`). The same interface MAY be reused at stage ④ arbitration.
+In stage ②, after entry plugin merge, seeds MUST go through a TrimPlugin chain for reduction. The chain SHALL execute serially, each plugin's output becoming the next's input. Plugins are sorted by priority (descending). The same interface MAY be reused at stage ④ arbitration.
+
+#### Scenario: 执行顺序为 Entry → TrimPlugin 链
+
+- **WHEN** 查询管线执行阶段 ②
+- **THEN** 执行顺序 MUST 是：EntryPlugin 链（合并）→ TrimPlugin 链（按优先级排序，依次裁剪）
+
+#### Scenario: TrimPlugin 链可空
+
+- **WHEN** 未配置任何 TrimPlugin
+- **THEN** 框架 MUST 跳过裁剪，直接返回 EntryPlugin 合并输出
 
 #### Scenario: 种子超 T 触发裁剪
 
 - **WHEN** 入口插件合并产出 N 个候选节点，估算总 token > T
-- **THEN** 框架 MUST 调用配置的 TrimPlugin，将候选裁剪到 ≤ T
+- **THEN** TrimPlugin 链 MUST 将候选裁剪到 ≤ T
 
-#### Scenario: 种子不超 T 跳过裁剪
+#### Scenario: 语义 TrimPlugin 按 query 筛选
 
-- **WHEN** 入口插件合并产出的候选总 token ≤ T
-- **THEN** 框架 MAY 跳过 TrimPlugin 调用；候选全部进入 ③ Loop
-
----
-
-### Requirement: 种子定位阶段增加 SeedSelectorPlugin 链
-
-In stage ②, after TrimPlugin, seeds MUST go through a SeedSelectorPlugin chain for semantic filtering. The chain SHALL execute serially, each plugin's output becoming the next's input. When no SeedSelectorPlugin is configured, the chain is skipped.
-
-#### Scenario: 执行顺序为 Entry → Trim → SeedSelector
-
-- **WHEN** 查询管线执行阶段 ②
-- **THEN** 执行顺序 MUST 是：EntryPlugin 链（合并）→ TrimPlugin（硬截断）→ SeedSelectorPlugin 链（语义筛选）
-
-#### Scenario: SeedSelector 链可空
-
-- **WHEN** 未配置任何 SeedSelectorPlugin
-- **THEN** 框架 MUST 跳过语义筛选，直接返回 TrimPlugin 输出
+- **WHEN** 注册了 SemanticTrimPlugin（或类似实现）
+- **THEN** 插件 MAY 使用 LLM 按 query 语义筛选节点（可重排）；MUST 满足预算约束
 
 ---
 

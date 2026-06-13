@@ -39,7 +39,14 @@ class PriorityTrimPlugin(TrimPluginInterface):
 
     # === TrimPluginInterface ===
 
-    def trim(self, nodes: list[Node], budget: int) -> list[Node]:
+    def trim(
+        self,
+        nodes: list[Node],
+        budget: int,
+        *,
+        query: str = "",
+        ctx: object | None = None,
+    ) -> list[Node]:
         if not nodes:
             return []
         result: list[Node] = []

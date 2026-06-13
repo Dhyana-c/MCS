@@ -37,6 +37,8 @@ class PluginType(str, Enum):
     NODE_EXTENSION = "node_extension"
     STORAGE_SCHEMA_EXT = "storage_schema_ext"
     MAINTENANCE = "maintenance"
+
+    # 废弃别名（一个版本后移除）：语义筛选已合并为 TrimPlugin 实现
     SEED_SELECTOR = "seed_selector"
 
 

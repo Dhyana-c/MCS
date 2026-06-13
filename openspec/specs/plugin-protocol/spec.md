@@ -24,45 +24,71 @@ The system SHALL define `EntryPluginInterface` inheriting `Plugin`, with: `get_t
 
 ---
 
+### Requirement: _locate_seeds 对每个 EntryPlugin 异常隔离
+
+`QueryEngine._locate_seeds` SHALL 对每个 EntryPlugin 的 `locate` 调用包裹独立的 try/except。单个插件抛异常时 MUST log 警告并继续执行后续插件，MUST NOT 拖垮整次种子定位。
+
+#### Scenario: 单插件异常不影响其他插件
+
+- **WHEN** EntryPlugin A（priority=100）抛出异常，EntryPlugin B（priority=80）正常
+- **THEN** 框架 MUST 记录 A 的异常日志，继续执行 B 并合并 B 的候选节点
+
+#### Scenario: 所有插件异常时返回空种子
+
+- **WHEN** 所有 EntryPlugin 均抛出异常
+- **THEN** 框架 MUST 返回空 `seeds`；后续遍历 MUST 自然终止
+
+#### Scenario: 异常日志包含插件名和错误信息
+
+- **WHEN** EntryPlugin "alias_index" 的 locate 方法抛出 ValueError
+- **THEN** 框架 MUST log 包含 "alias_index" 和错误信息的 WARNING 级别日志
+
+---
+
 ### Requirement: 提供 TrimPluginInterface 用于统一裁剪
 
-The system SHALL define `TrimPluginInterface` with abstract method `trim(nodes: List[Node], budget: int) -> List[Node]`. This interface MUST be reusable at both stage ② (seed trimming) and as the underlying implementation of `PriorityArbitrationPlugin` at stage ④.
+The system SHALL define `TrimPluginInterface` with abstract method `trim(nodes: List[Node], budget: int, *, query: str = "", ctx = None) -> List[Node]`. TrimPlugin 采用链式语义：可注册多个实现，按优先级排序依次执行。此接口 MUST be reusable at both stage ② (seed trimming) and as the underlying implementation of `PriorityArbitrationPlugin` at stage ④.
 
-#### Scenario: trim 不破坏顺序语义
+#### Scenario: trim 不破坏顺序语义（基本实现）
 
 - **WHEN** TrimPlugin.trim 接收按优先级排序的 nodes 列表
-- **THEN** 返回的子集 MUST 保持原顺序（不重排）
+- **THEN** 基本实现（如 PriorityTrimPlugin）返回的子集 MUST 保持原顺序（不重排）
 
 #### Scenario: trim 满足预算约束
 
 - **WHEN** TrimPlugin.trim 完成
 - **THEN** 返回 nodes 的估算 token 总和 MUST ≤ `budget`
 
+#### Scenario: TrimPlugin 链式调用
+
+- **WHEN** 注册了多个 TrimPlugin [T1, T2]（按优先级降序）
+- **THEN** 框架 MUST 依次调用 T1.trim(nodes, budget, query, ctx) → T2.trim(T1输出, budget, query, ctx)
+
 #### Scenario: TrimPlugin 可挂载在多个位置
 
 - **WHEN** 同一个 TrimPlugin 实例同时被读流程 ② 和（通过 PriorityArbitrationPlugin 包装后）④ 引用
 - **THEN** 框架 MUST 允许此种复用，不要求每个挂载点持有独立实例
 
+#### Scenario: 语义 TrimPlugin 使用 query 参数
+
+- **WHEN** SemanticTrimPlugin.trim 被调用且 query 非空
+- **THEN** 插件 MAY 使用 LLM 按 query 语义筛选节点（可重排）；MUST 满足预算约束
+
 ---
 
-### Requirement: 提供 SeedSelectorPluginInterface 用于种子语义筛选
+### Requirement: 废弃 SeedSelectorPluginInterface
 
-The system SHALL define `SeedSelectorPluginInterface` inheriting `Plugin`, with `get_type()` returning `PluginType.SEED_SELECTOR`, and an abstract `select(seeds: List[Node], query: str, budget: int, ctx) -> List[Node]` method. `execute()` SHALL delegate to `select()`. This interface MUST be used for query pipeline stage ② seed selection after TrimPlugin.
+`SeedSelectorPluginInterface` SHALL be deprecated. 语义筛选已合并为 TrimPlugin 实现（如 `SemanticTrimPlugin`）。`SeedSelectorPluginInterface` 和 `PluginType.SEED_SELECTOR` SHALL remain for one version then be removed.
 
-#### Scenario: 接口最小契约
+#### Scenario: 废弃接口仍可导入
 
-- **WHEN** 实现一个 SeedSelectorPlugin
-- **THEN** 子类 MUST 提供 `select` 方法；`select` MUST 返回 `List[Node]`；`get_type()` MUST 返回 `PluginType.SEED_SELECTOR`
+- **WHEN** 旧代码导入 `SeedSelectorPluginInterface`
+- **THEN** MUST 成功导入但类文档 MUST 标注 deprecated
 
-#### Scenario: select 输出满足预算约束
+#### Scenario: SEED_SELECTOR 枚举值仍可用
 
-- **WHEN** SeedSelectorPlugin.select 完成
-- **THEN** 返回节点的估算 token 总和 MUST ≤ `budget`
-
-#### Scenario: select 保持或调整顺序
-
-- **WHEN** SeedSelectorPlugin.select 返回节点列表
-- **THEN** 列表顺序 MUST 反映相关性优先级（高相关性在前）；允许重排输入顺序
+- **WHEN** 使用 `PluginType.SEED_SELECTOR`
+- **THEN** MUST 等价于 `"seed_selector"` 但枚举文档 MUST 标注 deprecated
 
 ---
 
@@ -84,7 +110,7 @@ The system SHALL define `ArbitrationPluginInterface` with abstract method `arbit
 
 ### Requirement: 提供 WritePreprocessPluginInterface 用于写入管线前置处理
 
-The system SHALL define `WritePreprocessPluginInterface` inheriting `Plugin`, with abstract method `preprocess(text: str, ctx: WriteContext) -> str`. This interface MUST be used for write pipeline stage ① (text preprocessing such as idempotency checks, summarization, text cleaning). `get_type()` MUST return `PluginType.WRITE_PREPROCESS`.
+The system SHALL define `WritePreprocessPluginInterface` inheriting `Plugin`, with abstract method `preprocess(text: str, ctx: WriteContext) -> str`. This interface MUST be used for write pipeline stage ① (text preprocessing such as source tracking, summarization, text cleaning). `get_type()` MUST return `PluginType.WRITE_PREPROCESS`. WritePreprocessPlugin MUST NOT control pipeline flow (e.g. skip); idempotency checks SHALL be the caller's responsibility.
 
 #### Scenario: 接口最小契约
 
@@ -95,11 +121,6 @@ The system SHALL define `WritePreprocessPluginInterface` inheriting `Plugin`, wi
 
 - **WHEN** 配置多个 WritePreprocessPlugin [P1, P2]
 - **THEN** 框架 MUST 调用 P1(text) → P2(P1输出)；返回 P2 的输出
-
-#### Scenario: 短路语义
-
-- **WHEN** WritePreprocessPlugin 设置 `ctx.skip = True`
-- **THEN** 框架 MUST 终止整个 ingest 流程
 
 #### Scenario: 按类型查找写入前置插件
 
@@ -178,7 +199,7 @@ The system SHALL define `PostprocessPluginInterface` with abstract method `proce
 
 ### Requirement: 提供 CompactionPluginInterface 用于写流程压缩
 
-The system SHALL define `CompactionPluginInterface` with: `should_run(changed_nodes, graph) -> bool` and `run(changed_nodes, graph, llm_caller) -> None`. Only plugins whose `should_run` returns True execute `run()`.
+The system SHALL define `CompactionPluginInterface` with: `should_run(changed_nodes, graph) -> bool`, `run(changed_nodes, graph, llm_caller) -> None`, and `guard(node, store, llm_caller) -> None`. Only plugins whose `should_run` returns True execute `run()`. The `guard` method performs invariant checking and compaction for a single node that may exceed budget; it has a default no-op implementation so existing plugins are unaffected.
 
 #### Scenario: should_run 短路 run
 
@@ -189,6 +210,21 @@ The system SHALL define `CompactionPluginInterface` with: `should_run(changed_no
 
 - **WHEN** CompactionPlugin.run 被调用
 - **THEN** 框架 MUST 传入 `llm_caller`（统一调用模式的入口）；插件可用它执行 `decide_hub` 等 purpose
+
+#### Scenario: guard 默认为空操作
+
+- **WHEN** CompactionPlugin 未覆写 `guard` 方法
+- **THEN** 默认实现 MUST 为空操作（不执行任何检查或压缩）
+
+#### Scenario: guard 被 _guard_invariant 遍历调用
+
+- **WHEN** `_guard_invariant` 检查超预算节点
+- **THEN** MUST 遍历所有 CompactionPlugin 并调用 `guard(node, store, llm_caller)`；MUST NOT import 具体插件类（如 FanoutReducerPlugin）或调用其私有方法
+
+#### Scenario: FanoutReducerPlugin 覆写 guard
+
+- **WHEN** FanoutReducerPlugin 实现了 `guard`
+- **THEN** 该方法 MUST 内部调用预算检查（原 `_exceeds_budget` 逻辑）和裂变压缩（原 `_compact_node` 逻辑）
 
 ---
 

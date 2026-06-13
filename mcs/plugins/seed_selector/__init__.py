@@ -1,5 +1,5 @@
-"""SEED_SELECTOR 类型插件 - 种子选择插件。"""
+"""语义裁剪插件 - SemanticTrimPlugin（TrimPlugin 实现）。"""
 
-from mcs.plugins.seed_selector.llm_seed_selector import LLMSeedSelectorPlugin
+from mcs.plugins.seed_selector.llm_seed_selector import SemanticTrimPlugin
 
-__all__ = ["LLMSeedSelectorPlugin"]
+__all__ = ["SemanticTrimPlugin"]

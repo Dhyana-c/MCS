@@ -21,8 +21,12 @@ class TrimPluginInterface(Plugin):
       - 查询阶段 ② 种子裁剪（入口插件合并后）
       - 查询阶段 ④ 作为 PriorityArbitration 的底层机制
 
-    Trim 实现必须保持节点的输入顺序（它们代表优先级）；
-    不得重新排序。
+    TrimPlugin 采用链式语义（可注册多个实现，按优先级排序依次执行）。
+    每个实现决定如何裁剪：按位置截断（PriorityTrimPlugin）、
+    按语义相关性筛选（SemanticTrimPlugin）等。
+
+    基本实现必须保持节点的输入顺序（它们代表优先级）；
+    不得重新排序。语义实现（如 SemanticTrimPlugin）可按相关性重排。
     """
 
     def get_type(self) -> PluginType:
@@ -33,9 +37,25 @@ class TrimPluginInterface(Plugin):
         return self.trim(
             nodes=kwargs["nodes"],
             budget=kwargs["budget"],
+            query=kwargs.get("query", ""),
+            ctx=kwargs.get("ctx"),
         )
 
     @abstractmethod
-    def trim(self, nodes: list[Node], budget: int) -> list[Node]:
-        """返回 nodes 的子集，其总预估 token 数 ≤ budget。"""
+    def trim(
+        self,
+        nodes: list[Node],
+        budget: int,
+        *,
+        query: str = "",
+        ctx: object | None = None,
+    ) -> list[Node]:
+        """返回 nodes 的子集，其总预估 token 数 ≤ budget。
+
+        Args:
+            nodes: 待裁剪节点列表
+            budget: token 预算上限
+            query: 原始查询字符串（语义 TrimPlugin 可用于 LLM 筛选）
+            ctx: QueryContext（可选，供需要上下文的实现使用）
+        """
         pass

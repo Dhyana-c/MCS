@@ -170,9 +170,9 @@ class QueryEngine:
         return result if isinstance(result, str) else text
 
     def _locate_seeds(self, query: str, ctx: QueryContext) -> list[Node]:
-        """阶段 ②：运行所有 EntryPlugins（按优先级排序），合并，裁剪，语义筛选。
+        """阶段 ②：运行所有 EntryPlugins（按优先级排序），合并，裁剪。
 
-        执行顺序：EntryPlugin 链（合并）→ TrimPlugin（硬截断）→ SeedSelectorPlugin 链（语义筛选）
+        执行顺序：EntryPlugin 链（合并）→ TrimPlugin 链（按优先级裁剪）
         """
         from mcs.core.plugin import PluginType
 
@@ -203,30 +203,21 @@ class QueryEngine:
             if plugin.exclusive:
                 exclusive_hit = True
 
-        # 如果超出预算则裁剪
-        trim = self.plugin_manager.get(PluginType.TRIM)
-        if trim is not None and accumulated:
-            try:
-                accumulated = trim.trim(accumulated, self.token_budget.T)
-            except NotImplementedError:
-                # 预算检查尚未实现；原样传递
-                pass
-
-        # SeedSelectorPlugin 链：语义筛选
-        selector_plugins = self.plugin_manager.get_all(PluginType.SEED_SELECTOR)
-        if selector_plugins and accumulated:
-            for selector in selector_plugins:
+        # TrimPlugin 链：按优先级排序依次裁剪（每个插件可做不同策略）
+        trim_plugins = self.plugin_manager.get_all(PluginType.TRIM)
+        if trim_plugins and accumulated:
+            for trim in trim_plugins:
                 try:
-                    accumulated = selector.select(
-                        seeds=accumulated,
+                    accumulated = trim.trim(
+                        accumulated,
+                        self.token_budget.T,
                         query=query,
-                        budget=self.token_budget.T,
                         ctx=ctx,
                     )
                 except Exception:
                     logger.warning(
-                        "SeedSelectorPlugin %s 执行失败，跳过",
-                        selector.get_name(),
+                        "TrimPlugin %s 执行失败，跳过",
+                        trim.get_name(),
                         exc_info=True,
                     )
 

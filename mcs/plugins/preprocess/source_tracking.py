@@ -198,12 +198,34 @@ class SourceTrackingPlugin(
 
         ``new_chunks`` 中的元素可以是字典 ``{id, text, section_title?}``
         或具有相同属性的对象。
+
+        幂等检查在调用 ``ingest()`` 前完成：已摄入的块直接跳过，
+        不进入写入管线。
         """
+        from mcs.core.plugin import PluginType
+
+        # 找到 IdempotencyCheckPlugin 以便前置检查
+        idem: IdempotencyCheckPlugin | None = None
+        for p in pipeline.plugin_manager.get_all(PluginType.WRITE_PREPROCESS):
+            if isinstance(p, IdempotencyCheckPlugin):
+                idem = p
+                break
+
         new_keys: set[tuple[str, str]] = set()
         for chunk in new_chunks:
             chunk_id = _get(chunk, "id")
             text = _get(chunk, "text")
             section_title = _get(chunk, "section_title", None)
+
+            # 幂等检查：已摄入的块直接跳过，不进入管线
+            if idem is not None:
+                content_hash = hashlib.sha256(
+                    text.encode("utf-8")
+                ).hexdigest()
+                if idem.is_ingested(doc_id, chunk_id, content_hash):
+                    new_keys.add((doc_id, chunk_id))
+                    continue
+
             pipeline.ingest(
                 text,
                 doc_id=doc_id,
@@ -245,12 +267,12 @@ class SourceTrackingPlugin(
 
 
 class IdempotencyCheckPlugin(WritePreprocessPluginInterface):
-    """写入阶段 ① 的幂等性检查。
+    """写入阶段 ① 的幂等性检查与 Source 暂存。
 
-    计算内容哈希并查询存储的 ``document_chunks`` 表；如果该块
-    已被摄入，则设置 ``ctx.skip = True`` 以短路写入管道的
-    其余部分。否则记录该块并在上下文中暂存一个 ``Source``
-    以供后续附加。
+    计算内容哈希并查询存储的 ``document_chunks`` 表判断是否已摄入。
+    幂等检查由调用方（如 ``update_document()``）在调用 ``ingest()``
+    前通过 ``is_ingested()`` 判断；本插件在 ``preprocess()`` 中仅为
+    本次摄入暂存 ``Source`` 记录（供下游 ``_attach_pending_source`` 使用）。
     """
 
     def __init__(self, config: dict | None = None) -> None:
@@ -289,15 +311,11 @@ class IdempotencyCheckPlugin(WritePreprocessPluginInterface):
         doc_id = metadata.get("doc_id")
         chunk_id = metadata.get("chunk_id")
         if not (doc_id and chunk_id):
-            return text  # 无文档上下文 → 无需去重
-
-        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        if self._already_ingested(doc_id, chunk_id, content_hash):
-            ctx.skip = True
-            return text
+            return text  # 无文档上下文 → 无需处理
 
         # 为下游附加暂存 Source（在 ctx.metadata 中）。标记写入推迟到块成功落盘之后
         # （由写入管线在阶段 ⑦ 后调用 ``record_ingested``），保证"标记已摄入 ⇔ 节点已提交"。
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         section_title = metadata.get("section_title")
         metadata["_pending_source"] = Source(
             doc_id=doc_id,
@@ -306,6 +324,25 @@ class IdempotencyCheckPlugin(WritePreprocessPluginInterface):
             section_title=section_title,
         )
         return text
+
+    # === 公共 API：幂等检查 ===
+
+    def is_ingested(
+        self, doc_id: str, chunk_id: str, content_hash: str
+    ) -> bool:
+        """检查 ``(doc_id, chunk_id, content_hash)`` 是否已被摄入。
+
+        调用方应在调用 ``ingest()`` 前使用此方法判断是否跳过。
+        """
+        conn = getattr(self.storage, "conn", None)
+        if conn is None:
+            return False
+        row = conn.execute(
+            "SELECT content_hash FROM document_chunks "
+            "WHERE doc_id=? AND chunk_id=?",
+            (doc_id, chunk_id),
+        ).fetchone()
+        return bool(row and row[0] == content_hash)
 
     # === 公共：成功落盘后标记（mark-on-success）===
 
@@ -326,21 +363,6 @@ class IdempotencyCheckPlugin(WritePreprocessPluginInterface):
             (doc_id, chunk_id, content_hash),
         )
         conn.commit()
-
-    # === 内部存储辅助方法 ===
-
-    def _already_ingested(
-        self, doc_id: str, chunk_id: str, content_hash: str
-    ) -> bool:
-        conn = getattr(self.storage, "conn", None)
-        if conn is None:
-            return False
-        row = conn.execute(
-            "SELECT content_hash FROM document_chunks "
-            "WHERE doc_id=? AND chunk_id=?",
-            (doc_id, chunk_id),
-        ).fetchone()
-        return bool(row and row[0] == content_hash)
 
 
 def _get(obj: Any, attr: str, default: Any = None) -> Any:

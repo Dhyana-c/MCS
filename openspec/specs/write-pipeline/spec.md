@@ -26,33 +26,33 @@ The system SHALL implement ingest as a 7-stage pipeline in this fixed order: ①
 
 ### Requirement: 阶段 ① 使用独立的 PreprocessPlugin 类型
 
-The system SHALL modify stage ① (前置插件链) to use `PluginType.PREPROCESS` for locating plugins, instead of filtering `PostprocessPlugin` by `position` attribute.
+The system SHALL modify stage ① (前置插件链) to use `PluginType.WRITE_PREPROCESS` for locating plugins. WritePreprocessPluginInterface only processes text; it MUST NOT control pipeline flow (e.g. skip). Idempotency checks SHALL be the caller's responsibility (e.g. `update_document()` checks `is_ingested()` before calling `ingest()`).
 
 #### Scenario: 写入前置插件类型独立
 
 - **WHEN** 写入管线执行阶段 ①
-- **THEN** 框架 MUST 通过 `plugin_manager.get_all(PluginType.PREPROCESS)` 获取前置插件链
+- **THEN** 框架 MUST 通过 `plugin_manager.get_all(PluginType.WRITE_PREPROCESS)` 获取前置插件链
 
 #### Scenario: 写入前置插件处理文本
 
 - **WHEN** 写入前置插件链执行
 - **THEN** 每个插件的输入和输出 MUST 是 `str` 类型
 
-#### Scenario: 幂等检查插件作为 PreprocessPlugin
+#### Scenario: 幂等检查由调用方负责
 
-- **WHEN** `IdempotencyCheckPlugin` 迁移为 `PreprocessPluginInterface`
-- **THEN** 该插件 MUST 实现 `preprocess(text, ctx)` 方法，返回处理后的文本或触发 `ctx.skip = True`
+- **WHEN** 调用方需要避免重复摄入
+- **THEN** 调用方 MUST 在调用 `ingest()` 前使用 `IdempotencyCheckPlugin.is_ingested()` 检查；`WritePreprocessPluginInterface` MUST NOT 通过 `ctx.skip` 控制管线流程
 
 ---
 
-### Requirement: 关联节点定位通过复用读流程实现
+### Requirement: 关联节点定位通过轻量查询模式实现
 
-Stage ② SHALL invoke the query pipeline internally with `processed_text` (output of stage ①) as the query string. The returned `List[Node]` becomes `WriteContext.related` and feeds stages ③④.
+Stage ② SHALL invoke `QueryEngine.query_nodes(processed_text)` (lightweight mode) instead of `QueryEngine.query(processed_text)`. The returned `List[Node]` becomes `WriteContext.related` and feeds stages ③④. The framework MUST NOT contain `isinstance(related, list) else []` silent degradation logic.
 
-#### Scenario: 写入复用读流程
+#### Scenario: 写入使用轻量查询模式
 
 - **WHEN** 执行 ②
-- **THEN** 框架 MUST 调用 `QueryEngine.query(processed_text)` 或等价内部方法；返回值 MUST 作为后续阶段的 `related` 字段
+- **THEN** 框架 MUST 调用 `QueryEngine.query_nodes(processed_text)` 或等价内部方法；MUST NOT 调用 `QueryEngine.query(processed_text)`
 
 #### Scenario: 关联定位失败不阻塞写入
 
@@ -61,8 +61,13 @@ Stage ② SHALL invoke the query pipeline internally with `processed_text` (outp
 
 #### Scenario: 关联定位的 LLM 调用计入预算
 
-- **WHEN** ② 内部调用的读流程触发了 ③ 语义遍历 Loop
+- **WHEN** ② 内部调用的轻量查询触发了遍历
 - **THEN** 框架 MUST 把这些 LLM 调用计入本次 ingest 的总调用计数（用于监控/限流）
+
+#### Scenario: 返回值直接赋给 related
+
+- **WHEN** `query_nodes` 返回结果 R
+- **THEN** `ctx.related` MUST 直接等于 R；MUST NOT 包含 `isinstance(R, list) else []` 转换逻辑
 
 ---
 
@@ -110,7 +115,7 @@ Stage ④ output MUST be a serializable `DecisionList` containing zero or more d
 
 ### Requirement: 阶段 ④ DecisionList 动作类型简化
 
-阶段 ④ `judge_relations` 的 DecisionList 从 4 种动作简化为 3 种：`merge`、`create`、`no_op`。`attach_statement` 标记为 deprecated，保留在动作类型字面量中但不再由管线产生。
+阶段 ④ `judge_relations` 的 DecisionList 从 4 种动作简化为 3 种：`merge`、`create`、`no_op`。`attach_statement` 标记为 deprecated，保留在动作类型字面量中但不再由管线产生。merge 决策中 `aliases_to_add` 字段用于让 LLM 贡献额外别名。
 
 #### Scenario: DecisionList 不再产生 attach_statement
 
@@ -122,10 +127,11 @@ Stage ④ output MUST be a serializable `DecisionList` containing zero or more d
 - **WHEN** 阶段 ④ LLM 返回 `initial_statements` 字段
 - **THEN** write_pipeline MUST 忽略该字段，不写入 `extensions["statements"]`
 
-#### Scenario: merge 动作
+#### Scenario: merge 动作含 aliases_to_add
 
 - **WHEN** ④ 决定一个概念已存在为节点 X
 - **THEN** DecisionList 中 MUST 含一项 `{action: "merge", concept: c, target_id: X_id, aliases_to_add: [...]}`
+- **AND** `aliases_to_add` MUST 包含 LLM 识别的同义词、缩写、变体写法
 
 #### Scenario: create 动作
 
@@ -141,7 +147,7 @@ Stage ④ output MUST be a serializable `DecisionList` containing zero or more d
 
 ### Requirement: merge 时 concept content 追加到目标节点
 
-`_dispatch_merge` 在合并概念时，MUST 将 `decision.concept.content` 追加到目标节点的 `content` 字段（而非写入 statements extensions）。
+`_dispatch_merge` 在合并概念时，MUST 将 `decision.concept.content` 追加到目标节点的 `content` 字段（而非写入 statements extensions）。追加后若 content 超过阈值，MUST 触发 LLM 压缩。
 
 #### Scenario: merge 追加 content
 
@@ -153,6 +159,17 @@ Stage ④ output MUST be a serializable `DecisionList` containing zero or more d
 
 - **WHEN** merge decision 的 `concept.content` 已经是目标节点 `content` 的子串
 - **THEN** write_pipeline MUST NOT 重复追加
+
+#### Scenario: merge 后 content 超阈值触发压缩
+
+- **WHEN** merge 追加 content 后目标节点 `content` 长度超过 `merge_content_threshold`（默认 500）
+- **THEN** write_pipeline MUST 调用 `gen_summary` purpose 对 content 进行压缩重写
+- **AND** 压缩后 content 长度 MUST <= threshold
+
+#### Scenario: merge 压缩失败降级
+
+- **WHEN** merge 后 content 超阈值但压缩 LLM 调用失败
+- **THEN** write_pipeline MUST 保留追加后的原始 content 并记录 warning 日志
 
 ---
 
@@ -178,9 +195,9 @@ Stage ④ output MUST be a serializable `DecisionList` containing zero or more d
 
 ---
 
-### Requirement: 压缩判定为插件链且条件触发
+### Requirement: 压缩判定为插件链且条件触发（含不变量守门）
 
-Stage ⑥ SHALL accept 0..N `CompactionPluginInterface` instances. Each plugin MUST expose `should_run(changed_nodes, graph) -> bool`; only plugins whose `should_run` returns True will execute `run()`.
+Stage ⑥ SHALL accept 0..N `CompactionPluginInterface` instances. Each plugin MUST expose `should_run(changed_nodes, store) -> bool`; only plugins whose `should_run` returns True will execute `run()`. `should_run` MUST check for invariant violations (root + changed + affected nodes exceeding budget) as part of its condition.
 
 #### Scenario: 没有配置压缩插件时 ⑥ 直接跳过
 
@@ -204,9 +221,9 @@ Stage ⑥ SHALL accept 0..N `CompactionPluginInterface` instances. Each plugin M
 
 ---
 
-### Requirement: WriteContext 含八个状态字段
+### Requirement: WriteContext 含八个状态字段（不含 skip）
 
-The system SHALL provide a `WriteContext` data class threaded through the entire ingest call, containing these 8 lifecycle fields: `system_prompt`, `user_input`, `processed`, `related`, `concepts`, `decisions`, `changed`, `persisted`. Free `metadata` dict allowed.
+The system SHALL provide a `WriteContext` data class threaded through the entire ingest call, containing these 8 lifecycle fields: `system_prompt`, `user_input`, `processed`, `related`, `concepts`, `decisions`, `changed`, `persisted`. Free `metadata` dict allowed. WriteContext MUST NOT contain a `skip` field; pipeline flow control is the caller's responsibility.
 
 #### Scenario: 字段与段对应
 

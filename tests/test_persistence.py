@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 
@@ -368,9 +369,9 @@ def test_shutdown_does_not_lose_last_chunk(tmp_path, mock_llm):
 # ─── 5.6 idempotency mark-on-success ──────────────────────────────────────────
 
 
-def test_success_marks_chunk_and_second_ingest_skips(tmp_path, mock_llm):
+def test_success_marks_chunk_and_second_ingest_is_idempotent(tmp_path, mock_llm):
     db = str(tmp_path / "g.db")
-    wp, store, _idem, _pm = _full_pipeline(db, mock_llm)
+    wp, store, idem, _pm = _full_pipeline(db, mock_llm)
     _set_create_decision(mock_llm, "X")
 
     ctx = wp.ingest("text", doc_id="D1", chunk_id="0")
@@ -380,13 +381,14 @@ def test_success_marks_chunk_and_second_ingest_skips(tmp_path, mock_llm):
     ).fetchone()
     assert row is not None  # 成功落盘后才标记
 
-    ctx2 = wp.ingest("text", doc_id="D1", chunk_id="0")
-    assert ctx2.skip is True  # 已标记 → 续跑短路
+    # 调用方通过 is_ingested() 判断是否跳过，不再进入管线
+    content_hash = hashlib.sha256("text".encode("utf-8")).hexdigest()
+    assert idem.is_ingested("D1", "0", content_hash) is True
 
 
 def test_failed_persist_not_marked_and_retried(tmp_path, mock_llm):
     db = str(tmp_path / "g.db")
-    wp, store, _idem, _pm = _full_pipeline(db, mock_llm)
+    wp, store, idem, _pm = _full_pipeline(db, mock_llm)
     _set_create_decision(mock_llm, "X")
 
     # 模拟落盘失败：save_node 抛异常
@@ -403,10 +405,11 @@ def test_failed_persist_not_marked_and_retried(tmp_path, mock_llm):
     ).fetchone()
     assert row is None  # 出错的块未被标记
 
-    # 恢复存储 → 续跑应重试该块（不被跳过），这次成功落盘并标记
+    # 恢复存储 → 续跑应重试该块（is_ingested 返回 False），这次成功落盘并标记
     store._save_node = orig_save  # type: ignore[method-assign]
+    content_hash = hashlib.sha256("text".encode("utf-8")).hexdigest()
+    assert idem.is_ingested("D1", "0", content_hash) is False
     ctx2 = wp.ingest("text", doc_id="D1", chunk_id="0")
-    assert ctx2.skip is False
     assert ctx2.persisted is True
     row2 = store.conn.execute(
         "SELECT * FROM document_chunks WHERE doc_id='D1' AND chunk_id='0'"

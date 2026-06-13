@@ -26,7 +26,6 @@ PHASE1_READ_PLUGINS: list[str] = [
     "alias_entry",         # Entry (priority=100)
     "hub_fallback",        # Entry (priority=0)
     "priority_trim",       # Trim
-    "llm_seed_selector",   # SeedSelector (priority=0, 默认兜底)
 ]
 
 # 旧名保留（向后兼容别名，供 openspec 等引用）

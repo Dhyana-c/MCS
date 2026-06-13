@@ -23,6 +23,9 @@ class CompactionPluginInterface(Plugin):
     接收 llm_caller 句柄，在需要时通过统一接口发起 LLM 调用
     （例如 FanoutReducer 调用 decide_hub）。
 
+    should_run 负责检查不变量（包括 root 和受影响节点的一跳邻域
+    是否超预算），run 负责执行压缩/裂变。
+
     示例：FanoutReducer（将溢出节点折叠为枢纽）、
     CommunityMerger（合并稠密区域）、SummaryRegen（刷新摘要）。
     """
@@ -41,7 +44,11 @@ class CompactionPluginInterface(Plugin):
 
     @abstractmethod
     def should_run(self, changed_nodes: list[Node], store: StoreInterface) -> bool:
-        """如果当前状态需要运行此压缩，则返回 True。"""
+        """如果当前状态需要运行此压缩，则返回 True。
+
+        实现应在此方法中检查不变量（root + changed + 受影响节点邻域
+        是否超预算），以及自身特定的触发条件。
+        """
         pass
 
     @abstractmethod
@@ -57,17 +64,3 @@ class CompactionPluginInterface(Plugin):
         call(purpose: str, nodes_in: list[Node], free_args: dict) -> Any。
         """
         pass
-
-    def guard(
-        self,
-        node: Node,
-        store: StoreInterface,
-        llm_caller: Callable,
-    ) -> None:
-        """对单个节点执行守门检查 + 即时裂变（如果超预算）。
-
-        默认为空操作。需要守门的插件（如 FanoutReducer）应覆写此方法。
-        框架在 _guard_invariant 中遍历所有 CompactionPlugin 并调用 guard，
-        不再 import 具体插件类或调用私有方法。
-        """
-        return None

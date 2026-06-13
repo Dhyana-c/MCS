@@ -1,31 +1,32 @@
-"""LLMSeedSelectorPlugin - 默认的种子语义筛选实现。
+"""SemanticTrimPlugin - 基于 LLM 语义相关性的裁剪实现。
 
-使用 LLM (purpose='select_nodes') 从种子中筛选与查询最相关的节点，
-按相关性排序并截断至 token 预算内。
+使用 LLM (purpose='select_nodes') 从节点中筛选与查询最相关的节点，
+按相关性排序并截断至 token 预算内。作为 TrimPlugin 按需注册。
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from mcs.core.plugin import PluginType
-from mcs.interfaces.seed_selector_plugin import SeedSelectorPluginInterface
+from mcs.interfaces.trim_plugin import TrimPluginInterface
 
 if TYPE_CHECKING:
     from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.query_engine import QueryContext
-    from mcs.interfaces.llm import LLMInterface
     from mcs.core.token_budget import TokenBudget
+    from mcs.interfaces.llm import LLMInterface
 
 logger = logging.getLogger(__name__)
 
 
-class LLMSeedSelectorPlugin(SeedSelectorPluginInterface):
-    """使用 LLM 语义筛选种子的默认实现。
+class SemanticTrimPlugin(TrimPluginInterface):
+    """使用 LLM 语义筛选种子的 TrimPlugin 实现。
 
-    priority=0（默认兜底），用户可注册更高优先级的 SeedSelectorPlugin 替代。
+    按需注册：默认 Phase1 不包含此插件，需要语义筛选时手动注册。
+    priority=10（高于 PriorityTrimPlugin 的默认 0），确保语义筛选先执行。
     """
 
     def __init__(self, config: dict | None = None) -> None:
@@ -36,41 +37,46 @@ class LLMSeedSelectorPlugin(SeedSelectorPluginInterface):
     # === Plugin 基类方法 ===
 
     def get_name(self) -> str:
-        return "llm_seed_selector"
+        return "semantic_trim"
 
     def get_priority(self) -> int:
-        return 0
+        return 10
 
     # === 插件生命周期 ===
 
     def initialize(self, context: PluginContext) -> None:
-        self.token_budget = context.token_budget
         self.llm = context.plugin_manager.get(PluginType.LLM)
+        self.token_budget = context.token_budget
 
     def shutdown(self) -> None:
         self.llm = None
         self.token_budget = None
 
-    # === SeedSelectorPluginInterface ===
+    # === TrimPluginInterface ===
 
-    def select(
+    def trim(
         self,
-        seeds: list[Node],
-        query: str,
+        nodes: list[Node],
         budget: int,
-        ctx: Any | None = None,
+        *,
+        query: str = "",
+        ctx: QueryContext | None = None,
     ) -> list[Node]:
-        """使用 LLM 筛选与查询相关的种子，截断至预算内。"""
-        if not seeds:
+        """使用 LLM 筛选与查询相关的节点，截断至预算内。
+
+        无 query 时直接按 budget 截断（降级为位置裁剪）。
+        """
+        if not nodes:
             return []
-        if self.llm is None:
-            logger.warning("LLMSeedSelectorPlugin 未初始化 LLM，返回原始种子")
-            return seeds
+
+        # 无 LLM 或无 query 时降级：原样返回（交由后续 TrimPlugin 处理预算）
+        if self.llm is None or not query:
+            return nodes
 
         # 调用 LLM 筛选
         selected_ids = self.llm.call(
             purpose="select_nodes",
-            nodes_in=seeds,
+            nodes_in=nodes,
             free_args={
                 "query": query,
                 "accumulated_summary": "",
@@ -78,14 +84,17 @@ class LLMSeedSelectorPlugin(SeedSelectorPluginInterface):
         ) or []
 
         # 按 LLM 返回顺序构建节点列表
-        seed_map = {n.id: n for n in seeds}
+        node_map = {n.id: n for n in nodes}
         selected: list[Node] = []
         for id_ in selected_ids:
-            if id_ in seed_map:
-                selected.append(seed_map[id_])
+            if id_ in node_map:
+                selected.append(node_map[id_])
+
+        if not selected:
+            return []
 
         # 截断至预算内
-        if self.token_budget is not None and selected:
+        if self.token_budget is not None:
             result: list[Node] = []
             used = 0
             for node in selected:

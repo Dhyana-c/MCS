@@ -7,7 +7,7 @@
     ③ 概念提取           (LLM: extract_concepts)
     ④ 关系判定           (LLM: judge_relations → DecisionList)
     ⑤ 图更新             (无 LLM；原子地应用 DecisionList)
-    ⑥ 压缩判定插件链     (CompactionPlugin chain, 条件性)
+    ⑥ 压缩判定插件链     (CompactionPlugin chain, 条件性, 含不变量守门)
     ⑦ 自动落盘           (SQLiteStore 增量持久化)
 
 阶段 ④ 产生一个 ``DecisionList``（纯数据）；阶段 ⑤ 应用它。
@@ -63,7 +63,6 @@ class WriteContext:
     changed: list[Node] = field(default_factory=list)
     persisted: bool = False
     metadata: dict = field(default_factory=dict)
-    skip: bool = False
 
 
 class WritePipeline:
@@ -104,8 +103,7 @@ class WritePipeline:
     def ingest(self, text: str, **metadata: Any) -> WriteContext:
         """执行 7 阶段写入管道。返回最终的 WriteContext。
 
-        概念提取为空时静默返回（跳过阶段 ④⑤⑥⑦）；
-        通过 ``ctx.skip = True`` 的幂等跳过也会短路。
+        概念提取为空时静默返回（跳过阶段 ④⑤⑥⑦）。
         """
         ctx = WriteContext(
             system_prompt=self.system_prompt,
@@ -115,8 +113,6 @@ class WritePipeline:
 
         # 阶段 ①: 前置插件链（幂等检查/摘要等）
         processed = self._run_preprocess(text, ctx)
-        if ctx.skip:
-            return ctx
         ctx.processed = processed
 
         # 阶段 ②: 关联节点定位（轻量查询模式）
@@ -150,10 +146,7 @@ class WritePipeline:
         self._attach_pending_source(ctx)
         self._notify_indexes(ctx.changed)
 
-        # 阶段 ⑤.5: 立即守门检查（不变量保证）
-        self._guard_invariant(ctx.changed)
-
-        # 阶段 ⑥: 压缩判定插件链
+        # 阶段 ⑥: 压缩判定插件链（含不变量守门）
         self._run_compaction(ctx.changed)
 
         # 阶段 ⑦: 自动落盘
@@ -223,8 +216,6 @@ class WritePipeline:
         result: Any = text
         for plugin in plugins:
             result = plugin.preprocess(result, ctx)
-            if ctx.skip:
-                return result if isinstance(result, str) else text
         return result if isinstance(result, str) else text
 
     def _sanitize_decisions(self, decisions: DecisionList) -> DecisionList:
@@ -372,36 +363,6 @@ class WritePipeline:
             "attach_statement is deprecated (concept=%r); treating as no-op",
             getattr(decision.concept, "name", None),
         )
-
-    def _guard_invariant(self, changed_nodes: list[Node]) -> None:
-        """阶段 ⑤.5：立即守门检查，确保不变量不被破坏。
-
-        检查 root 和所有 changed_nodes 的一跳邻域是否 ≤ T。
-        如果超预算，立即触发 CompactionPlugin.guard 逻辑，
-        而非等阶段 ⑥ 的 should_run（后者可能因 floor 阈值跳过）。
-        """
-        from mcs.core.plugin import PluginType
-
-        compaction_plugins = self.plugin_manager.get_all(PluginType.COMPACTION)
-        if not compaction_plugins:
-            return
-
-        # 收集需检查的节点：root + changed
-        nodes_to_check: list[Node] = []
-        seen: set[str] = set()
-        root = self.store.get_node("__seed_root__")
-        if root is not None and root.id not in seen:
-            nodes_to_check.append(root)
-            seen.add(root.id)
-        for n in changed_nodes:
-            if n.id not in seen:
-                nodes_to_check.append(n)
-                seen.add(n.id)
-
-        # 对每个节点调用所有 CompactionPlugin 的 guard
-        for node in nodes_to_check:
-            for plugin in compaction_plugins:
-                plugin.guard(node, self.store, self.llm.call)
 
     def _run_compaction(self, changed_nodes: list[Node]) -> None:
         """阶段 ⑥：每个 CompactionPlugin 检查 should_run，然后运行。"""
