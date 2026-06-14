@@ -48,5 +48,8 @@ bench/*/outputs/
 # Bench data files (not committed)
 bench/*/data/*.json
 
+# Bench LLM endpoint config (contains credentials, not committed)
+bench/*/config/llm*.json
+
 _debug_*.py
 _run_*.py

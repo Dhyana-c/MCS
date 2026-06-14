@@ -174,18 +174,69 @@ def _parse_llm_indices(raw: str, max_idx: int) -> list[int]:
     return nums
 
 
+def _rerank_call_llm(system: str, user: str, llm_config: dict | None) -> str:
+    """调用重排 LLM 返回原始文本。
+
+    ``llm_config.backend="claude"`` 走 anthropic Messages 协议（支持官方端点与
+    兼容网关）；否则回退到原 OpenAI 兼容逻辑（deepseek，读环境变量）。
+    """
+    cfg = llm_config or {}
+    backend = cfg.get("backend", "deepseek")
+    if backend == "claude":
+        from anthropic import Anthropic
+
+        ccfg = cfg.get("claude", {})
+        client = Anthropic(
+            base_url=ccfg.get("base_url", "https://api.anthropic.com"),
+            auth_token=ccfg.get("auth_token", ""),
+            timeout=float(ccfg.get("timeout", 60.0)),
+        )
+        kwargs: dict = {
+            "model": ccfg.get("model", "claude-3-5-sonnet-latest"),
+            "max_tokens": int(ccfg.get("max_tokens", 4096)),
+            "temperature": 0.0,
+            "messages": [{"role": "user", "content": user}],
+        }
+        if system:
+            # system 以 text-block 数组传递：官方 Anthropic 与兼容网关均接受。
+            kwargs["system"] = [{"type": "text", "text": system}]
+        resp = client.messages.create(**kwargs)
+        return "".join(
+            getattr(b, "text", None)
+            or (b.get("text") if isinstance(b, dict) else "")
+            for b in resp.content
+        )
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
+        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+    )
+    resp = client.chat.completions.create(
+        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        temperature=0.0,
+    )
+    return resp.choices[0].message.content or ""
+
+
 def llm_doc_rerank(
     nodes: list[Node],
     query: str,
     top_n: int | None = None,
+    llm_config: dict | None = None,
 ) -> list[str]:
     """用 LLM 从召回 node 中挑选相关节点，返回对应的**去重文档 ID 列表**。
 
     流程：
       1. 把全部召回 node 的 name/content/来源文档 格式化为候选列表
-      2. 喂给 deepseek-chat，让 LLM 按相关性挑选
+      2. 喂给重排 LLM，让它按相关性挑选
       3. 按选中顺序提取 node 对应的 doc_id（去重、保序）
 
+    ``llm_config`` 指定后端（``backend="claude"`` 走 Messages 协议，否则 OpenAI 兼容）。
     解析失败时降级回词法排序。
     """
     if not nodes:
@@ -198,21 +249,7 @@ def llm_doc_rerank(
     user = _LLM_RERANK_USER.format(query=query, candidates=candidates_str)
 
     try:
-        from openai import OpenAI
-
-        client = OpenAI(
-            api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
-            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        )
-        resp = client.chat.completions.create(
-            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=0.0,
-        )
-        raw = resp.choices[0].message.content or ""
+        raw = _rerank_call_llm(system, user, llm_config)
     except Exception:
         logger.warning("LLM doc_rerank 调用失败，降级到词法排序", exc_info=True)
         return doc_rerank(nodes, query, top_n=top_n)

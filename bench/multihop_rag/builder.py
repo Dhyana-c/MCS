@@ -83,6 +83,7 @@ def _make_mcs(
     rerank_min_score: float = 0.0,
     max_accumulated_nodes: int | None = None,
     max_rounds: int | None = None,
+    llm_config: dict | None = None,
 ) -> Any:
     """创建一个配置好持久化与 LLM key 的 MCS 实例（已 initialize）。
 
@@ -125,8 +126,17 @@ def _make_mcs(
         if os.environ.get("DEEPSEEK_BASE_URL"):
             ds["base_url"] = os.environ["DEEPSEEK_BASE_URL"]
     elif llm == "claude":
-        config.plugin_configs["claude_llm"]["auth_token"] = os.environ.get(
-            "ANTHROPIC_API_KEY", ""
+        # 从配置文件读取 claude 端点（base_url/auth_token/model/timeout/max_tokens），
+        # 支持官方端点与兼容网关（如反代第三方模型的 Messages 协议网关）。不读环境变量。
+        ccfg = (llm_config or {}).get("claude", {})
+        config.plugin_configs["claude_llm"].update(
+            {
+                "auth_token": ccfg.get("auth_token", ""),
+                "base_url": ccfg.get("base_url", "https://api.anthropic.com"),
+                "model": ccfg.get("model", "claude-3-5-sonnet-latest"),
+                "timeout": float(ccfg.get("timeout", 60.0)),
+                "max_tokens": int(ccfg.get("max_tokens", 4096)),
+            }
         )
     elif llm == "ollama":
         # think 默认关闭（OLLAMA_THINK=1 可开）；思维模型开 thinking 会把每次调用
@@ -162,6 +172,7 @@ def build_shared_graph(
     rerank_min_score: float = 0.0,
     max_accumulated_nodes: int | None = None,
     max_rounds: int | None = None,
+    llm_config: dict | None = None,
 ) -> Any:
     """把全部文档摄入**同一个**持久化 MCS 实例，返回该实例。
 
@@ -178,6 +189,7 @@ def build_shared_graph(
         rerank_min_score=rerank_min_score,
         max_accumulated_nodes=max_accumulated_nodes,
         max_rounds=max_rounds,
+        llm_config=llm_config,
     )
     # 定位幂等插件：mcs.ingest() 路径本身不查 document_chunks（跳过逻辑只在
     # SourceTrackingPlugin.update_document 里，bench 不走它），故断点续跑必须在此

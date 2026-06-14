@@ -7,6 +7,8 @@
 | 文件 | 日期 | 描述 |
 |------|------|------|
 | [doc_rerank_experiment.md](doc_rerank_experiment.md) | 2026-06-02 | 文档级重排实验报告：recall@10 从 0.140 提升到 0.503 |
+| [metrics_1000_full.md](metrics_1000_full.md) | 2026-06-11 | 全量 609 篇 · 1000 query（lexical doc_rerank, T=32k）：hit@10=0.649 |
+| [dual_edge_full_608.md](dual_edge_full_608.md) | 2026-06-14 | dual-edge · 全量 608 篇 · 200 query（llm doc_rerank, T=16k, 概念去重后）：**hit@10=0.770**；含 8 项修复 + 去重 before/after + 成本分析 |
 
 ## 指标口径
 

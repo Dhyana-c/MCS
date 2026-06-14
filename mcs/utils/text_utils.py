@@ -100,6 +100,37 @@ def extract_json(text: str) -> str:
     return _repair_truncated_json(json_str)
 
 
+def salvage_json_array(s: str) -> list:
+    """从（可能被截断 / **中途**格式坏的）JSON 数组文本中尽量解析出完整的对象元素。
+
+    比 ``_repair_truncated_json`` 更鲁棒：从 ``[`` 起逐个 ``raw_decode`` 数组元素，
+    遇到第一个坏 / 截断元素即停，保留之前所有完整对象——能救**中途**（不止末尾）
+    坏掉的数组。供 extract_concepts / judge_relations 在 ``json.loads`` 失败时兜底，
+    避免整篇文档因一个坏对象而丢弃。
+    """
+    import json
+
+    start = s.find("[")
+    if start == -1:
+        return []
+    decoder = json.JSONDecoder()
+    items: list = []
+    i = start + 1
+    n = len(s)
+    while i < n:
+        while i < n and s[i] in " \t\r\n,":  # 跳过元素间空白与逗号
+            i += 1
+        if i >= n or s[i] == "]":
+            break
+        try:
+            obj, end = decoder.raw_decode(s, i)
+        except json.JSONDecodeError:
+            break  # 坏 / 截断从此处起 → 停，保留已解析的完整对象
+        items.append(obj)
+        i = end
+    return items
+
+
 def _repair_truncated_json(json_str: str) -> str:
     """尝试修复因 max_tokens 截断而未闭合的 JSON。
 

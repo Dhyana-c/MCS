@@ -90,11 +90,12 @@ def db_path(out_dir: str | Path) -> Path:
 
 def build_graph(
     n_docs: int, out_dir: str, token_budget: int, resume: bool = True,
-    rerank_top_n: int = 0,
+    rerank_top_n: int = 0, llm: str = "deepseek", llm_config: dict | None = None,
 ):
-    """建图（whole_doc, deepseek-chat），返回 (mcs, db_path)。
+    """建图（whole_doc），返回 (mcs, db_path)。
 
-    ``rerank_top_n=0`` → 节点级重排不截断（放全量）。
+    ``rerank_top_n=0`` → 节点级重排不截断（放全量）。``llm``/``llm_config``
+    指定后端与配置（默认 deepseek 基线不变）。
     """
     from bench.multihop_rag.builder import build_shared_graph
     from bench.multihop_rag.data import MultiHopDataLoader
@@ -108,17 +109,22 @@ def build_graph(
     docs = docs[:n_docs]
     print(f"建图：{len(docs)} 篇 @ T={token_budget} → {db}")
     mcs = build_shared_graph(
-        docs, "deepseek", str(db), whole_doc=True, token_budget=token_budget,
+        docs, llm, str(db), whole_doc=True, token_budget=token_budget,
         record_path=str(out / "llm_calls.jsonl"),
         rerank=True, rerank_top_n=(rerank_top_n or None),
+        llm_config=llm_config,
     )
     return mcs, db
 
 
-def load_graph(out_dir: str, token_budget: int, rerank_top_n: int = 0):
+def load_graph(
+    out_dir: str, token_budget: int, rerank_top_n: int = 0,
+    llm: str = "deepseek", llm_config: dict | None = None,
+):
     """从已有 graph.db 装载 query-ready 的 mcs，返回 (mcs, db_path)。
 
-    ``rerank_top_n=0`` → 节点级重排不截断（放全量）。
+    ``rerank_top_n=0`` → 节点级重排不截断（放全量）。``llm``/``llm_config``
+    指定后端与配置（默认 deepseek 基线不变）。
     """
     from bench.multihop_rag.builder import _make_mcs
 
@@ -126,9 +132,10 @@ def load_graph(out_dir: str, token_budget: int, rerank_top_n: int = 0):
     if not db.exists():
         raise SystemExit(f"未找到图库 {db}（先用 build.py / eval.py 建图）")
     mcs = _make_mcs(
-        "deepseek", str(db), token_budget=token_budget,
+        llm, str(db), token_budget=token_budget,
         record_path=str(Path(out_dir) / "llm_calls_query.jsonl"),
         rerank=True, rerank_top_n=(rerank_top_n or None),
+        llm_config=llm_config,
     )
     return mcs, db
 
@@ -184,7 +191,7 @@ def _built_titles(db: Path) -> set[str]:
         conn.close()
 
 
-def _make_reranker(mode: str):
+def _make_reranker(mode: str, llm_config: dict | None = None):
     """返回 (nodes, query) -> ranked_doc_ids 的重排函数。"""
     from bench.multihop_rag.metrics import retrieved_docs
 
@@ -193,18 +200,27 @@ def _make_reranker(mode: str):
     if mode == "llm":
         from bench.plugins.doc_rerank import llm_doc_rerank
 
-        return lambda nodes, q: llm_doc_rerank(nodes, q)
+        return lambda nodes, q: llm_doc_rerank(nodes, q, llm_config=llm_config)
     from bench.plugins.doc_rerank import doc_rerank
 
     return lambda nodes, q: doc_rerank(nodes, q)
 
 
 def run_queries(
-    mcs, db: Path, out_dir: str, n_queries: int, doc_rerank: str, token_budget: int
+    mcs, db: Path, out_dir: str, n_queries: int, doc_rerank: str, token_budget: int,
+    llm_config: dict | None = None, restart: bool = False,
 ):
-    """可达过滤 + 查询 + 文档级重排 + 指标；写 metrics.json，返回 metrics。"""
+    """可达过滤 + 查询 + 文档级重排 + 指标；写 metrics.json，返回 metrics。
+
+    支持 query 级断点续跑：每完成一个 query 追加到 ``results.jsonl``（含
+    ``query_id``），重跑时按 ``query_id`` 跳过已完成的，用全量累积结果算指标。
+    ``restart=True`` 清空 ``results.jsonl`` 重新评测。
+    """
     from bench.multihop_rag.data import MultiHopDataLoader, filter_queries
     from bench.multihop_rag.metrics import aggregate_metrics
+
+    out = Path(out_dir)
+    results_file = out / "results.jsonl"
 
     built = _built_titles(db)
     _, queries = MultiHopDataLoader().load()
@@ -213,18 +229,38 @@ def run_queries(
         q for q in queries if q.gold_doc_titles and q.gold_doc_titles <= built
     ]
     selected = reachable[:n_queries] if n_queries else reachable
+
+    # 续跑：读取已完成的 query 结果（restart 时清空重来）
+    done: dict[str, dict] = {}
+    if restart and results_file.exists():
+        results_file.unlink()
+    if results_file.exists():
+        for line in results_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                done[rec["query_id"]] = rec
+            except Exception:
+                continue
+    todo = [q for q in selected if q.query_id not in done]
     print(
         f"已建 {len(built)} 篇；可达 query {len(reachable)}；"
-        f"本次评测 {len(selected)}（doc_rerank={doc_rerank}）"
+        f"本次评测 {len(selected)}（已完成 {len(done)}，待跑 {len(todo)}，"
+        f"doc_rerank={doc_rerank}）"
     )
     if not selected:
         print("⚠ 无可达 query。")
         return {}
-    rerank = _make_reranker(doc_rerank)
+    rerank = _make_reranker(doc_rerank, llm_config=llm_config)
 
-    results: list[dict] = []
+    # 追加模式打开 results.jsonl，逐 query 持久化（断点 / 配额耗尽不丢）
+    out.mkdir(parents=True, exist_ok=True)
+    fh = open(results_file, "a", encoding="utf-8")
     t0 = time.time()
-    for i, q in enumerate(selected, 1):
+    processed = 0
+    for q in todo:
         try:
             res = mcs.query(q.query)
             nodes = (
@@ -235,18 +271,28 @@ def run_queries(
             print(f"  query 失败 {q.query_id}: {e}")
             nodes = []
         ranked = rerank(nodes, q.query)
-        results.append(
-            {"type": q.question_type, "gold": sorted(q.gold_doc_titles), "ranked": ranked}
-        )
-        if i % 10 == 0 or i == len(selected):
-            print(f"  {i}/{len(selected)} ({time.time() - t0:.0f}s)")
+        rec = {
+            "query_id": q.query_id,
+            "type": q.question_type,
+            "gold": sorted(q.gold_doc_titles),
+            "ranked": ranked,
+        }
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        fh.flush()
+        done[q.query_id] = rec
+        processed += 1
+        if processed % 10 == 0 or processed == len(todo):
+            print(f"  进度 {len(done)}/{len(selected)} ({time.time() - t0:.0f}s)")
+    fh.close()
 
-    metrics = aggregate_metrics(results, [2, 4, 10])
-    _print_metrics(metrics, len(selected), token_budget, doc_rerank)
-    (Path(out_dir) / "metrics.json").write_text(
+    # 全量累积结果算指标（含续跑的历史，部分完成时也输出阶段性指标）
+    all_results = [done[q.query_id] for q in selected if q.query_id in done]
+    metrics = aggregate_metrics(all_results, [2, 4, 10])
+    _print_metrics(metrics, len(all_results), token_budget, doc_rerank)
+    (out / "metrics.json").write_text(
         json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    print(f"指标已写 {Path(out_dir) / 'metrics.json'}（耗时 {time.time() - t0:.0f}s）")
+    print(f"指标已写 {out / 'metrics.json'}（累计 {len(all_results)} query）")
     return metrics
 
 

@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from mcs.core.decisions import ConceptDraft, Decision
 from mcs.core.errors import LLMParseError
-from mcs.utils.text_utils import strip_json_fence
+from mcs.utils.text_utils import salvage_json_array, strip_json_fence
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ def parse(raw: str) -> list[Decision]:
     except json.JSONDecodeError as e:
         # deepseek 对概念多的文档偶尔吐超长 JSON、中途截断 → 整段 loads 失败。
         # 逐个 salvage 出完整对象，救回该文档大部分关系，而非整篇丢弃。
-        salvaged = _salvage_json_array(json_str)
+        salvaged = salvage_json_array(json_str)
         if salvaged:
             logger.warning(
                 "judge_relations JSON 截断/格式坏，salvage 出 %d 个完整对象（%s）",
@@ -129,46 +130,23 @@ def parse(raw: str) -> list[Decision]:
     return decisions
 
 
-def _salvage_json_array(s: str) -> list:
-    """从（可能被截断 / 格式坏的）JSON 数组文本中尽量解析出**完整**的对象元素。
-
-    deepseek 等模型对概念多的文档偶尔吐超长 JSON、中途命中输出上限被截断，
-    导致整段 ``json.loads`` 失败、该文档关系整篇丢弃。此函数从 ``[`` 起逐个
-    ``raw_decode`` 数组元素，遇到第一个坏 / 截断元素即停，保留之前的完整对象。
-    """
-    start = s.find("[")
-    if start == -1:
-        return []
-    decoder = json.JSONDecoder()
-    items: list = []
-    i = start + 1
-    n = len(s)
-    while i < n:
-        # 跳过元素间的空白与逗号
-        while i < n and s[i] in " \t\r\n,":
-            i += 1
-        if i >= n or s[i] == "]":
-            break
-        try:
-            obj, end = decoder.raw_decode(s, i)
-        except json.JSONDecodeError:
-            break  # 截断 / 格式坏从此处起 → 停，保留已解析的完整对象
-        items.append(obj)
-        i = end
-    return items
-
-
-# 无意义 / 否定型 label —— LLM 偶尔对**不相关**的概念也建边并标注「无关」，这类边
-# 断言"无关系"本身就是非关系（开放世界下缺边即未知），应丢弃以免污染事实图。
+# 无意义 / 否定型 label —— LLM 偶尔对**不相关**的概念也建边并标注「无关 / 无直接关系」，
+# 这类边断言"无关系"本身就是非关系（开放世界下缺边即未知），应丢弃以免污染事实图。
 _MEANINGLESS_LABELS = frozenset({
-    "无关", "不相关", "无关系", "没有关系", "不相干", "无明显关系", "无",
+    "无关", "不相关", "无关系", "没有关系", "不相干", "无明显关系", "无任何关系",
+    "无直接关系", "无关联", "无直接关联", "无明显关联", "无相关", "无联系", "无",
     "unrelated", "irrelevant", "none", "n/a", "na", "no relation", "not related",
 })
+# 「无/没有/不 + (直接/明显/任何)? + 关系/关联/关连/相关/联系」否定族（兜住未列变体）
+_MEANINGLESS_RE = re.compile(r"^(无|没有|不)(直接|明显|任何)?(关系|关联|关连|相关|联系)$")
 
 
 def _is_meaningless_label(label: str) -> bool:
-    """label 归一化后落入否定 / 空泛词表则视为无意义（应丢弃该边）。"""
-    return (label or "").strip().lower() in _MEANINGLESS_LABELS
+    """label 落入否定词表 或「无…关系」否定族 → 视为无意义（应丢弃该边）。"""
+    s = (label or "").strip()
+    if s.lower() in _MEANINGLESS_LABELS:
+        return True
+    return bool(_MEANINGLESS_RE.match(s))
 
 
 def _normalize_edges_to(raw: list) -> list[dict]:

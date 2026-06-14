@@ -912,3 +912,48 @@ class TestAccumulatedSummaryTrim:
         nodes = [Node(id="a", name="A", content="")]
         assert _summarize_for_prompt(nodes, max_nodes=0) == "(无)"
         assert _summarize_for_prompt([], max_nodes=50) == "(无)"
+
+
+# === 测试盲区 H: ②「无…关系」否定族过滤 + ③ extract_concepts salvage ===
+
+
+class TestNegationLabelAndExtractSalvage:
+    """② 拦住「无直接关系」等否定变体；③ extract_concepts 截断兜底。"""
+
+    def test_drops_negation_relation_family(self):
+        from mcs.prompts.judge_relations import parse
+
+        raw = (
+            '[{"action":"create","concept_name":"A","edges_to_names":['
+            '{"target_name":"B","label":"执导"},'
+            '{"target_name":"C","label":"无直接关系"},'
+            '{"target_name":"D","label":"无关联"},'
+            '{"target_name":"E","label":"无任何关系"},'
+            '{"target_name":"F","label":"没有关系"}]}]'
+        )
+        a = parse(raw)[0]
+        assert {e["label"] for e in a.edges_to_names} == {"执导"}
+
+    def test_keeps_legit_wu_prefix_label(self):
+        from mcs.prompts.judge_relations import parse
+
+        # 「无偿提供」是真关系，不能被「无…」误杀
+        raw = (
+            '[{"action":"create","concept_name":"A",'
+            '"edges_to_names":[{"target_name":"B","label":"无偿提供"}]}]'
+        )
+        a = parse(raw)[0]
+        assert {e["label"] for e in a.edges_to_names} == {"无偿提供"}
+
+    def test_salvage_json_array_mid_break(self):
+        from mcs.utils.text_utils import salvage_json_array
+
+        s = '[{"a": 1}, {"a": 2}, {"a": bad}, {"a": 4}]'
+        assert salvage_json_array(s) == [{"a": 1}, {"a": 2}]
+
+    def test_extract_concepts_recovers_truncated(self):
+        from mcs.prompts.extract_concepts import parse
+
+        raw = '[{"name":"Alpha","content":"a"},{"name":"Beta","content":"b"},{"name":"Gam'
+        names = {c.name for c in parse(raw)}
+        assert "Alpha" in names and "Beta" in names

@@ -10,10 +10,13 @@ content 遵循 lean 基线：仅含定义 + 短叶子属性（~24 token）。
 from __future__ import annotations
 
 import json
+import logging
 
 from mcs.core.decisions import ConceptDraft
 from mcs.core.errors import LLMParseError
-from mcs.utils.text_utils import strip_json_fence
+from mcs.utils.text_utils import salvage_json_array, strip_json_fence
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "你是知识图谱构建助手。从输入文本中识别独立的概念。"
@@ -50,7 +53,17 @@ def parse(raw: str) -> list[ConceptDraft]:
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError as e:
-        raise LLMParseError("extract_concepts", raw, str(e)) from e
+        # 超长输出被截断 / 中途格式坏 → 逐个 salvage 出完整概念对象，
+        # 避免整篇文档因一个坏对象而丢弃（与 judge_relations 同款兜底）。
+        salvaged = salvage_json_array(json_str)
+        if salvaged:
+            logger.warning(
+                "extract_concepts JSON 截断/格式坏，salvage 出 %d 个完整对象（%s）",
+                len(salvaged), e,
+            )
+            data = salvaged
+        else:
+            raise LLMParseError("extract_concepts", raw, str(e)) from e
 
     if isinstance(data, dict):
         # 容忍单个概念对象或 {"concepts": [...]} 包装

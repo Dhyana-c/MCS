@@ -252,6 +252,14 @@ class WritePipeline:
         changed: list[Node] = []
         name_to_id: dict[str, str] = {}
         pending_named_edges: list[tuple[str, list[dict]]] = []
+        # 精确同名去重索引：create 时若已有同名节点则并入而非新建（确定性兜底，
+        # 不依赖 judge_relations 的 merge 判定——其 prompt 偏向 create 会让同名实体
+        # 裂成多个节点、碎片化事实、压低召回）。
+        existing_by_name: dict[str, str] = {}
+        for n in self.store.get_all_nodes():
+            key = _norm_name(n.name)
+            if key:
+                existing_by_name.setdefault(key, n.id)
         for decision in decisions:
             action = decision.action
             cname = decision.concept.name if decision.concept else None
@@ -265,12 +273,25 @@ class WritePipeline:
                 if cname:
                     name_to_id[cname] = decision.target_id
             elif action == "create":
-                node = self._dispatch_create(decision)
-                changed.append(node)
-                if cname:
-                    name_to_id[cname] = node.id
-                if decision.edges_to_names:
-                    pending_named_edges.append((node.id, decision.edges_to_names))
+                dup_id = existing_by_name.get(_norm_name(cname)) if cname else None
+                if dup_id is not None and self.store.get_node(dup_id) is not None:
+                    # 同名已存在 → 并入既有节点（content/别名/edges_to），不新建
+                    node = self._merge_concept_into(dup_id, decision)
+                    changed.append(node)
+                    if cname:
+                        name_to_id[cname] = dup_id
+                    if decision.edges_to_names:
+                        pending_named_edges.append((dup_id, decision.edges_to_names))
+                else:
+                    node = self._dispatch_create(decision)
+                    changed.append(node)
+                    if cname:
+                        name_to_id[cname] = node.id
+                        key = _norm_name(cname)
+                        if key:
+                            existing_by_name.setdefault(key, node.id)  # 同批后续同名也并入
+                    if decision.edges_to_names:
+                        pending_named_edges.append((node.id, decision.edges_to_names))
             elif action == "attach_statement":
                 # deprecated: no-op，日志在 _dispatch_attach 中
                 self._dispatch_attach(decision)
@@ -355,6 +376,26 @@ class WritePipeline:
             self.store.add_edge(node.id, anchor_id, kind="fact", label=label)
         return node
 
+    def _merge_concept_into(self, existing_id: str, decision: Decision) -> Node:
+        """同名去重：把本应 create 的概念并入既有同名节点，返回既有节点。
+
+        复用 ``_dispatch_merge`` 合 content/别名，再把该概念的 ``edges_to`` 锚点边
+        挂到既有节点（create 的 edges_to 不能丢）。
+        """
+        self._dispatch_merge(
+            Decision(
+                action="merge",
+                concept=decision.concept,
+                target_id=existing_id,
+                aliases_to_add=decision.aliases_to_add,
+            )
+        )
+        for edge_info in decision.edges_to or []:
+            anchor_id = edge_info.get("target_id", edge_info) if isinstance(edge_info, dict) else edge_info
+            label = edge_info.get("label", "") if isinstance(edge_info, dict) else ""
+            self.store.add_edge(existing_id, anchor_id, kind="fact", label=label)
+        return self.store.get_node(existing_id)
+
     def _dispatch_attach(self, decision: Decision) -> None:
         """Deprecated: attach_statement 已废弃，现为 no-op。
 
@@ -427,3 +468,8 @@ def _reattach_concepts(
     for d in decisions:
         if d.concept is not None and d.concept.name in by_name:
             d.concept = by_name[d.concept.name]
+
+
+def _norm_name(name: str | None) -> str:
+    """概念名归一化（去空白 + 小写），用于精确同名去重。"""
+    return (name or "").strip().lower()

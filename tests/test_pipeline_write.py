@@ -708,3 +708,62 @@ def test_write_pipeline_no_position_filtering(empty_graph, mock_llm):
 
     source = inspect.getsource(wp._run_preprocess)
     assert "position" not in source
+
+
+# === 精确同名去重守门（防同实体碎片化）===
+
+
+def test_create_dedups_into_existing_same_name(empty_graph, mock_llm):
+    """同名 create 并入既有节点：不新建第二个、content 并入、edges_to 挂到既有。"""
+    s = empty_graph
+    s.add_node(Node(id="amz", name="Amazon", content="电商公司"))
+    s.add_node(Node(id="anc", name="AWS", content="云服务"))
+    wp, _, _ = _build_pipelines(s, mock_llm)
+
+    decisions = [
+        Decision(
+            action="create",
+            concept=ConceptDraft(name="Amazon", content="云计算巨头"),
+            edges_to=[{"target_id": "anc", "label": "拥有"}],
+        )
+    ]
+    wp._apply_decisions(decisions)
+
+    amazons = [n for n in s.get_all_nodes() if n.name == "Amazon"]
+    assert len(amazons) == 1  # 没新建第二个 Amazon
+    assert "云计算巨头" in s.get_node("amz").content  # content 并入既有
+    assert s.get_edges_between("amz", "anc")  # edges_to 挂到既有节点
+
+
+def test_create_dedup_case_insensitive(empty_graph, mock_llm):
+    """大小写不同也并入（amazon → Amazon）。"""
+    s = empty_graph
+    s.add_node(Node(id="amz", name="Amazon", content="x"))
+    wp, _, _ = _build_pipelines(s, mock_llm)
+    wp._apply_decisions(
+        [Decision(action="create", concept=ConceptDraft(name="amazon", content="y"))]
+    )
+    assert len([n for n in s.get_all_nodes() if n.name.lower() == "amazon"]) == 1
+
+
+def test_create_different_name_still_creates(empty_graph, mock_llm):
+    """不同名仍正常新建（不误并）。"""
+    s = empty_graph
+    s.add_node(Node(id="amz", name="Amazon", content="x"))
+    wp, _, _ = _build_pipelines(s, mock_llm)
+    wp._apply_decisions(
+        [Decision(action="create", concept=ConceptDraft(name="Google", content="y"))]
+    )
+    assert any(n.name == "Google" for n in s.get_all_nodes())
+    assert len(s.get_all_nodes()) == 2
+
+
+def test_create_same_batch_dup_merges(empty_graph, mock_llm):
+    """同一批两个同名 create → 只建一个（同批后续同名也并入）。"""
+    s = empty_graph
+    wp, _, _ = _build_pipelines(s, mock_llm)
+    wp._apply_decisions([
+        Decision(action="create", concept=ConceptDraft(name="Tesla", content="a")),
+        Decision(action="create", concept=ConceptDraft(name="Tesla", content="b")),
+    ])
+    assert len([n for n in s.get_all_nodes() if n.name == "Tesla"]) == 1
