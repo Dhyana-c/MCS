@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.store import StoreInterface
@@ -27,6 +28,11 @@ class SQLiteStore(StoreInterface):
     Phase 1 的图操作仍是内存中的；此存储通过显式的
     ``save()`` / ``load()`` 调用持久化快照。
 
+    内部索引（与 InMemoryStore 同结构）：
+      - _edges: edge_id -> Edge（主存储）
+      - _hierarchy_out: source_id -> set[target_id]（层级出边邻接）
+      - _fact_by_node: node_id -> set[edge_id]（事实边两端索引）
+
     初始化时需调用 ``initialize()`` 设置数据库连接和可选的
     模式扩展插件列表。
     """
@@ -38,18 +44,16 @@ class SQLiteStore(StoreInterface):
         self._schema_extensions: list = []
         # name -> NodeExtensionInterface 插件，用于 extensions 的保真编解码（D5）
         self._node_extensions: dict[str, Any] = {}
-        # 内存图数据（与 InMemoryStore 同结构）
+        # 内存图数据
         self._nodes: dict[str, Node] = {}
-        self._edges: dict[tuple[str, str], Edge] = {}
-        self._adjacency: dict[str, set[str]] = {}
-        # 反向邻接表：target_id -> {source_id, ...}，加速 delete_node 入边查找
-        self._reverse_adjacency: dict[str, set[str]] = {}
-        # 增量持久化的变更跟踪：自上次 flush/save 以来需 upsert / DELETE 的节点与边。
-        # 边以 (source_id, target_id) 数据库坐标记录（与 _save_edge 写入一致）。
+        self._edges: dict[str, Edge] = {}  # edge_id -> Edge
+        self._hierarchy_out: dict[str, set[str]] = {}  # source_id -> {target_id}
+        self._fact_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}
+        # 增量持久化的变更跟踪
         self._dirty_nodes: set[str] = set()
         self._deleted_nodes: set[str] = set()
-        self._dirty_edges: set[tuple[str, str]] = set()
-        self._deleted_edges: set[tuple[str, str]] = set()
+        self._dirty_edges: set[str] = set()  # edge_id
+        self._deleted_edges: set[str] = set()  # edge_id
 
     # === 初始化 ===
 
@@ -59,13 +63,7 @@ class SQLiteStore(StoreInterface):
         schema_extensions: list | None = None,
         node_extensions: dict[str, Any] | None = None,
     ) -> None:
-        """设置数据库连接和模式扩展。
-
-        Args:
-            conn: SQLite 连接（若未提供则自动连接 self.path）
-            schema_extensions: StorageSchemaExtension 插件列表
-            node_extensions: name -> NodeExtensionInterface 映射
-        """
+        """设置数据库连接和模式扩展。"""
         if conn is not None:
             self.conn = conn
         else:
@@ -84,7 +82,8 @@ class SQLiteStore(StoreInterface):
 
     def add_node(self, node: Node) -> str:
         self._nodes[node.id] = node
-        self._adjacency.setdefault(node.id, set())
+        self._hierarchy_out.setdefault(node.id, set())
+        self._fact_by_node.setdefault(node.id, set())
         self._track_node_dirty(node.id)
         return node.id
 
@@ -103,60 +102,153 @@ class SQLiteStore(StoreInterface):
     def delete_node(self, node_id: str) -> None:
         if node_id not in self._nodes:
             return
-        # 删除以该节点为 source 的出边
-        for target_id in list(self._adjacency.get(node_id, set())):
-            edge_key = self._edge_key(node_id, target_id)
-            edge = self._edges.pop(edge_key, None)
-            if edge is not None:
-                self._track_edge_deleted(edge)
-            self._reverse_adjacency.get(target_id, set()).discard(node_id)
-        # 删除以该节点为 target 的入边（使用反向邻接表，O(degree)）
-        for source_id in list(self._reverse_adjacency.get(node_id, set())):
-            edge_key = self._edge_key(source_id, node_id)
-            edge = self._edges.pop(edge_key, None)
-            if edge is not None:
-                self._track_edge_deleted(edge)
-            self._adjacency.get(source_id, set()).discard(node_id)
-        self._adjacency.pop(node_id, None)
-        self._reverse_adjacency.pop(node_id, None)
+        # 收集并删除所有关联边
+        edge_ids_to_remove: set[str] = set()
+        # 层级出边
+        for target_id in list(self._hierarchy_out.get(node_id, set())):
+            for e in self._edges.values():
+                if (
+                    e.source_id == node_id
+                    and e.target_id == target_id
+                    and e.kind == "hierarchy"
+                ):
+                    edge_ids_to_remove.add(e.id)
+        # 事实边
+        edge_ids_to_remove |= set(self._fact_by_node.get(node_id, set()))
+        # 层级入边（其他人指向该节点）
+        for other_id, targets in self._hierarchy_out.items():
+            if node_id in targets and other_id != node_id:
+                for e in self._edges.values():
+                    if (
+                        e.source_id == other_id
+                        and e.target_id == node_id
+                        and e.kind == "hierarchy"
+                    ):
+                        edge_ids_to_remove.add(e.id)
+
+        for eid in edge_ids_to_remove:
+            self._remove_edge_by_id(eid)
+        self._hierarchy_out.pop(node_id, None)
+        self._fact_by_node.pop(node_id, None)
         self._nodes.pop(node_id, None)
         self._track_node_deleted(node_id)
 
     # === 边 CRUD ===
 
-    def add_edge(self, source_id: str, target_id: str) -> None:
+    def add_edge(
+        self,
+        source_id: str,
+        target_id: str,
+        kind: str = "hierarchy",
+        label: str = "",
+        priority: float = 0.0,
+    ) -> str:
         if source_id == target_id:
-            return
+            return ""
         if source_id not in self._nodes or target_id not in self._nodes:
-            return
-        key = self._edge_key(source_id, target_id)
-        if key in self._edges:
-            return
+            return ""
+
         from mcs.core.graph import Edge
 
-        self._edges[key] = Edge(source_id=source_id, target_id=target_id)
-        self._adjacency.setdefault(source_id, set()).add(target_id)
-        self._reverse_adjacency.setdefault(target_id, set()).add(source_id)
-        self._track_edge_dirty(self._edges[key])
+        # 层级边去重：同一对节点只允许一条 hierarchy 边
+        if kind == "hierarchy":
+            for e in self._edges.values():
+                if e.source_id == source_id and e.target_id == target_id and e.kind == "hierarchy":
+                    return e.id
 
-    def get_edge(self, source_id: str, target_id: str) -> Edge | None:
-        return self._edges.get(self._edge_key(source_id, target_id))
+        # 事实边去重：同一对节点间**同 label** 的事实只存一份（"一条事实只存一份"）。
+        # 多篇文档断言同一命题时返回已有边，避免重复事实边累积（频率权重留 Phase 2）。
+        # 走 _fact_by_node 索引只扫该端点的事实边，避免全表扫描。
+        if kind == "fact":
+            for eid in self._fact_by_node.get(source_id, ()):
+                e = self._edges.get(eid)
+                if (
+                    e is not None
+                    and e.source_id == source_id
+                    and e.target_id == target_id
+                    and e.label == label
+                ):
+                    return e.id
 
-    def delete_edge(self, source_id: str, target_id: str) -> None:
-        edge = self._edges.pop(self._edge_key(source_id, target_id), None)
-        if edge is not None:
-            self._track_edge_deleted(edge)
-        self._adjacency.get(source_id, set()).discard(target_id)
-        self._reverse_adjacency.get(target_id, set()).discard(source_id)
+        edge = Edge(
+            source_id=source_id,
+            target_id=target_id,
+            id=str(uuid.uuid4()),
+            kind=kind,
+            label=label,
+            priority=priority,
+        )
+        self._edges[edge.id] = edge
 
-    # === 查询 ===
+        if kind == "hierarchy":
+            self._hierarchy_out.setdefault(source_id, set()).add(target_id)
+        else:
+            self._fact_by_node.setdefault(source_id, set()).add(edge.id)
+            self._fact_by_node.setdefault(target_id, set()).add(edge.id)
 
-    def get_neighbors(self, node_id: str) -> list[Node]:
-        ids = self._adjacency.get(node_id, set())
-        return [self._nodes[i] for i in ids if i in self._nodes]
+        self._track_edge_dirty(edge.id)
+        return edge.id
 
-    def get_out_neighbors(self, node_id: str) -> list[Node]:
-        return self.get_neighbors(node_id)
+    def delete_edge(self, edge_id_or_source: str, target_id: str | None = None) -> None:
+        """按边 id 删除。向后兼容：delete_edge(source, target) 走旧路径。"""
+        if target_id is not None:
+            # 旧签名 delete_edge(source_id, target_id) — deprecated
+            import warnings
+            warnings.warn(
+                "delete_edge(source, target) is deprecated; use delete_edge(edge_id)",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            for e in self.get_edges_between(edge_id_or_source, target_id):
+                if e.kind == "hierarchy":
+                    self._remove_edge_by_id(e.id)
+                    return
+        else:
+            self._remove_edge_by_id(edge_id_or_source)
+
+    def update_edge(self, edge_id: str, **fields) -> None:
+        edge = self._edges.get(edge_id)
+        if edge is None:
+            return
+        for key, value in fields.items():
+            if hasattr(edge, key):
+                setattr(edge, key, value)
+        self._track_edge_dirty(edge_id)
+
+    # === 层级（骨架）查询 ===
+
+    def get_out_hierarchy(self, node_id: str) -> list[Node]:
+        target_ids = self._hierarchy_out.get(node_id, set())
+        return [self._nodes[i] for i in target_ids if i in self._nodes]
+
+    # === 事实（双向可达）查询 ===
+
+    def get_facts(self, node_id: str, limit: int | None = None) -> list[Edge]:
+        edge_ids = self._fact_by_node.get(node_id, set())
+        facts = [self._edges[eid] for eid in edge_ids if eid in self._edges]
+        if limit is not None:
+            facts = facts[:limit]
+        return facts
+
+    def get_out_facts(
+        self, node_id: str, limit: int | None = None
+    ) -> list[Edge]:
+        edge_ids = self._fact_by_node.get(node_id, set())
+        out = [
+            self._edges[eid]
+            for eid in edge_ids
+            if eid in self._edges and self._edges[eid].source_id == node_id
+        ]
+        return out[:limit] if limit is not None else out
+
+    def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:
+        return [
+            e
+            for e in self._edges.values()
+            if e.source_id == source_id and e.target_id == target_id
+        ]
+
+    # === 子图 / 全量查询 ===
 
     def get_subgraph(
         self, node_id: str, token_budget: TokenBudget | None = None
@@ -178,7 +270,7 @@ class SQLiteStore(StoreInterface):
         while frontier:
             next_frontier: list[str] = []
             for current in frontier:
-                for neighbor_id in self._adjacency.get(current, set()):
+                for neighbor_id in self._hierarchy_out.get(current, set()):
                     if neighbor_id in visited:
                         continue
                     neighbor = self._nodes.get(neighbor_id)
@@ -191,9 +283,10 @@ class SQLiteStore(StoreInterface):
                     used += cost
                     visited.add(neighbor_id)
                     next_frontier.append(neighbor_id)
-                    edge = self.get_edge(current, neighbor_id)
-                    if edge is not None:
-                        sub.edges.append(edge)
+                    for e in self.get_edges_between(current, neighbor_id):
+                        if e.kind == "hierarchy":
+                            sub.edges.append(e)
+                            break
             frontier = next_frontier
         return sub
 
@@ -202,6 +295,46 @@ class SQLiteStore(StoreInterface):
 
     def get_all_edges(self) -> list[Edge]:
         return list(self._edges.values())
+
+    # === 快照 / 回滚 ===
+
+    def snapshot(self) -> dict:
+        """捕获内部图状态 + 变更跟踪集快照（供 fanout 回滚）。
+
+        除节点 / 边 / 邻接外，**MUST 一并捕获 4 个变更跟踪集**：还原它们后，
+        下次 ``flush_changes`` 的删 / 增正好抵消本次（被回滚的）reorg，不残留
+        旧行、不漏删——否则边会在 DB 里翻倍。边拷贝**保留原 id**。
+        """
+        from dataclasses import replace as dc_replace
+
+        return {
+            "nodes": {
+                nid: dc_replace(n, extensions=dict(n.extensions or {}))
+                for nid, n in self._nodes.items()
+            },
+            "edges": {eid: dc_replace(e) for eid, e in self._edges.items()},
+            "hierarchy_out": {k: set(v) for k, v in self._hierarchy_out.items()},
+            "fact_by_node": {k: set(v) for k, v in self._fact_by_node.items()},
+            "dirty_nodes": set(self._dirty_nodes),
+            "deleted_nodes": set(self._deleted_nodes),
+            "dirty_edges": set(self._dirty_edges),
+            "deleted_edges": set(self._deleted_edges),
+        }
+
+    def restore(self, snapshot: dict) -> None:
+        """从 ``snapshot()`` 整体还原内部状态 + 变更跟踪集（保留边 id）。"""
+        self._nodes = dict(snapshot["nodes"])
+        self._edges = dict(snapshot["edges"])
+        self._hierarchy_out = {
+            k: set(v) for k, v in snapshot["hierarchy_out"].items()
+        }
+        self._fact_by_node = {
+            k: set(v) for k, v in snapshot["fact_by_node"].items()
+        }
+        self._dirty_nodes = set(snapshot["dirty_nodes"])
+        self._deleted_nodes = set(snapshot["deleted_nodes"])
+        self._dirty_edges = set(snapshot["dirty_edges"])
+        self._deleted_edges = set(snapshot["deleted_edges"])
 
     # === 持久化钩子 ===
 
@@ -214,12 +347,12 @@ class SQLiteStore(StoreInterface):
         for edge in self.get_all_edges():
             self._save_edge(edge)
         self.conn.commit()
-        self._clear_change_tracking()  # 内存已全量落盘，跟踪归零
+        self._clear_change_tracking()
 
     def save_full(self) -> None:
         """全量重建：先清空 nodes/edges 再整图重写，反映边/节点删除。
 
-        只清图表，不动 document_chunks 等辅助表（idempotency 续跑依赖它）。
+        只清图表，不动 document_chunks 等辅助表。
         """
         if self.conn is None:
             return
@@ -230,11 +363,11 @@ class SQLiteStore(StoreInterface):
         for edge in self.get_all_edges():
             self._save_edge(edge)
         self.conn.commit()
-        self._clear_change_tracking()  # 内存已全量落盘，跟踪归零
+        self._clear_change_tracking()
 
     def load(self) -> None:
         """从 SQLite 数据库加载节点和边到内存。"""
-        from mcs.core.graph import Node
+        from mcs.core.graph import Edge, Node
 
         if self.conn is None:
             return
@@ -243,16 +376,30 @@ class SQLiteStore(StoreInterface):
         ):
             raw = json.loads(row[4]) if row[4] else {}
             ext = self._deserialize_extensions(raw)
-            self.add_node(
-                Node(id=row[0], name=row[1], content=row[2] or "", role=row[3], extensions=ext)
+            self._nodes[row[0]] = Node(
+                id=row[0], name=row[1], content=row[2] or "", role=row[3], extensions=ext
             )
+            self._hierarchy_out.setdefault(row[0], set())
+            self._fact_by_node.setdefault(row[0], set())
+
         for row in self.conn.execute(
-            "SELECT source_id, target_id FROM edges"
+            "SELECT id, source_id, target_id, kind, label, priority FROM edges"
         ):
-            self.add_edge(row[0], row[1])
-        # 重建反向邻接表（add_edge 已在维护，但显式确认一致性）
-        self._rebuild_reverse_adjacency()
-        # 加载后内存与 db 一致：清空 add_node/add_edge 期间累积的跟踪，避免首次 flush 冗余重写
+            edge = Edge(
+                id=row[0],
+                source_id=row[1],
+                target_id=row[2],
+                kind=row[3] or "hierarchy",
+                label=row[4] or "",
+                priority=row[5] if row[5] is not None else 0.0,
+            )
+            self._edges[edge.id] = edge
+            if edge.kind == "hierarchy":
+                self._hierarchy_out.setdefault(edge.source_id, set()).add(edge.target_id)
+            else:
+                self._fact_by_node.setdefault(edge.source_id, set()).add(edge.id)
+                self._fact_by_node.setdefault(edge.target_id, set()).add(edge.id)
+
         self._clear_change_tracking()
 
     def commit(self) -> None:
@@ -261,39 +408,25 @@ class SQLiteStore(StoreInterface):
             self.conn.commit()
 
     def mark_node_dirty(self, node_id: str) -> None:
-        """显式标记节点为脏，使其在下次 ``flush_changes`` 时被 upsert。
-
-        用于绕过 store 方法的原地改动（如决策阶段对 ``extensions`` 追加 statements /
-        别名 / source_tracking），这些改动 store 无从感知，由调用方补标。
-        """
+        """显式标记节点为脏，使其在下次 ``flush_changes`` 时被 upsert。"""
         if node_id in self._nodes:
             self._track_node_dirty(node_id)
 
     def flush_changes(self) -> None:
-        """增量落盘自上次 flush/save 以来的节点/边变更（含删除），并提交。
-
-        先执行删除（边、节点）再 upsert，避免「删后又以同 PK 重加」的次序冲突。
-        变更由各 add/update/delete 方法跟踪，覆盖决策阶段与压缩/裂变阶段对根、hub、
-        层级边的全部增删改——使持久图任意时刻与内存图一致，``save_full`` 不再是
-        虚拟根 / 层级边落库的唯一途径（续跑重载即得到完整有根图）。
-        """
+        """增量落盘自上次 flush/save 以来的节点/边变更（含删除），并提交。"""
         if self.conn is None:
             return
-        for src, tgt in self._deleted_edges:
-            self.conn.execute(
-                "DELETE FROM edges WHERE source_id=? AND target_id=?",
-                (src, tgt),
-            )
+        for eid in self._deleted_edges:
+            self.conn.execute("DELETE FROM edges WHERE id=?", (eid,))
         for nid in self._deleted_nodes:
             self.conn.execute("DELETE FROM nodes WHERE id=?", (nid,))
         for nid in self._dirty_nodes:
             node = self._nodes.get(nid)
             if node is not None:
                 self._save_node(node)
-        for coord in self._dirty_edges:
-            edge = self._edges.get(coord)
-            # 仅当该坐标的边仍在内存（未被后续删除/改向）时落盘
-            if edge is not None and (edge.source_id, edge.target_id) == coord:
+        for eid in self._dirty_edges:
+            edge = self._edges.get(eid)
+            if edge is not None:
                 self._save_edge(edge)
         self.conn.commit()
         self._clear_change_tracking()
@@ -324,8 +457,9 @@ class SQLiteStore(StoreInterface):
             return
         self.conn.execute(
             "INSERT OR REPLACE INTO edges "
-            "(source_id, target_id) VALUES (?, ?)",
-            (edge.source_id, edge.target_id),
+            "(id, source_id, target_id, kind, label, priority) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (edge.id, edge.source_id, edge.target_id, edge.kind, edge.label, edge.priority),
         )
 
     # === 变更跟踪（增量持久化） ===
@@ -338,15 +472,13 @@ class SQLiteStore(StoreInterface):
         self._deleted_nodes.add(node_id)
         self._dirty_nodes.discard(node_id)
 
-    def _track_edge_dirty(self, edge: Edge) -> None:
-        coord = (edge.source_id, edge.target_id)
-        self._dirty_edges.add(coord)
-        self._deleted_edges.discard(coord)
+    def _track_edge_dirty(self, edge_id: str) -> None:
+        self._dirty_edges.add(edge_id)
+        self._deleted_edges.discard(edge_id)
 
-    def _track_edge_deleted(self, edge: Edge) -> None:
-        coord = (edge.source_id, edge.target_id)
-        self._deleted_edges.add(coord)
-        self._dirty_edges.discard(coord)
+    def _track_edge_deleted(self, edge_id: str) -> None:
+        self._deleted_edges.add(edge_id)
+        self._dirty_edges.discard(edge_id)
 
     def _clear_change_tracking(self) -> None:
         self._dirty_nodes.clear()
@@ -355,10 +487,7 @@ class SQLiteStore(StoreInterface):
         self._deleted_edges.clear()
 
     def _serialize_extensions(self, extensions: dict | None) -> dict:
-        """对带编解码的 NodeExtension 走其 ``serialize()`` 产出 dict（D5）。
-
-        无对应插件的槽位原样保留；``json.dumps(default=str)`` 仅作最后兜底。
-        """
+        """对带编解码的 NodeExtension 走其 ``serialize()`` 产出 dict。"""
         out: dict = {}
         for key, value in (extensions or {}).items():
             ext = self._node_extensions.get(key)
@@ -374,10 +503,7 @@ class SQLiteStore(StoreInterface):
         return out
 
     def _deserialize_extensions(self, raw: dict | None) -> dict:
-        """对带编解码的 NodeExtension 走其 ``deserialize()`` 还原结构化记录（D5）。
-
-        反序列化失败时保留原始值（不致使 load 整体失败）。
-        """
+        """对带编解码的 NodeExtension 走其 ``deserialize()`` 还原结构化记录。"""
         out: dict = {}
         for key, value in (raw or {}).items():
             ext = self._node_extensions.get(key)
@@ -410,9 +536,12 @@ class SQLiteStore(StoreInterface):
 
         edges_sql = """
             CREATE TABLE IF NOT EXISTS edges (
-                source_id TEXT,
-                target_id TEXT,
-                PRIMARY KEY (source_id, target_id)
+                id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'hierarchy',
+                label TEXT NOT NULL DEFAULT '',
+                priority REAL NOT NULL DEFAULT 0.0
             )
         """
         idx_source_sql = "CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id)"
@@ -430,18 +559,15 @@ class SQLiteStore(StoreInterface):
 
         self.conn.commit()
 
-    @staticmethod
-    def _edge_key(source_id: str, target_id: str) -> tuple[str, str]:
-        return (source_id, target_id)
+    # === 内部边操作 ===
 
-    def _rebuild_reverse_adjacency(self) -> None:
-        """从 _adjacency 重建 _reverse_adjacency，确保一致性。"""
-        self._reverse_adjacency.clear()
-        for source_id, targets in self._adjacency.items():
-            for target_id in targets:
-                self._reverse_adjacency.setdefault(target_id, set()).add(source_id)
-
-    def add_bidirectional(self, source_id: str, target_id: str) -> None:
-        """一次性添加两条单向边 source→target + target→source（语义边）。"""
-        self.add_edge(source_id, target_id)
-        self.add_edge(target_id, source_id)
+    def _remove_edge_by_id(self, edge_id: str) -> None:
+        edge = self._edges.pop(edge_id, None)
+        if edge is None:
+            return
+        if edge.kind == "hierarchy":
+            self._hierarchy_out.get(edge.source_id, set()).discard(edge.target_id)
+        else:
+            self._fact_by_node.get(edge.source_id, set()).discard(edge.id)
+            self._fact_by_node.get(edge.target_id, set()).discard(edge.id)
+        self._track_edge_deleted(edge_id)

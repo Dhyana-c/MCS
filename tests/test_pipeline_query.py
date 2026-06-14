@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcs.core.graph import Node
+from mcs.core.graph import Node, Subgraph
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
@@ -62,26 +62,28 @@ def _build_engine(
     )
 
 
-def test_default_returns_list_of_nodes(seeded_graph, mock_llm):
-    """无 postprocess 插件 → 查询返回 result_set (List[Node])。"""
+def test_default_returns_subgraph(seeded_graph, mock_llm):
+    """无 postprocess 插件 → 查询返回 Subgraph。"""
     engine = _build_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
     )
-    # select_nodes 不扩展任何邻居
+    # select_facts 不扩展任何邻居
     mock_llm.set_response("select_nodes", [])
     result = engine.query("什么是深度学习？")
-    assert isinstance(result, list)
-    assert all(isinstance(n, Node) for n in result)
-    assert result[0].id == "dl"
+    assert isinstance(result, Subgraph)
+    assert all(isinstance(n, Node) for n in result.nodes)
+    assert result.nodes[0].id == "dl"
 
 
-def test_empty_seeds_returns_empty_list(seeded_graph, mock_llm):
-    """当没有 entry 插件产出任何内容时，查询返回 []。"""
+def test_empty_seeds_returns_empty_subgraph(seeded_graph, mock_llm):
+    """当没有 entry 插件产出任何内容时，查询返回空 Subgraph。"""
     engine = _build_engine(seeded_graph, mock_llm)  # no entry plugins
     result = engine.query("nothing matches")
-    assert result == []
+    assert isinstance(result, Subgraph)
+    assert result.nodes == []
+    assert result.edges == []
 
 
 def test_bfs_visits_each_node_once_in_cycle():
@@ -100,19 +102,19 @@ def test_bfs_visits_each_node_once_in_cycle():
 
     mock = MockLLM()
     engine = _build_engine(g, mock, _StaticEntry(["a"], g))
-    # select_nodes 选中所有候选
+    # select_facts 选中所有候选（经 MockLLM 回退到 select_nodes mock）
     mock.set_response(
         "select_nodes",
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
     result = engine.query("trace cycle")
-    ids = {n.id for n in result}
+    ids = {n.id for n in result.nodes}
     assert ids == {"a", "b", "c"}
 
 
 def test_max_rounds_caps_bfs_depth(seeded_graph, mock_llm):
     """max_rounds 限制遍历轮数。"""
-    # 让 select_nodes 选中所有候选
+    # 让 select_facts 选中所有候选
     mock_llm.set_response(
         "select_nodes",
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
@@ -125,7 +127,7 @@ def test_max_rounds_caps_bfs_depth(seeded_graph, mock_llm):
         max_accumulated_nodes=1000,
     )
     result = engine.query("test")
-    ids = {n.id for n in result}
+    ids = {n.id for n in result.nodes}
     # 种子 dl 直接加入 accumulated
     assert "dl" in ids
     # max_rounds=2：第 1 轮扩展 dl 的邻居，第 2 轮扩展选中邻居的邻居
@@ -146,7 +148,7 @@ def test_max_accumulated_nodes_caps_node_count(seeded_graph, mock_llm):
         max_accumulated_nodes=2,
     )
     result = engine.query("test")
-    assert len(result) <= 2
+    assert len(result.nodes) <= 2
 
 
 def test_token_budget_terminates_traverse(seeded_graph, mock_llm):
@@ -175,8 +177,8 @@ def test_token_budget_terminates_traverse(seeded_graph, mock_llm):
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
     result = engine.query("test")
-    # 应在 token 预算内终止
-    assert isinstance(result, list)
+    # 应在 token 预算内终止，返回 Subgraph
+    assert isinstance(result, Subgraph)
 
 
 def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
@@ -193,22 +195,25 @@ def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
             raise AssertionError("entry 插件在有 existing_context 时不能运行")
 
     engine = _build_engine(seeded_graph, mock_llm, _RaisingEntry())
-    # select_nodes 不扩展
+    # select_facts 不扩展
     mock_llm.set_response("select_nodes", [])
     seed = seeded_graph.get_node("nn")
     result = engine.query("test", existing_context=[seed])
-    assert result[0].id == "nn"
+    assert isinstance(result, Subgraph)
+    assert result.nodes[0].id == "nn"
 
 
 def test_postprocess_chain_transforms_output(seeded_graph, mock_llm):
-    """postprocess 插件可以将 List[Node] 替换为任意类型。"""
+    """postprocess 插件可以将 Subgraph 替换为任意类型。"""
 
     class _Stringify(PostprocessPluginInterface):
         def get_name(self) -> str:
             return "stringify"
 
         def process(self, input, ctx):
-            return ", ".join(n.name for n in input)
+            if isinstance(input, Subgraph):
+                return ", ".join(n.name for n in input.nodes)
+            return str(input)
 
     engine = _build_engine(
         seeded_graph,
@@ -269,7 +274,7 @@ def test_preprocess_chain_transforms_query_text(seeded_graph, mock_llm):
     mock_llm.set_response("select_nodes", [])
     result = engine.query("test")
     # 查询应正常执行，QueryPreprocessPlugin 已处理文本
-    assert isinstance(result, list)
+    assert isinstance(result, Subgraph)
 
 
 def test_query_engine_preprocess_and_postprocess_independent(seeded_graph, mock_llm):
@@ -331,7 +336,8 @@ def test_trim_plugin_chain(seeded_graph, mock_llm):
     # TrimPlugin 应被调用
     assert len(trim_calls) > 0
     # 结果应只包含 TrimPlugin 筛选后的种子
-    assert len(result) <= 1
+    assert isinstance(result, Subgraph)
+    assert len(result.nodes) <= 1
 
 
 def test_trim_chain_empty_skips(seeded_graph, mock_llm):
@@ -344,206 +350,114 @@ def test_trim_chain_empty_skips(seeded_graph, mock_llm):
     mock_llm.set_response("select_nodes", [])
     # 无 TrimPlugin → 不报错，正常执行
     result = engine.query("test")
-    assert isinstance(result, list)
+    assert isinstance(result, Subgraph)
 
 
-# === 批量邻居扩展测试 ===
+# === 事实 BFS 遍历测试 ===
 
 
-def test_batch_packing_combines_multiple_nodes(seeded_graph, mock_llm):
-    """批量打包：多个节点及其邻居合并后一次 LLM 调用。"""
-    from tests.conftest import MockLLM
-
-    # 构造两个种子的场景
-    g = seeded_graph
-    dl = g.get_node("dl")
-    ml = g.get_node("ml")
-
-    mock = MockLLM()
-    engine = _build_engine(g, mock, _StaticEntry(["dl", "ml"], g))
-
-    # 记录 LLM 调用次数
-    call_count = 0
-
-    def count_and_select(nodes_in, _free_args):
-        nonlocal call_count
-        call_count += 1
-        # 只选邻居，不选中心节点
-        ids = [n.id for n in (nodes_in or [])]
-        # 排除中心节点（dl, ml）
-        return [i for i in ids if i not in ("dl", "ml")]
-
-    mock.set_response("select_nodes", count_and_select)
-    engine.query("test")
-
-    # 批量模式应该减少 LLM 调用次数（理想情况 1 次，而非每个种子 1 次）
-    # 注意：实际调用次数取决于打包阈值和节点大小
-    assert call_count >= 1
-
-
-def test_batch_depth_calculation_correct():
-    """批量模式下邻居深度计算正确。"""
-    from tests.conftest import MockLLM
-
-    g = GraphStore()
-    # 构造两跳图：a -> b1, b2; b1 -> c1; b2 -> c2
-    nodes = [
-        Node(id="a", name="A", content="A"),
-        Node(id="b1", name="B1", content="B1"),
-        Node(id="b2", name="B2", content="B2"),
-        Node(id="c1", name="C1", content="C1"),
-        Node(id="c2", name="C2", content="C2"),
-    ]
-    for n in nodes:
-        g.add_node(n)
-    g.add_edge("a", "b1")
-    g.add_edge("a", "b2")
-    g.add_edge("b1", "c1")
-    g.add_edge("b2", "c2")
-
-    mock = MockLLM()
-    pm = PluginManager()
-    pm.register(mock)
-    pm.register(_StaticEntry(["a"], g))
-    ctx = PluginContext(
-        store=g,
-        config=None,
-        token_budget=TokenBudget(8000),
-        context_renderer=None,
-        plugin_manager=pm,
+def test_fact_bfs_expands_hierarchy_children(seeded_graph, mock_llm):
+    """事实 BFS 遍历：hierarchy 子节点作为视图的一部分被选中。"""
+    mock_llm.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
-    pm.initialize_all(ctx)
-    engine = QueryEngine(
-        store=g,
-        llm=mock,
-        plugin_manager=pm,
-        token_budget=TokenBudget(8000),
+    engine = _build_engine(
+        seeded_graph,
+        mock_llm,
+        _StaticEntry(["dl"], seeded_graph),
         max_rounds=2,
-        max_accumulated_nodes=1000,
     )
+    result = engine.query("test")
+    ids = {n.id for n in result.nodes}
+    assert "dl" in ids
+    assert "nn" in ids or "ml" in ids
 
-    # 选中所有邻居
+
+def test_fact_bfs_collects_fact_edges():
+    """事实 BFS 遍历：选中的 fact 边应出现在 Subgraph.edges 中。"""
+    g = GraphStore()
+    a = Node(id="a", name="A", content="A")
+    b = Node(id="b", name="B", content="B")
+    c = Node(id="c", name="C", content="C")
+    for n in [a, b, c]:
+        g.add_node(n)
+    # fact 边
+    g.add_edge("a", "b", kind="fact", label="喜欢")
+    g.add_edge("b", "c", kind="fact", label="包含")
+
+    from tests.conftest import MockLLM
+
+    mock = MockLLM()
+    engine = _build_engine(g, mock, _StaticEntry(["a"], g))
+    # select_facts 选中所有（经 MockLLM 回退转换）
     mock.set_response(
         "select_nodes",
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
     result = engine.query("test")
+    # fact 边应被收集
+    assert isinstance(result, Subgraph)
+    assert len(result.edges) >= 1
+    assert all(e.kind == "fact" for e in result.edges)
 
-    # 验证所有节点都被访问
-    ids = {n.id for n in result}
-    assert ids == {"a", "b1", "b2", "c1", "c2"}
 
+def test_fact_bfs_endpoints_added_to_accumulated():
+    """选中 fact 边时，两端节点都应加入 accumulated。"""
+    g = GraphStore()
+    a = Node(id="a", name="A", content="A")
+    b = Node(id="b", name="B", content="B")
+    c = Node(id="c", name="C", content="C")
+    for n in [a, b, c]:
+        g.add_node(n)
+    g.add_edge("a", "b", kind="fact", label="喜欢")
 
-def test_batch_visited_dedup_shared_neighbor():
-    """同一邻居被多个中心共享时只处理一次。"""
     from tests.conftest import MockLLM
 
-    g = GraphStore()
-    # a1, a2 都指向 shared
-    a1 = Node(id="a1", name="A1", content="A1")
-    a2 = Node(id="a2", name="A2", content="A2")
-    shared = Node(id="shared", name="Shared", content="Shared")
-    for n in [a1, a2, shared]:
-        g.add_node(n)
-    g.add_edge("a1", "shared")
-    g.add_edge("a2", "shared")
-
     mock = MockLLM()
-    engine = _build_engine(g, mock, _StaticEntry(["a1", "a2"], g))
-
-    selected_count = 0
-
-    def track_selection(nodes_in, _free_args):
-        nonlocal selected_count
-        ids = [n.id for n in (nodes_in or [])]
-        # 只选 shared
-        selected = [i for i in ids if i == "shared"]
-        selected_count += len(selected)
-        return selected
-
-    mock.set_response("select_nodes", track_selection)
+    engine = _build_engine(g, mock, _StaticEntry(["a"], g))
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
     result = engine.query("test")
+    ids = {n.id for n in result.nodes}
+    # a 是种子，b 是 fact 边端点
+    assert "a" in ids
+    assert "b" in ids
 
-    # shared 只能在结果中出现一次
-    ids = [n.id for n in result]
-    assert ids.count("shared") == 1
 
-
-def test_batch_fallback_on_parse_error(seeded_graph, mock_llm):
-    """LLMParseError 时回退到逐节点处理。"""
+def test_fact_bfs_parse_error_skips_node(seeded_graph, mock_llm):
+    """LLMParseError 时跳过当前节点，继续处理队列。"""
     from mcs.core.errors import LLMParseError
 
-    # 第一次调用抛出 LLMParseError，触发回退
     call_count = 0
 
-    def fail_then_succeed(nodes_in, _free_args):
+    def fail_once(nodes_in, _free_args):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise LLMParseError("select_nodes", "invalid", "test error")
+            raise LLMParseError("select_facts", "invalid", "test error")
         return [n.id for n in (nodes_in or []) if n.id != "dl"]
 
-    mock_llm.set_response("select_nodes", fail_then_succeed)
+    mock_llm.set_response("select_nodes", fail_once)
     engine = _build_engine(seeded_graph, mock_llm, _StaticEntry(["dl"], seeded_graph))
     result = engine.query("test")
 
-    # 回退后应仍有结果
-    assert isinstance(result, list)
-    assert len(result) >= 1  # 至少包含种子 dl
+    # 即使首次失败，种子 dl 仍应在结果中
+    assert isinstance(result, Subgraph)
+    assert any(n.id == "dl" for n in result.nodes)
 
 
-def test_batch_overflow_node_put_back_to_queue():
-    """超预算时未加入批次的节点应放回队列头部，下一轮继续处理。"""
-    from tests.conftest import MockLLM
-
-    g = GraphStore()
-    # 构造三个种子，每个有大邻居（模拟超预算场景）
-    nodes = [
-        Node(id="a", name="A", content="A node with large content"),
-        Node(id="b", name="B", content="B node with large content"),
-        Node(id="c", name="C", content="C node with large content"),
-        Node(id="n1", name="N1", content="Neighbor 1 of A"),
-        Node(id="n2", name="N2", content="Neighbor 2 of B"),
-        Node(id="n3", name="N3", content="Neighbor 3 of C"),
-    ]
-    for n in nodes:
-        g.add_node(n)
-    g.add_edge("a", "n1")
-    g.add_edge("b", "n2")
-    g.add_edge("c", "n3")
-
-    mock = MockLLM()
-    # 极小预算：迫使批次只能容纳一个节点
-    pm = PluginManager()
-    pm.register(mock)
-    pm.register(_StaticEntry(["a", "b", "c"], g))
-    ctx = PluginContext(
-        store=g,
-        config=None,
-        token_budget=TokenBudget(100),  # 极小预算
-        context_renderer=None,
-        plugin_manager=pm,
+def test_traverse_with_no_neighbors_or_facts(seeded_graph, mock_llm):
+    """叶子节点（无子节点无事实）不会触发 LLM 调用。"""
+    # cnn 是叶子节点
+    engine = _build_engine(
+        seeded_graph,
+        mock_llm,
+        _StaticEntry(["cnn"], seeded_graph),
     )
-    pm.initialize_all(ctx)
-    engine = QueryEngine(
-        store=g,
-        llm=mock,
-        plugin_manager=pm,
-        token_budget=TokenBudget(100),
-        max_rounds=1,
-        max_accumulated_nodes=100,
-    )
-
-    # 选中所有邻居
-    mock.set_response(
-        "select_nodes",
-        lambda nodes_in, _free_args: [n.id for n in (nodes_in or []) if n.id.startswith("n")],
-    )
+    mock_llm.set_response("select_nodes", [])
     result = engine.query("test")
-
-    # 即使预算极小，所有种子和邻居都应被处理（因为超预算节点放回队列）
-    ids = {n.id for n in result}
-    # 种子 a, b, c 应都在 accumulated
-    assert "a" in ids
-    assert "b" in ids
-    assert "c" in ids
+    assert isinstance(result, Subgraph)
+    assert result.nodes[0].id == "cnn"

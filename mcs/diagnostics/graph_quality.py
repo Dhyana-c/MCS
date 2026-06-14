@@ -105,11 +105,17 @@ def _compute_connected_components(store: StoreInterface) -> list[set[str]]:
             visited.add(current_id)
             component.add(current_id)
 
-            # Add all neighbors to queue
-            neighbors = store.get_neighbors(current_id)
-            for neighbor in neighbors:
-                if neighbor.id not in visited:
-                    queue.append(neighbor.id)
+            # Add all reachable neighbors (hierarchy + fact endpoints) to queue
+            neighbor_ids: set[str] = set()
+            for n in store.get_out_hierarchy(current_id):
+                neighbor_ids.add(n.id)
+            for e in store.get_facts(current_id):
+                neighbor_ids.add(e.source_id)
+                neighbor_ids.add(e.target_id)
+            neighbor_ids.discard(current_id)
+            for nid in neighbor_ids:
+                if nid not in visited:
+                    queue.append(nid)
 
         if component:
             components.append(component)
@@ -221,11 +227,16 @@ def diagnose_from_db(db_path: str) -> GraphQualityReport:
             )
         )
 
-    # Load edges
+    # Load edges (含 kind/label/priority，否则事实边退化为 hierarchy、连通分析失真)
     for row in conn.execute(
-        "SELECT source_id, target_id FROM edges"
+        "SELECT source_id, target_id, kind, label, priority FROM edges"
     ):
-        graph.add_edge(row[0], row[1])
+        graph.add_edge(
+            row[0], row[1],
+            kind=row[2] or "hierarchy",
+            label=row[3] or "",
+            priority=row[4] if row[4] is not None else 0.0,
+        )
 
     conn.close()
     return diagnose_graph(graph)

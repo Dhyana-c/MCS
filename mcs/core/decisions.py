@@ -36,16 +36,17 @@ class Decision:
       - attach_statement:  [DEPRECATED] 现为 no-op
       - no_op:             concept, reason
 
-    ``edges_to`` 是到**已存在节点**的锚点 id；``edges_to_names`` 是到**同一批新概念**
-    的概念名（篇内关系）——写入阶段 ⑤ 在新节点全部建好后按名解析成边，弥补"同次摄入
-    的兄弟概念之间无法用 id 互连"的缺口。
+    ``edges_to`` 是到**已存在节点**的锚点列表（每项含 target_id + label）；
+    ``edges_to_names`` 是到**同一批新概念**的概念名列表（每项含 target_name + label）——
+    写入阶段 ⑤ 在新节点全部建好后按名解析成边，弥补"同次摄入的兄弟概念之间无法用
+    id 互连"的缺口。一条关系 = 一个方向 + 一个 label，不自动镜像反向。
     """
 
     action: ActionType
     concept: ConceptDraft | None = None
     target_id: str | None = None
-    edges_to: list[str] = field(default_factory=list)
-    edges_to_names: list[str] = field(default_factory=list)
+    edges_to: list[dict] = field(default_factory=list)  # [{"target_id": str, "label": str}, ...]
+    edges_to_names: list[dict] = field(default_factory=list)  # [{"target_name": str, "label": str}, ...]
     initial_statements: list[str] = field(default_factory=list)  # DEPRECATED: 不再使用
     statement: str | None = None  # DEPRECATED: 不再使用
     aliases_to_add: list[str] = field(default_factory=list)

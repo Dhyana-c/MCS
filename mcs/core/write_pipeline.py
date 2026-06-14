@@ -251,7 +251,7 @@ class WritePipeline:
 
         changed: list[Node] = []
         name_to_id: dict[str, str] = {}
-        pending_named_edges: list[tuple[str, list[str]]] = []
+        pending_named_edges: list[tuple[str, list[dict]]] = []
         for decision in decisions:
             action = decision.action
             cname = decision.concept.name if decision.concept else None
@@ -279,14 +279,14 @@ class WritePipeline:
             else:
                 raise UnknownActionError(action)
 
-        # 第二遍：篇内关系边（add_edge 自带去重 / 防自环 / 端点存在校验）
-        # 语义边落两条对向单向边（a→b + b→a）
-        for source_id, names in pending_named_edges:
-            for nm in names:
-                target_id = name_to_id.get(nm)
+        # 第二遍：篇内关系边——一条带 label 的事实边、两端索引（不双向对存）
+        for source_id, edge_specs in pending_named_edges:
+            for edge_info in edge_specs:
+                target_name = edge_info.get("target_name", "")
+                label = edge_info.get("label", "")
+                target_id = name_to_id.get(target_name)
                 if target_id:
-                    self.store.add_edge(source_id, target_id)
-                    self.store.add_edge(target_id, source_id)
+                    self.store.add_edge(source_id, target_id, kind="fact", label=label)
         return changed
 
     def _dispatch_merge(self, decision: Decision) -> None:
@@ -336,7 +336,7 @@ class WritePipeline:
                 )
 
     def _dispatch_create(self, decision: Decision) -> Node:
-        """创建：新节点 + 到 ``edges_to`` 中每个锚点的边。"""
+        """创建：新节点 + 到 ``edges_to`` 中每个锚点的带 label 事实边。"""
         from mcs.core.graph import Node
 
         c = decision.concept
@@ -349,9 +349,10 @@ class WritePipeline:
             role="concept",
         )
         self.store.add_node(node)
-        for anchor_id in decision.edges_to or []:
-            self.store.add_edge(node.id, anchor_id)
-            self.store.add_edge(anchor_id, node.id)
+        for edge_info in decision.edges_to or []:
+            anchor_id = edge_info.get("target_id", edge_info) if isinstance(edge_info, dict) else edge_info
+            label = edge_info.get("label", "") if isinstance(edge_info, dict) else ""
+            self.store.add_edge(node.id, anchor_id, kind="fact", label=label)
         return node
 
     def _dispatch_attach(self, decision: Decision) -> None:

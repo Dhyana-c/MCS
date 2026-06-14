@@ -154,21 +154,6 @@ The system SHALL enforce `max_rounds` (BFS depth limit) and `max_accumulated_nod
 
 ---
 
-### Requirement: SeedSelector 和 _traverse 复用同一 LLM purpose
-
-The system SHALL use the same LLM purpose `select_nodes` for both SeedSelectorPlugin and `_traverse` internal LLM calls. The call signature SHALL be consistent: `llm.call(purpose="select_nodes", nodes_in=candidates, free_args={"query": query, "accumulated_summary": ...})`.
-
-#### Scenario: SeedSelector 使用 select_nodes purpose
-
-- **WHEN** SeedSelectorPlugin 调用 LLM 筛选种子
-- **THEN** MUST 使用 `purpose="select_nodes"`
-
-#### Scenario: _traverse 使用 select_nodes purpose
-
-- **WHEN** `_traverse` 内部调用 LLM 筛选候选
-- **THEN** MUST 使用 `purpose="select_nodes"`
-
----
 
 ### Requirement: QueryEngine.__init__ 删除 max_picked 参数
 

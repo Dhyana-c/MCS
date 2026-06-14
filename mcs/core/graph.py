@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -29,11 +30,18 @@ class Node:
 class Edge:
     """有向边 ``source → target``。
 
-    全图只有单向边；语义关系以两条对向单向边表达。
+    全图两类边——层级边 (kind="hierarchy") 与事实边 (kind="fact")。
+    层级边：纯下行、无 label，结构骨架。
+    事实边：带 label（粗粒度谓词）、带 priority（为遗忘预留），
+    一条事实只存一份，但两端邻接都索引到它（支持反查）。
     """
 
     source_id: str
     target_id: str
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    kind: str = "hierarchy"  # "hierarchy" | "fact"
+    label: str = ""  # fact 边 MUST 非空；hierarchy 边 MUST 为空串
+    priority: float = 0.0  # Phase 1 仅留字段；Phase 2 用于排序/截断
 
 
 @dataclass

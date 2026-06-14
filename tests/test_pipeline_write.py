@@ -357,13 +357,13 @@ def test_auto_persist_saves_edges(empty_graph, mock_llm):
     mock_llm.set_response("extract_concepts", [concept])
     mock_llm.set_response(
         "judge_relations",
-        [Decision(action="create", concept=concept, edges_to=["anchor"])],
+        [Decision(action="create", concept=concept, edges_to=[{"target_id": "anchor", "label": "相关"}])],
     )
     ctx = wp.ingest("text")
 
     assert ctx.persisted is True
     rows = store.conn.execute("SELECT COUNT(*) FROM edges").fetchone()
-    assert rows[0] == 2  # 语义边落两条对向单向边：new→anchor + anchor→new
+    assert rows[0] == 1  # 一条事实边（存一份、两端索引）
 
 
 def test_auto_persist_storage_exception_handled(empty_graph, mock_llm):

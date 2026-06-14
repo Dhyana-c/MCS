@@ -91,7 +91,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
             if merges_done >= self.max_merges:
                 break
 
-            neighbors = store.get_neighbors(node.id)
+            neighbors = store.get_out_hierarchy(node.id)
             if len(neighbors) < self.min_degree:
                 continue
 
@@ -118,7 +118,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
         for node in store.get_all_nodes():
             if node.role == "hub":
                 continue  # Skip existing hubs
-            neighbors = store.get_neighbors(node.id)
+            neighbors = store.get_out_hierarchy(node.id)
             if len(neighbors) >= self.min_degree:
                 candidates.append((node, len(neighbors)))
         return candidates
@@ -140,7 +140,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
         actual_edges = 0
 
         for neighbor in neighbors:
-            for n2 in store.get_neighbors(neighbor.id):
+            for n2 in store.get_out_hierarchy(neighbor.id):
                 if n2.id in neighbor_ids and n2.id > neighbor.id:
                     actual_edges += 1
 
@@ -169,21 +169,29 @@ class CommunityMergerPlugin(CompactionPluginInterface):
         """
         from mcs.core.graph import Node
 
-        # Use LLM to generate hub name/summary
+        # Use LLM to generate hub name/summary（decide_hub 现返回 MultiHubDecision：
+        # 读首个社区的 key_concept / summary，不再读已废弃的 hub_id /
+        # synthetic_hub_summary —— 否则恒为 None、永远落到下方兜底 catch-all hub）。
         try:
             decision = llm_caller(
                 purpose="decide_hub",
                 nodes_in=[center, *neighbors[:16]],  # Limit to avoid token overflow
                 free_args={},
             )
-            if decision:
-                hub_id = getattr(decision, "hub_id", None)
-                if hub_id and store.get_node(hub_id):
-                    # Use existing node as hub
-                    store.update_node(hub_id, {"role": "hub"})
-                    return store.get_node(hub_id)
+            communities = getattr(decision, "communities", None) if decision else None
+            if communities:
+                comm = communities[0]
+                key_id = getattr(comm, "key_concept_id", None)
+                if (
+                    getattr(comm, "strategy", "") == "key_concept"
+                    and key_id
+                    and store.get_node(key_id)
+                ):
+                    # 提拔现有节点为 hub
+                    store.update_node(key_id, {"role": "hub"})
+                    return store.get_node(key_id)
 
-                summary = getattr(decision, "synthetic_hub_summary", None)
+                summary = getattr(comm, "summary", None) or getattr(comm, "theme", None)
                 if summary:
                     hub = Node(
                         id=str(uuid.uuid4()),
@@ -210,14 +218,13 @@ class CommunityMergerPlugin(CompactionPluginInterface):
         self, center: Node, hub: Node, members: list[Node], store: StoreInterface
     ) -> None:
         """Reorganize community into star topology around hub."""
-        # Connect center to hub
-        store.add_edge(center.id, hub.id)
+        # Connect center to hub (层级边)
+        store.add_edge(center.id, hub.id, kind="hierarchy")
 
-        # Connect members to hub (but keep some edges to center for connectivity)
+        # Connect members to hub (层级边)
         for member in members:
             if member.id == hub.id:
                 continue
-            # Add edge to hub
-            store.add_edge(hub.id, member.id)
+            store.add_edge(hub.id, member.id, kind="hierarchy")
             # Optionally keep edge to center (for redundancy)
             # graph.add_edge(center.id, member.id)  # Uncomment to keep

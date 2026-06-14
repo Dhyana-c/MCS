@@ -82,7 +82,7 @@ def find_cross_doc_candidates_by_name(
                     continue  # Same document, skip
 
                 # Check if already connected
-                if graph.get_edge(node1.id, node2.id) is not None:
+                if graph.get_edges_between(node1.id, node2.id):
                     continue
 
                 candidates.append(CrossDocLinkCandidate(
@@ -144,7 +144,7 @@ def find_cross_doc_candidates_by_alias(
                     continue  # Same document, skip
 
                 # Check if already connected
-                if graph.get_edge(node.id, other_node.id) is not None:
+                if graph.get_edges_between(node.id, other_node.id):
                     continue
 
                 candidates.append(CrossDocLinkCandidate(
@@ -188,18 +188,19 @@ def apply_cross_doc_links(
             continue
 
         # Check if edge already exists (either direction)
-        if graph.get_edge(candidate.source_id, candidate.target_id) is not None:
+        if graph.get_edges_between(candidate.source_id, candidate.target_id):
+            continue
+        if graph.get_edges_between(candidate.target_id, candidate.source_id):
             continue
 
-        # Add semantic edges (two directed edges for bidirectional reachability)
-        graph.add_edge(candidate.source_id, candidate.target_id)
-        graph.add_edge(candidate.target_id, candidate.source_id)
-        edge = graph.get_edge(candidate.source_id, candidate.target_id)
-        if edge:
-            new_edges.append(edge)
-        reverse_edge = graph.get_edge(candidate.target_id, candidate.source_id)
-        if reverse_edge:
-            new_edges.append(reverse_edge)
+        # Add fact edge (single directed, dual-indexed)
+        graph.add_edge(
+            candidate.source_id, candidate.target_id,
+            kind="fact", label="跨文档关联",
+        )
+        edges = graph.get_edges_between(candidate.source_id, candidate.target_id)
+        if edges:
+            new_edges.append(edges[-1])
             applied += 1
 
     return applied, new_edges
@@ -275,10 +276,28 @@ def load_graph_from_db(db_path: str) -> GraphStore:
                     extensions=ext_raw,
                 )
             )
+        # 直接构造 Edge 保留原 id（镜像 SQLiteStore.load）——不走 add_edge 以免
+        # 重新 mint uuid，使载入图的边 id 与 DB 主键一致。
         for row in conn.execute(
-            "SELECT source_id, target_id FROM edges"
+            "SELECT id, source_id, target_id, kind, label, priority FROM edges"
         ):
-            graph.add_edge(row[0], row[1])
+            eid, src, tgt = row[0], row[1], row[2]
+            if src not in graph._nodes or tgt not in graph._nodes:
+                continue  # 跳过悬空边（与旧 add_edge 守门一致）
+            edge = Edge(
+                id=eid,
+                source_id=src,
+                target_id=tgt,
+                kind=row[3] or "hierarchy",
+                label=row[4] or "",
+                priority=row[5] if row[5] is not None else 0.0,
+            )
+            graph._edges[eid] = edge
+            if edge.kind == "hierarchy":
+                graph._hierarchy_out.setdefault(src, set()).add(tgt)
+            else:
+                graph._fact_by_node.setdefault(src, set()).add(eid)
+                graph._fact_by_node.setdefault(tgt, set()).add(eid)
     finally:
         conn.close()
     return graph
@@ -287,8 +306,10 @@ def load_graph_from_db(db_path: str) -> GraphStore:
 def persist_new_edges(db_path: str, new_edges: list[Edge]) -> int:
     """Write newly-created edges back to the ``edges`` table.
 
-    Uses ``INSERT OR IGNORE`` so rows already present (matching the
-    ``(source_id, target_id)`` primary key) are left untouched.
+    Uses ``INSERT OR IGNORE`` keyed on the ``id`` primary key (each edge carries
+    a unique uuid, so this only guards against re-inserting the exact same edge
+    row). Structural dedup is already handled upstream by
+    ``apply_cross_doc_links`` (it skips node pairs already connected either way).
 
     Args:
         db_path: Path to the SQLite database to write to.
@@ -303,12 +324,16 @@ def persist_new_edges(db_path: str, new_edges: list[Edge]) -> int:
     try:
         before = conn.total_changes
         conn.executemany(
-            "INSERT OR IGNORE INTO edges (source_id, target_id) "
-            "VALUES (?, ?)",
+            "INSERT OR IGNORE INTO edges (id, source_id, target_id, kind, label, priority) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             [
                 (
+                    e.id,
                     e.source_id,
                     e.target_id,
+                    getattr(e, "kind", "hierarchy"),
+                    getattr(e, "label", ""),
+                    getattr(e, "priority", 0.0),
                 )
                 for e in new_edges
             ],

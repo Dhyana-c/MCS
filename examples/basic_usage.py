@@ -209,13 +209,20 @@ def main() -> None:
         print(f"  '{text[:30]}…' → changed: {names}")
 
     print(f"\n-- Querying: {QUERY!r} --")
-    nodes = mcs.query(QUERY)
-    if isinstance(nodes, list):
-        print(f"Returned {len(nodes)} memory nodes:")
-        for n in nodes:
+    result = mcs.query(QUERY)
+    if hasattr(result, "nodes"):
+        # Subgraph 返回值
+        print(f"Returned {len(result.nodes)} memory nodes ({len(result.edges)} fact edges):")
+        for n in result.nodes:
+            print(f"  - {n.name} (id={n.id}): {n.content[:60]}…")
+        for e in result.edges:
+            print(f"  - fact: {e.source_id} —{e.label}→ {e.target_id}")
+    elif isinstance(result, list):
+        print(f"Returned {len(result)} memory nodes:")
+        for n in result:
             print(f"  - {n.name} (id={n.id}): {n.content[:60]}…")
     else:
-        print(f"Returned (non-list): {nodes!r}")
+        print(f"Returned: {result!r}")
 
     mcs.shutdown()
 

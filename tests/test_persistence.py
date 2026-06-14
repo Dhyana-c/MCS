@@ -157,6 +157,69 @@ def test_flush_changes_reflects_node_deletion_incrementally(tmp_path):
     assert store2.get_edge("a", "b") is None
 
 
+def test_reorg_rollback_no_duplicate_edges_after_flush(tmp_path):
+    """回归：fanout 裂变回滚 + 增量持久化不留重复边。
+
+    旧 _rollback_reorg 用 add_edge 重建（生成新 uuid + 绕过删除跟踪），
+    使旧持久化行残留、新行又插入 → 每条边在 DB 翻倍，reload 后 get_facts 重复。
+    新实现走 store.restore（保留边 id + 还原变更跟踪集），DB 边数不变。
+    """
+    from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
+
+    db = str(tmp_path / "rollback.db")
+    store = SQLiteStore({"path": db})
+    store.initialize()
+    for nid in ["a", "b", "c", "d"]:
+        store.add_node(Node(id=nid, name=nid, content=nid))
+    store.add_edge("a", "b", kind="fact", label="likes")
+    store.add_edge("a", "c", kind="hierarchy")
+    store.add_edge("a", "d", kind="hierarchy")
+    store.flush_changes()  # 模拟上一轮 ingest 增量落盘（3 条边）
+
+    plugin = FanoutReducerPlugin()
+    snap = store.snapshot()
+    # 模拟一次中途修改后被判定失败、需回滚的 reorg：
+    store.add_node(Node(id="hub", name="hub", content="hub", role="hub"))
+    store.add_edge("hub", "b", kind="hierarchy")
+    ac_id = next(e.id for e in store.get_edges_between("a", "c"))
+    store.delete_edge(ac_id)
+    plugin._rollback_reorg(store, snap)
+
+    # 回滚后内存图应已复原（3 条边、无 hub）
+    assert len(store.get_all_edges()) == 3
+    assert store.get_node("hub") is None
+
+    store.flush_changes()  # 下一轮 ingest 的 stage⑦
+    store.shutdown()
+
+    # 全新进程 reload：DB 不应有重复边
+    store2 = SQLiteStore({"path": db})
+    store2.initialize()
+    store2.load()
+    assert len(store2.get_all_edges()) == 3, "回滚后 DB 出现重复边"
+    assert len(store2.get_facts("a")) == 1
+    assert len(store2.get_edges_between("a", "c")) == 1
+    assert store2.get_node("hub") is None
+
+
+def test_store_snapshot_restore_roundtrip_preserves_edge_ids(tmp_path):
+    """snapshot/restore round-trip 保留边 id 与 label（InMemory + SQLite 同契约）。"""
+    for store in (InMemoryStore(), SQLiteStore({"path": str(tmp_path / "snap.db")})):
+        if isinstance(store, SQLiteStore):
+            store.initialize()
+        store.add_node(Node(id="a", name="A", content="A"))
+        store.add_node(Node(id="b", name="B", content="B"))
+        fid = store.add_edge("a", "b", kind="fact", label="喜欢")
+        snap = store.snapshot()
+        store.delete_edge(fid)
+        store.add_edge("a", "b", kind="fact", label="讨厌")
+        store.restore(snap)
+        facts = store.get_facts("a")
+        assert len(facts) == 1
+        assert facts[0].id == fid
+        assert facts[0].label == "喜欢"
+
+
 def _full_pipeline(db_path: str, mock_llm):
     """完整写入管线：SQLiteStore + source_tracking + idempotency + mock LLM。"""
     store = SQLiteStore({"path": db_path})

@@ -4,23 +4,22 @@
 
     ① 前置插件链      (PostprocessPlugin chain, 可选)
     ② 种子定位        (EntryPlugin chain + TrimPlugin)
-    ③ 语义理解 Loop   (BFS + visited + max_rounds + token_budget)
+    ③ 语义理解 Loop   (事实 BFS + visited + max_rounds + token_budget)
     ④ 仲裁            (ArbitrationPlugin, ≤1)
     ⑤ 后置处理链      (PostprocessPlugin chain)
 
-默认返回值为 ``List[Node]``（``QueryContext`` 的 ``result_set`` 字段）。
-合成为自然语言字符串是可选的，由阶段 ⑤ 中的后处理插件提供。
+默认返回值为 ``Subgraph``（``nodes`` + 选中事实边 ``edges``）。
+后置插件 MAY 将其转换为自然语言字符串。
 """
 
 from __future__ import annotations
 
 import logging
-from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
+    from mcs.core.graph import Edge, Node
     from mcs.core.plugin_manager import PluginManager
     from mcs.core.store import StoreInterface
     from mcs.core.token_budget import TokenBudget
@@ -48,6 +47,7 @@ class QueryContext:
     intermediate: list[Node] = field(default_factory=list)
     result_set: list[Node] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    selected_edges: list[Edge] = field(default_factory=list)
 
 
 class QueryEngine:
@@ -66,6 +66,7 @@ class QueryEngine:
             max_rounds: int = 5,
             max_accumulated_nodes: int = 1000,
             system_prompt: str = "",
+            summary_max_nodes: int = 50,
     ):
         self.store = store
         self.llm = llm
@@ -74,6 +75,9 @@ class QueryEngine:
         self.max_rounds = max_rounds
         self.max_accumulated_nodes = max_accumulated_nodes
         self.system_prompt = system_prompt
+        # 每次 select_facts 调用带的「已累积上下文」最多列多少个节点（仅 name）。
+        # 旧实现带全量 name+content → 输入平方级膨胀（占查询输入 ~73%）。0 = 关闭。
+        self.summary_max_nodes = summary_max_nodes
 
     # === 公共 API ===
 
@@ -84,9 +88,11 @@ class QueryEngine:
     ) -> Any:
         """执行 5 阶段读取管道。
 
-        返回最后一个后处理插件的输出，如果没有后处理插件转换类型，
-        则返回 ``result_set`` (List[Node])。
+        返回最后一个后处理插件的输出；如果没有后处理插件转换类型，
+        则返回 ``Subgraph``（nodes + 选中事实边 edges）。
         """
+        from mcs.core.graph import Subgraph
+
         ctx = QueryContext(
             system_prompt=self.system_prompt,
             user_input=text,
@@ -101,14 +107,22 @@ class QueryEngine:
         else:
             seeds = self._locate_seeds(processed_text, ctx)
 
-        # 阶段 ③: 语义理解 Loop
-        ctx.intermediate = self._traverse(seeds, processed_text, ctx)
+        # 阶段 ③: 语义理解 Loop（事实 BFS）
+        ctx.intermediate, ctx.selected_edges = self._traverse(
+            seeds, processed_text, ctx
+        )
 
         # 阶段 ④: 仲裁
         ctx.result_set = self._arbitrate(ctx.intermediate, processed_text, ctx)
 
         # 阶段 ⑤: 后置处理链
-        return self._run_postprocess(ctx.result_set, ctx)
+        # 先组装 Subgraph，再交给后置插件
+        subgraph = Subgraph(
+            focus_id=ctx.result_set[0].id if ctx.result_set else "",
+            nodes=list(ctx.result_set),
+            edges=_filter_edges_by_nodes(ctx.selected_edges, ctx.result_set),
+        )
+        return self._run_postprocess(subgraph, ctx)
 
     def query_nodes(
             self,
@@ -136,7 +150,7 @@ class QueryEngine:
         saved_max_rounds = self.max_rounds
         try:
             self.max_rounds = max_rounds
-            ctx.intermediate = self._traverse(seeds, processed_text, ctx)
+            ctx.intermediate, _ = self._traverse(seeds, processed_text, ctx)
         finally:
             self.max_rounds = saved_max_rounds
 
@@ -148,7 +162,7 @@ class QueryEngine:
         ctx.result_set = self._arbitrate(ctx.intermediate, processed_text, ctx)
 
         # 阶段 ⑤: 后置处理链
-        result = self._run_postprocess(ctx.result_set, ctx)
+        result = self._run_postprocess_nodes(ctx.result_set, ctx)
         return result if isinstance(result, list) else ctx.result_set
 
     # === 阶段辅助方法 ===
@@ -228,34 +242,35 @@ class QueryEngine:
             seeds: list[Node],
             query: str,
             ctx: QueryContext,
-    ) -> list[Node]:
-        """阶段 ③：批量邻居扩展的 token 预算驱动 BFS 遍历。
+    ) -> tuple[list[Node], list[Edge]]:
+        """阶段 ③：批量事实 BFS 遍历（分层 + 富余合并）。
 
-        核心优化：多个节点及其邻居合并后一次 LLM 调用，只要总 token ≤ T*0.8。
-        核心不变量保证「任一节点 + 其全部一跳子节点 ≤ 窗口 T」，因此多节点合并后
-        单次 select_nodes_batch 调用天然 ≤ T*0.8（80% 余量防估算误差）。
+        逐层扩展：每层把待扩展节点的活跃双向视图（出事实 + 入事实 + 层级邻居）
+        按渲染 token 贪心打包到 ``T*0.8``——合计 ≤ 余量的多个节点合并进**一次**
+        ``select_facts`` 调用（spec query-pipeline「按层分批、富余合并」）；单节点视图
+        已超余量则自成一批。批量调用解析失败时**逐节点回退**，保证遍历不中断
+        （spec batch-neighbor-traverse）。LLM 选中的节点 / 事实端点补入 accumulated
+        并作为下一层 frontier。
 
-        性能优化：
-        - estimate_node 带 memoization（查询期节点不变，缓存安全）
-        - used_tokens 增量累加（节点进 accumulated 时加一次）
-        - queue 使用 deque（popleft/appendleft O(1)）
-        - batch_neighbor_map 使用 dict O(1) 查找
-        - ContextRenderer 循环外复用
-        - 共享邻居 token 不重复计入批次估算
-        - 独立 select_nodes_batch purpose（无需 try/finally 换装）
+        返回 (accumulated_nodes, selected_fact_edges)。
         """
         if not seeds:
-            return []
+            return [], []
 
         from mcs.core.context_renderer import ContextRenderer
         from mcs.core.errors import LLMParseError
 
         visited: set[str] = set()
         accumulated: list[Node] = []
-        queue: deque[tuple[Node, int]] = deque()  # (节点, 自种子起算的深度)
+        selected_edges: list[Edge] = []
+        selected_edge_ids: set[str] = set()
         estimate_cache: dict[str, int] = {}
         used_tokens = 0
+        budget = self.token_budget.T
+        pack_budget = budget * 0.8
+        renderer = ContextRenderer(self.plugin_manager)
 
+        frontier: list[Node] = []
         for seed in seeds:
             if seed.id not in visited:
                 visited.add(seed.id)
@@ -263,153 +278,198 @@ class QueryEngine:
                 used_tokens += self.token_budget.estimate_node(
                     seed, estimate_cache
                 )
-                queue.append((seed, 0))
+                frontier.append(seed)
 
-        budget = self.token_budget.T
-        pack_threshold = budget * 0.8  # 打包阈值，留 20% 余量
-        renderer = ContextRenderer(self.plugin_manager)  # 循环外复用
+        def _node_view(node: Node):
+            """单节点活跃双向视图 (view_nodes, facts)；无可扩展内容返回 (None, None)。"""
+            children = self.store.get_out_hierarchy(node.id) or []
+            facts = self.store.get_facts(node.id) or []
+            if not children and not facts:
+                return None, None
+            seen: set[str] = {node.id}
+            view_nodes: list[Node] = [node]
+            for child in children:
+                if child.id not in seen:
+                    seen.add(child.id)
+                    view_nodes.append(child)
+            for edge in facts:
+                for eid in (edge.source_id, edge.target_id):
+                    if eid not in seen:
+                        endpoint = self.store.get_node(eid)
+                        if endpoint is not None:
+                            seen.add(eid)
+                            view_nodes.append(endpoint)
+            return view_nodes, facts
 
-        while queue:
-            # 安全阀：节点数硬上限
-            if len(accumulated) >= self.max_accumulated_nodes:
-                logger.info(
-                    "遍历达到 max_accumulated_nodes=%d, 终止",
-                    self.max_accumulated_nodes,
-                )
-                break
-            # token 预算：增量维护的 used_tokens 超窗口则停
-            if used_tokens >= budget:
-                logger.info(
-                    "accumulated token=%d >= budget=%d, 终止", used_tokens, budget
-                )
-                break
-
-            # === 批量打包 ===
-            batch_centers: list[tuple[Node, int]] = []  # (中心节点, 深度)
-            batch_neighbor_map: dict[str, Node] = {}  # neighbor_id -> Node (O(1) lookup)
-            neighbor_to_center: dict[str, tuple[str, int]] = {}  # neighbor_id -> (center_id, center_depth)
-            batch_tokens = 0
-
-            # 贪心打包：从 queue 取节点直到接近 pack_threshold
-            while queue and batch_tokens < pack_threshold:
-                node, depth = queue.popleft()
-                if depth >= self.max_rounds:
-                    continue  # 达深度上限：不加入本批次，跳过扩展
-
-                neighbors = self.store.get_neighbors(node.id) or []
-                if not neighbors:
-                    continue  # 无邻居：不加入本批次
-
-                # 估算本节点的 token（中心节点）
-                node_tokens = self.token_budget.estimate_node(
-                    node, estimate_cache
-                )
-                # 仅估算首次出现的邻居 token（共享邻居不重复计）
-                new_nb_tokens = 0
-                for nb in neighbors:
-                    if nb.id not in neighbor_to_center:
-                        new_nb_tokens += self.token_budget.estimate_node(
-                            nb, estimate_cache
-                        )
-                total_new_tokens = node_tokens + new_nb_tokens
-
-                # 检查是否超预算
-                if batch_tokens + total_new_tokens > budget:
-                    # 单节点超预算 → 仍可加入（不变量保证 ≤ T）
-                    if batch_tokens == 0:  # 空批次，加入这单个节点
-                        batch_centers.append((node, depth))
-                        for neighbor in neighbors:
-                            if neighbor.id not in neighbor_to_center:
-                                batch_neighbor_map[neighbor.id] = neighbor
-                                neighbor_to_center[neighbor.id] = (node.id, depth)
-                        batch_tokens = total_new_tokens
-                    else:
-                        # 预算不足且已有节点，把当前节点放回队列头部
-                        queue.appendleft((node, depth))
-                    break  # 预算不足，停止打包
-
-                # 加入批次
-                batch_centers.append((node, depth))
-                for neighbor in neighbors:
-                    if neighbor.id not in neighbor_to_center:
-                        batch_neighbor_map[neighbor.id] = neighbor
-                        neighbor_to_center[neighbor.id] = (node.id, depth)
-                batch_tokens += total_new_tokens
-
-            if not batch_centers:
-                continue  # 本轮无可扩展节点
-
-            # === 渲染中心和邻居 ===
-            batch_neighbors = list(batch_neighbor_map.values())
-            centers_text = renderer.render(
-                [n for n, _ in batch_centers], purpose="select_nodes"
-            )
-            neighbors_text = renderer.render(batch_neighbors, purpose="select_nodes")
-
-            # === 批量 LLM 调用（使用独立 purpose，无需 try/finally 换装）===
-            selected_ids: list[str] = []
-            # 构造 nodes_in：所有中心节点 + 所有邻居（保持兼容 LLMInterface.call 标准）
-            all_nodes_in = [n for n, _ in batch_centers] + batch_neighbors
+        def _call_select(view_nodes, facts):
+            """渲染 + 调 select_facts；解析失败返回 None。"""
+            material = renderer.render_facts(view_nodes, facts)
             try:
-                selected_ids = self.llm.call(
-                    purpose="select_nodes_batch",
-                    nodes_in=all_nodes_in,
+                return self.llm.call(
+                    purpose="select_facts",
+                    nodes_in=view_nodes,
                     free_args={
+                        "material": material,
                         "query": query,
-                        "centers": centers_text,
-                        "neighbors": neighbors_text,
-                        "accumulated_summary": _summarize_for_prompt(accumulated),
+                        "accumulated_summary": _summarize_for_prompt(
+                            accumulated, self.summary_max_nodes
+                        ),
                     },
                 ) or []
             except LLMParseError:
-                # 回退到逐节点处理
-                logger.warning("批量 LLM 调用失败，回退到逐节点处理")
-                selected_ids = self._fallback_single_node_select(
-                    batch_centers, query, accumulated
-                )
+                return None
 
-            selected = set(selected_ids)
+        def _consume(indices, view_nodes, facts):
+            """编号映射回节点 / 事实边（1-based），补入 accumulated。
 
-            # === 归类选中节点 ===
-            for neighbor_id in selected:
-                if neighbor_id not in visited and neighbor_id in neighbor_to_center:
-                    center_id, center_depth = neighbor_to_center[neighbor_id]
-                    # O(1) dict 查找 neighbor 节点对象
-                    neighbor_node = batch_neighbor_map.get(neighbor_id)
-                    if neighbor_node:
-                        visited.add(neighbor_id)
-                        accumulated.append(neighbor_node)
+            返回 (新增节点列表, 是否撞 max_accumulated cap)。
+            """
+            nonlocal used_tokens
+            n_nodes = len(view_nodes)
+            newly: list[Node] = []
+            hit_cap = False
+            for idx in indices:
+                if hit_cap:
+                    break
+                zero_idx = idx - 1
+                if zero_idx < 0:
+                    continue
+                if zero_idx < n_nodes:
+                    # 节点条目 → 加入 accumulated
+                    sel_node = view_nodes[zero_idx]
+                    if sel_node.id not in visited:
+                        visited.add(sel_node.id)
+                        accumulated.append(sel_node)
                         used_tokens += self.token_budget.estimate_node(
-                            neighbor_node, estimate_cache
+                            sel_node, estimate_cache
                         )
-                        queue.append((neighbor_node, center_depth + 1))
+                        newly.append(sel_node)
                         if len(accumulated) >= self.max_accumulated_nodes:
-                            break
+                            hit_cap = True
+                else:
+                    # 事实边条目 → 记录边 + 补入端点
+                    edge_idx = zero_idx - n_nodes
+                    if 0 <= edge_idx < len(facts):
+                        edge = facts[edge_idx]
+                        if edge.id not in selected_edge_ids:
+                            selected_edge_ids.add(edge.id)
+                            selected_edges.append(edge)
+                        for eid in (edge.source_id, edge.target_id):
+                            if eid not in visited:
+                                endpoint = self.store.get_node(eid)
+                                if endpoint is not None:
+                                    visited.add(eid)
+                                    accumulated.append(endpoint)
+                                    used_tokens += self.token_budget.estimate_node(
+                                        endpoint, estimate_cache
+                                    )
+                                    newly.append(endpoint)
+                                    if len(accumulated) >= self.max_accumulated_nodes:
+                                        hit_cap = True
+                                        break
+            return newly, hit_cap
 
-        return accumulated
+        depth = 0
+        while frontier and depth < self.max_rounds:
+            if (
+                len(accumulated) >= self.max_accumulated_nodes
+                or used_tokens >= budget
+            ):
+                break
 
-    def _fallback_single_node_select(
-            self,
-            batch_centers: list[tuple[Node, int]],
-            query: str,
-            accumulated: list[Node],
-    ) -> list[str]:
-        """批量调用失败时，回退到逐节点 LLM 筛选。"""
-        selected_ids: list[str] = []
-        for center, depth in batch_centers:
-            neighbors = self.store.get_neighbors(center.id) or []
-            if not neighbors:
-                continue
-            single_selected = self.llm.call(
-                purpose="select_nodes",
-                nodes_in=[center, *neighbors],
-                free_args={
-                    "query": query,
-                    "accumulated_summary": _summarize_for_prompt(accumulated),
-                },
-            ) or []
-            selected_ids.extend(single_selected)
-        return selected_ids
+            # 预备每节点单视图 + 渲染 token 估算（无可扩展内容者剔除）
+            prepared: list = []
+            for node in frontier:
+                view_nodes, facts = _node_view(node)
+                if view_nodes is None:
+                    continue
+                est = self.token_budget.estimate(
+                    renderer.render_facts(view_nodes, facts)
+                )
+                prepared.append((node, view_nodes, facts, est))
+
+            if not prepared:
+                break
+
+            # 贪心按层打包：合计 ≤ pack_budget 合并为一批；单节点超限自成一批
+            batches: list[list] = []
+            cur: list = []
+            cur_tok = 0
+            for item in prepared:
+                if cur and cur_tok + item[3] > pack_budget:
+                    batches.append(cur)
+                    cur = []
+                    cur_tok = 0
+                cur.append(item)
+                cur_tok += item[3]
+            if cur:
+                batches.append(cur)
+
+            next_frontier: list[Node] = []
+            next_seen: set[str] = set()
+            stop = False
+            for batch in batches:
+                if (
+                    len(accumulated) >= self.max_accumulated_nodes
+                    or used_tokens >= budget
+                ):
+                    stop = True
+                    break
+
+                if len(batch) == 1:
+                    _node, view_nodes, facts, _est = batch[0]
+                    indices = _call_select(view_nodes, facts)
+                    if indices is None:
+                        continue
+                    newly, hit_cap = _consume(indices, view_nodes, facts)
+                else:
+                    # 合并各节点视图（去重）为一次调用
+                    merged_nodes: list[Node] = []
+                    merged_seen: set[str] = set()
+                    merged_facts: list[Edge] = []
+                    merged_fact_ids: set[str] = set()
+                    for _n, vn, fs, _e in batch:
+                        for x in vn:
+                            if x.id not in merged_seen:
+                                merged_seen.add(x.id)
+                                merged_nodes.append(x)
+                        for e in fs:
+                            if e.id not in merged_fact_ids:
+                                merged_fact_ids.add(e.id)
+                                merged_facts.append(e)
+                    indices = _call_select(merged_nodes, merged_facts)
+                    if indices is None:
+                        # 批量解析失败 → 逐节点回退（spec batch-neighbor-traverse）
+                        newly = []
+                        hit_cap = False
+                        for _n, vn, fs, _e in batch:
+                            idx_single = _call_select(vn, fs)
+                            if idx_single is None:
+                                continue
+                            added, cap = _consume(idx_single, vn, fs)
+                            newly.extend(added)
+                            if cap:
+                                hit_cap = True
+                                break
+                    else:
+                        newly, hit_cap = _consume(
+                            indices, merged_nodes, merged_facts
+                        )
+
+                for n in newly:
+                    if n.id not in next_seen:
+                        next_seen.add(n.id)
+                        next_frontier.append(n)
+                if hit_cap:
+                    stop = True
+                    break
+
+            if stop:
+                break
+            frontier = next_frontier
+            depth += 1
+
+        return accumulated, selected_edges
 
     def _arbitrate(
             self,
@@ -431,27 +491,79 @@ class QueryEngine:
             )
         return result
 
-    def _run_postprocess(self, selected: list[Node], ctx: QueryContext) -> Any:
-        """阶段 ⑤：针对查询位置的串行 PostprocessPlugin 链。"""
+    def _run_postprocess(self, subgraph: Any, ctx: QueryContext) -> Any:
+        """阶段 ⑤：针对 Subgraph 的串行 PostprocessPlugin 链。
+
+        后置插件接收 Subgraph 并可转换为自然语言或其他格式。
+        兼容旧插件：期望 ``List[Node]`` 的插件经兼容层接收 ``subgraph.nodes``，
+        返回的 ``List[Node]`` 自动重建为 ``Subgraph``。
+        无后置插件时返回原始 Subgraph。
+        """
+        from mcs.core.graph import Node, Subgraph
         from mcs.core.plugin import PluginType
 
         plugins = self.plugin_manager.get_all(PluginType.POSTPROCESS)
         if not plugins:
-            return selected
-        result: Any = selected
+            return subgraph
+        result: Any = subgraph
         for plugin in plugins:
-            result = plugin.process(result, ctx)
+            if isinstance(result, Subgraph):
+                # 兼容层：传 nodes 给旧插件，若返回 list[Node] 则重建 Subgraph
+                processed = plugin.process(result.nodes, ctx)
+                if isinstance(processed, list) and (
+                    not processed or isinstance(processed[0], Node)
+                ):
+                    result = Subgraph(
+                        focus_id=result.focus_id,
+                        nodes=processed,
+                        edges=_filter_edges_by_nodes(result.edges, processed),
+                    )
+                else:
+                    # 插件返回了其他类型（如 str），直接作为最终结果
+                    result = processed
+            else:
+                result = plugin.process(result, ctx)
         return result
 
+    def _run_postprocess_nodes(
+            self, nodes: list[Node], ctx: QueryContext
+    ) -> list[Node]:
+        """阶段 ⑤ 的旧版：针对 List[Node] 的后处理链（query_nodes 兼容）。"""
+        from mcs.core.plugin import PluginType
 
-def _summarize_for_prompt(nodes: list[Node]) -> str:
-    """用于 ``decide_directions`` 调用中累积上下文的紧凑单行每节点摘要。
-    避免在重复提示中拖拽完整内容。
+        plugins = self.plugin_manager.get_all(PluginType.POSTPROCESS)
+        if not plugins:
+            return nodes
+        result: Any = nodes
+        for plugin in plugins:
+            result = plugin.process(result, ctx)
+        return result if isinstance(result, list) else nodes
+
+
+def _summarize_for_prompt(nodes: list[Node], max_nodes: int = 50) -> str:
+    """已累积节点的紧凑上下文：**仅 name**、且只取**最近 max_nodes 个**。
+
+    每次 select_facts 调用都会带上本串。旧实现带 id + content[:200] 的**全量**节点，
+    随遍历累积膨胀到 ~15k token、再 × 每条查询十几次调用 → 平方级输入成本
+    （实测占查询输入 ~73%）。这里只发 name、并按最近 max_nodes 截断——给 LLM
+    "已收集到啥"的上下文足矣（重复选取由 visited 防，不依赖本串）。
+
+    ``max_nodes <= 0`` 关闭本串（返回 (无)）。
     """
-    from mcs.core.context_renderer import ContextRenderer
+    if max_nodes <= 0 or not nodes:
+        return "(无)"
+    recent = nodes[-max_nodes:]
+    names = ", ".join(n.name for n in recent if n.name)
+    if not names:
+        return "(无)"
+    if len(nodes) > len(recent):
+        return f"(已收集 {len(nodes)} 项，列最近 {len(recent)} 项) {names}"
+    return names
 
-    lines = []
-    for node in nodes:
-        summary = ContextRenderer.get_summary(node)
-        lines.append(f"- {node.name} (id={node.id}): {summary}")
-    return "\n".join(lines) if lines else "(无)"
+
+def _filter_edges_by_nodes(
+        edges: list[Edge], nodes: list[Node]
+) -> list[Edge]:
+    """过滤事实边：仅保留两端都在 nodes 中的边。"""
+    node_ids = {n.id for n in nodes}
+    return [e for e in edges if e.source_id in node_ids and e.target_id in node_ids]

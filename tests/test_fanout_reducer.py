@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace as dc_replace
-
 from mcs.core.decisions import Community, MultiHubDecision
 from mcs.core.graph import Node
 from mcs.core.token_budget import TokenBudget
@@ -296,13 +294,7 @@ def test_rollback_restores_inplace_field_mutations():
     g.add_edge("a", "b")
 
     p = _plugin(TokenBudget(500), floor=2)
-    state = {
-        "nodes": {
-            n.id: dc_replace(n, extensions=dict(n.extensions or {}))
-            for n in g.get_all_nodes()
-        },
-        "edges": list(g.get_all_edges()),
-    }
+    state = g.snapshot()
     g.update_node("a", {"role": "hub", "content": "MUTATED"})
     g.delete_node("b")
 
@@ -312,3 +304,42 @@ def test_rollback_restores_inplace_field_mutations():
     assert g.get_node("a").content == "original A"
     assert g.get_node("b") is not None
     assert g.get_node("b").content == "original B"
+
+
+def test_rollback_preserves_edge_ids():
+    """回滚保留边 id（不 churn uuid）——这是增量持久化不留重复边的前提。"""
+    g = GraphStore()
+    g.add_node(Node(id="a", name="A", content="A"))
+    g.add_node(Node(id="b", name="B", content="B"))
+    fact_id = g.add_edge("a", "b", kind="fact", label="喜欢")
+
+    p = _plugin(TokenBudget(500), floor=2)
+    state = g.snapshot()
+    # 模拟 reorg：删原边、加不同 label 的新边
+    g.delete_edge(fact_id)
+    g.add_edge("a", "b", kind="fact", label="讨厌")
+
+    p._rollback_reorg(g, state)
+
+    facts = g.get_facts("a")
+    assert len(facts) == 1
+    assert facts[0].id == fact_id  # 同一个 id，未被 churn
+    assert facts[0].label == "喜欢"
+
+
+def test_migrate_edges_preserves_distinct_label_facts():
+    """合并同义时，迁移边按 (kind,label) 去重——保留同一对端点间不同 label 的事实。
+
+    旧实现只按 (src,tgt,kind) 去重，会把 m→x「创立」并入时丢掉（rep→x 已有「属于」）。
+    """
+    g = GraphStore()
+    for nid in ["m", "rep", "x"]:
+        g.add_node(Node(id=nid, name=nid, content=nid))
+    g.add_edge("rep", "x", kind="fact", label="属于")
+    g.add_edge("m", "x", kind="fact", label="创立")
+
+    p = _plugin(TokenBudget(500), floor=2)
+    p._migrate_edges("m", "rep", g)
+
+    rep_facts = [e for e in g.get_facts("rep") if e.target_id == "x"]
+    assert {e.label for e in rep_facts} == {"属于", "创立"}

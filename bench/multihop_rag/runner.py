@@ -145,8 +145,13 @@ class MultiHopEvalRunner:
             if q.query_id in done:
                 continue
             try:
-                nodes = mcs.query(q.query)
-                nodes = nodes if isinstance(nodes, list) else []
+                result = mcs.query(q.query)
+                if isinstance(result, list):
+                    nodes = result
+                elif hasattr(result, "nodes"):
+                    nodes = result.nodes  # Subgraph
+                else:
+                    nodes = []
             except Exception:
                 logger.exception("query 失败: %s", q.query_id)
                 nodes = []

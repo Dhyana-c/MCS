@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from mcs import MCSConfig
+from mcs.core.plugin import PluginType
+from mcs.plugins.preprocess.source_tracking import IdempotencyCheckPlugin
 from mcs.presets import Phase1Builder
 
 from bench.multihop_rag.data import MultiHopDoc
@@ -176,7 +179,21 @@ def build_shared_graph(
         max_accumulated_nodes=max_accumulated_nodes,
         max_rounds=max_rounds,
     )
+    # 定位幂等插件：mcs.ingest() 路径本身不查 document_chunks（跳过逻辑只在
+    # SourceTrackingPlugin.update_document 里，bench 不走它），故断点续跑必须在此
+    # 显式跳过已摄入的块——否则每次重跑都从头全量重做、白烧 LLM 且 re-merge 糊已建节点。
+    idem = next(
+        (
+            p
+            for p in mcs.write_pipeline.plugin_manager.get_all(
+                PluginType.WRITE_PREPROCESS
+            )
+            if isinstance(p, IdempotencyCheckPlugin)
+        ),
+        None,
+    )
     total = len(docs)
+    skipped = 0
     for di, doc in enumerate(docs, 1):
         if whole_doc:
             # 整篇摄入：标题+正文作为单个单元（chunk_id=0），文本 100% 覆盖。
@@ -185,6 +202,13 @@ def build_shared_graph(
         else:
             units = chunk_body(doc.title, doc.body, max_chunks_per_doc)
         for ci, text in enumerate(units):
+            # 幂等跳过：已成功摄入的块不再进管线（零 LLM、不 re-merge）
+            if idem is not None and idem.is_ingested(
+                doc.title, str(ci),
+                hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            ):
+                skipped += 1
+                continue
             try:
                 mcs.ingest(
                     text,
@@ -193,9 +217,11 @@ def build_shared_graph(
                     section_title=doc.title,
                 )
             except Exception:
-                logger.warning("ingest 失败: doc=%r chunk=%d，跳过", doc.title, ci)
+                logger.warning(
+                    "ingest 失败: doc=%r chunk=%d，跳过", doc.title, ci, exc_info=True
+                )
         if di == 1 or di % 5 == 0 or di == total:
-            print(f"  building graph: {di}/{total} docs")
+            print(f"  building graph: {di}/{total} docs (skipped {skipped})")
         # 周期性全量重建持久化：反映分层归纳产生的边删除/重挂（增量持久化只 upsert）
         if di % 25 == 0:
             try:

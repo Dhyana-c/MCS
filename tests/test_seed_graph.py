@@ -130,6 +130,46 @@ def test_seed_root_maintained_without_budget_pressure(mock_llm):
     assert all(n.role != "hub" for n in g.get_all_nodes() if n.id != SEED_ROOT_ID)
 
 
+def test_root_attaches_only_orphans(mock_llm):
+    """P2/D6：只有零事实关联的"孤儿"概念挂根；有事实关联者不挂根
+
+    （经字面入口 alias_entry + 事实 BFS 可达，挂根只会让图扁平化）。
+    """
+    g = GraphStore()
+    for nid in ("a", "b", "c"):
+        g.add_node(Node(id=nid, name=nid, content="x", role="concept"))
+    g.add_edge("a", "b", kind="fact", label="涉及")  # a、b 有事实关联（b 为宾也算关联）
+
+    fr = _fanout_with_root(g, TokenBudget(8000), mock_llm)
+    fr.run([g.get_node(n) for n in ("a", "b", "c")], g, mock_llm.call)
+
+    assert not g.get_edges_between(SEED_ROOT_ID, "a")  # 有关联 → 不挂根
+    assert not g.get_edges_between(SEED_ROOT_ID, "b")  # 反查命中关联 → 不挂根
+    assert g.get_edges_between(SEED_ROOT_ID, "c")      # 孤儿 → 挂根
+
+
+def test_absorb_skips_fact_only_node(mock_llm):
+    """边吸收 bug 回归：仅经**事实边**连到 hub 全部成员的节点，不应被层级吸收。
+
+    旧实现 out_children 含 fact 目标 → X（仅事实边连 m1/m2）被误判为 hub 成员的父，
+    凭空加 X→hub 层级边。修复后 out_children 只看层级边。
+    """
+    g = GraphStore()
+    g.add_node(Node(id="H", name="H", content="h", role="hub"))
+    for nid in ("m1", "m2", "X"):
+        g.add_node(Node(id=nid, name=nid, content="x", role="concept"))
+    g.add_edge("H", "m1", kind="hierarchy")            # hub 的层级成员
+    g.add_edge("H", "m2", kind="hierarchy")
+    g.add_edge("X", "m1", kind="fact", label="涉及")    # X 仅经事实边连成员
+    g.add_edge("X", "m2", kind="fact", label="涉及")
+
+    fr = _fanout_with_root(g, TokenBudget(8000), mock_llm)
+    fr._absorb_hub_edges(g)
+
+    # X 不应被吸收：不该新增 X→H 层级边
+    assert not [e for e in g.get_edges_between("X", "H") if e.kind == "hierarchy"]
+
+
 def test_no_persistent_root_when_disabled(mock_llm):
     """maintain_root=False时不建持久根。"""
     g = GraphStore()

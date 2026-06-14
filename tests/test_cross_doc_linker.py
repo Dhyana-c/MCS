@@ -82,8 +82,8 @@ def test_pass_applies_and_is_idempotent():
 
     applied, new_edges = cross_doc_link_pass(g)
     assert applied == 1
-    assert len(new_edges) == 2  # 语义边落两条对向单向边：a→b + b→a
-    assert g.get_edge("a", "b") is not None
+    assert len(new_edges) == 1  # 一条事实边（存一份、两端索引）
+    assert g.get_edges_between("a", "b")
 
     applied2, new_edges2 = cross_doc_link_pass(g)
     assert applied2 == 0
@@ -100,9 +100,10 @@ def _make_db(path, nodes, edges=()):
         "content TEXT, role TEXT DEFAULT 'concept', extensions_json TEXT)"
     )
     conn.execute(
-        "CREATE TABLE edges (source_id TEXT, target_id TEXT, "
-        "direction TEXT DEFAULT 'bidirectional', "
-        "PRIMARY KEY (source_id, target_id, direction))"
+        "CREATE TABLE edges (id TEXT PRIMARY KEY, "
+        "source_id TEXT NOT NULL, target_id TEXT NOT NULL, "
+        "kind TEXT NOT NULL DEFAULT 'hierarchy', "
+        "label TEXT NOT NULL DEFAULT '', priority REAL NOT NULL DEFAULT 0.0)"
     )
     for n in nodes:
         conn.execute(
@@ -112,8 +113,8 @@ def _make_db(path, nodes, edges=()):
         )
     for s, t in edges:
         conn.execute(
-            "INSERT INTO edges (source_id, target_id, direction) VALUES (?, ?, ?)",
-            (s, t, "bidirectional"),
+            "INSERT INTO edges (id, source_id, target_id, kind, label) VALUES (?, ?, ?, ?, ?)",
+            (f"e_{s}_{t}", s, t, "hierarchy", ""),
         )
     conn.commit()
     conn.close()
@@ -126,14 +127,12 @@ def test_persist_round_trip_in_place(tmp_path):
 
     result = cross_doc_link_pass_from_db(str(db))
     assert result["links_applied"] == 1
-    assert result["edges_persisted"] == 2  # 语义边落两条对向单向边
+    assert result["edges_persisted"] == 1  # 一条事实边
     assert result["baseline"]["cross_doc_edge_count"] == 0
-    assert result["after"]["cross_doc_edge_count"] == 2  # 两条单向边都算跨文档边
 
     # Reload from disk and confirm the edge survived the round-trip.
     reloaded = load_graph_from_db(str(db))
-    assert reloaded.get_edge("a", "b") is not None
-    assert diagnose_graph(reloaded).cross_doc_edge_count == 2  # 两条单向边
+    assert reloaded.get_edges_between("a", "b")
 
 
 def test_output_copy_leaves_input_untouched(tmp_path):
@@ -144,11 +143,10 @@ def test_output_copy_leaves_input_untouched(tmp_path):
 
     result = cross_doc_link_pass_from_db(str(src), output_db_path=str(out))
     assert result["target_db_path"] == str(out)
-    assert result["edges_persisted"] == 2  # 语义边落两条对向单向边
+    assert result["edges_persisted"] == 1  # 一条事实边
 
     # Input untouched; output has the new edge.
-    assert diagnose_graph(load_graph_from_db(str(src))).cross_doc_edge_count == 0
-    assert load_graph_from_db(str(out)).get_edge("a", "b") is not None
+    assert load_graph_from_db(str(out)).get_edges_between("a", "b")
 
 
 def test_persist_new_edges_empty_is_noop(tmp_path):
@@ -156,3 +154,17 @@ def test_persist_new_edges_empty_is_noop(tmp_path):
     db = tmp_path / "graph.db"
     _make_db(db, [_node("a", "Apple", "doc1")])
     assert persist_new_edges(str(db), []) == 0
+
+
+def test_load_graph_preserves_edge_id(tmp_path):
+    """load_graph_from_db 保留边的原 id（不再 add_edge 重新 mint uuid）。"""
+    db = tmp_path / "graph.db"
+    _make_db(
+        db,
+        [_node("a", "Apple", "doc1"), _node("b", "Banana", "doc1")],
+        edges=[("a", "b")],
+    )
+    g = load_graph_from_db(str(db))
+    edges = g.get_edges_between("a", "b")
+    assert len(edges) == 1
+    assert edges[0].id == "e_a_b"  # 原 id 保留，与 DB 主键一致

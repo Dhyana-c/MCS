@@ -66,7 +66,7 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
 
         root = self.store.get_node(SEED_ROOT_ID)
         if root is not None:
-            children = self.store.get_neighbors(root.id)
+            children = self.store.get_out_hierarchy(root.id)
             if self.llm is None or not self.use_llm_navigation:
                 return children[: self.max_seeds]
             landed = [n for n in self._navigate(query, [root]) if n.id != root.id]
@@ -88,7 +88,8 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
         继续下钻；``visited`` 防环，``max_depth`` 封顶。返回最终落地节点（若一路
         未下钻成功则回退为 roots）。
 
-        沿全部单向出边下钻（语义出边亦参与导航，提升可达性）。
+        仅沿**层级出边**（``get_out_hierarchy``）下钻——层级边是导航骨架；
+        事实边不参与导航（双边模型下导航与关系语义分离）。
         ``visited`` 防环（每个节点每次遍历只检视一次）。
         """
         assert self.store is not None
@@ -102,8 +103,8 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
             candidates: list[Node] = []
             seen: set[str] = set()
             for node in frontier:
-                # 沿全部单向出边取候选（语义边参与导航）
-                for neighbor in self.store.get_neighbors(node.id):
+                # 沿层级出边取候选（事实边不参与导航）
+                for neighbor in self.store.get_out_hierarchy(node.id):
                     if neighbor.id not in visited and neighbor.id not in seen:
                         seen.add(neighbor.id)
                         candidates.append(neighbor)

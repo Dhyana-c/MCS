@@ -151,16 +151,19 @@ def _query_engine(mock_llm, *plugins):
 
 
 def test_query_unchanged_without_rerank(mock_llm):
-    """未启用 rerank 时，query() 输出与 result_set 顺序一致（既有行为不变）。"""
+    """未启用 rerank 时，query() 返回 Subgraph，节点顺序不变。"""
     qe = _query_engine(mock_llm)  # 无 postprocess 插件
     seeds = [
         _node("irrelevant", "weather", "rain"),
         _node("relevant", "Tesla Model 3", "Tesla Model 3 output"),
     ]
-    # select_nodes 选中所有种子
+    # select_facts 选中所有种子（经 MockLLM 回退）
     mock_llm.set_response("select_nodes", lambda nodes_in, _: [n.id for n in (nodes_in or [])])
     out = qe.query("Tesla Model 3", existing_context=seeds)
-    assert [n.id for n in out] == ["irrelevant", "relevant"]  # 原顺序，未重排
+    from mcs.core.graph import Subgraph
+
+    assert isinstance(out, Subgraph)
+    assert [n.id for n in out.nodes] == ["irrelevant", "relevant"]  # 原顺序，未重排
 
 
 def test_query_reranks_when_enabled(mock_llm):
@@ -170,7 +173,10 @@ def test_query_reranks_when_enabled(mock_llm):
         _node("irrelevant", "weather", "rain"),
         _node("relevant", "Tesla Model 3", "Tesla Model 3 output"),
     ]
-    # select_nodes 选中所有种子
+    # select_facts 选中所有种子（经 MockLLM 回退）
     mock_llm.set_response("select_nodes", lambda nodes_in, _: [n.id for n in (nodes_in or [])])
     out = qe.query("Tesla Model 3", existing_context=seeds)
-    assert out[0].id == "relevant"
+    from mcs.core.graph import Subgraph
+
+    assert isinstance(out, Subgraph)
+    assert out.nodes[0].id == "relevant"

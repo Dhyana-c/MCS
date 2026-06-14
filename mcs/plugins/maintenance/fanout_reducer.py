@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import replace as dc_replace
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.plugin import PluginType
@@ -92,26 +91,26 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         # 1. root 始终检查（不变量含虚拟根）
         root = store.get_node(SEED_ROOT_ID)
         if root is not None:
-            if self._exceeds_budget(root, store.get_neighbors(root.id)):
+            if self._exceeds_budget(root, store.get_out_hierarchy(root.id)):
                 return True
 
         # 2. changed_nodes 检查
         for node in changed_nodes:
-            if self._exceeds_budget(node, store.get_neighbors(node.id)):
+            if self._exceeds_budget(node, store.get_out_hierarchy(node.id)):
                 return True
 
         # 3. 受影响节点检查（与 changed_nodes 有边的节点）
         changed_ids = {n.id for n in changed_nodes}
         affected_ids: set[str] = set()
         for node in changed_nodes:
-            for neighbor in store.get_neighbors(node.id):
+            for neighbor in store.get_out_hierarchy(node.id):
                 if neighbor.id not in changed_ids:
                     affected_ids.add(neighbor.id)
 
         for nid in affected_ids:
             node = store.get_node(nid)
             if node is not None:
-                if self._exceeds_budget(node, store.get_neighbors(nid)):
+                if self._exceeds_budget(node, store.get_out_hierarchy(nid)):
                     return True
 
         return False
@@ -157,7 +156,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
 
         # 受影响节点（与 changed 有边）
         for node in changed_nodes:
-            for neighbor in store.get_neighbors(node.id):
+            for neighbor in store.get_out_hierarchy(node.id):
                 if neighbor.id not in seen:
                     seen.add(neighbor.id)
                     result.append(neighbor)
@@ -183,7 +182,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         new_hubs: list[Node] = []
         reorgs = 0
         while reorgs < self.max_reorg:
-            neighbors = store.get_neighbors(node.id)
+            neighbors = store.get_out_hierarchy(node.id)
             if not self._exceeds_budget(node, neighbors):
                 break
             if len(neighbors) < 2:
@@ -202,7 +201,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             if not batch_hubs:
                 break
             # 进展检查：邻居数必须下降
-            after_neighbor_count = len(store.get_neighbors(node.id))
+            after_neighbor_count = len(store.get_out_hierarchy(node.id))
             if after_neighbor_count >= len(neighbors):
                 logger.warning(
                     "节点 '%s' 本轮重组未减少邻居数（%d → %d），退出",
@@ -230,7 +229,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             node = store.get_node(nid)
             if node is None:
                 continue
-            neighbors = store.get_neighbors(nid)
+            neighbors = store.get_out_hierarchy(nid)
             if not self._exceeds_budget(node, neighbors):
                 continue
             if len(neighbors) < 2:
@@ -238,12 +237,12 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             decision = self._decide_hub(node, neighbors, llm_caller)
             if decision is None:
                 continue
-            before = len(store.get_neighbors(nid))
+            before = len(store.get_out_hierarchy(nid))
             hub_list = self._reorganize_multi(node, decision, neighbors, store)
             reorgs += 1
             for hub in hub_list:
                 queue.append(hub.id)
-            if len(store.get_neighbors(nid)) < before:
+            if len(store.get_out_hierarchy(nid)) < before:
                 queue.append(nid)
 
         if reorgs >= self.max_reorg:
@@ -274,12 +273,17 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             )
             store.add_node(root)
 
-        # 新概念挂到根下（单条下行 root→concept）
+        # 新概念**仅在"孤儿"（零事实关联）时**挂根（单条下行 root→concept，D6）。
+        # 有事实关联者经字面入口（alias_entry）+ 事实 BFS 可达，不挂根——避免 root
+        # 扁平化、让图成森林。此处在阶段⑥运行，stage⑤ 的事实边已落库，get_facts 准确。
         for n in list(changed_nodes):
             if n.id == root.id:
                 continue
-            if getattr(n, "role", "concept") == "concept" and store.get_node(n.id):
-                store.add_edge(root.id, n.id)
+            if getattr(n, "role", "concept") != "concept" or not store.get_node(n.id):
+                continue
+            if store.get_facts(n.id):
+                continue  # 有事实关联 → 不挂根
+            store.add_edge(root.id, n.id, kind="hierarchy")
 
         # 递归分层（自根向下；进展检查 + max_reorg 双重防死循环）
         affected: dict[str, Node] = {root.id: root}
@@ -290,7 +294,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             node = store.get_node(nid)
             if node is None:
                 continue
-            neighbors = store.get_neighbors(nid)
+            neighbors = store.get_out_hierarchy(nid)
             if not self._exceeds_budget(node, neighbors):
                 continue
             if len(neighbors) < 2:
@@ -299,13 +303,13 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             decision = self._decide_hub(node, neighbors, llm_caller)
             if decision is None:
                 continue
-            before = len(store.get_neighbors(nid))
+            before = len(store.get_out_hierarchy(nid))
             new_hubs = self._reorganize_multi(node, decision, neighbors, store)
             reorgs += 1
             for hub in new_hubs:
                 affected[hub.id] = hub
                 queue.append(hub.id)  # 新 hub 自身可能超预算 → 继续分层
-            if len(store.get_neighbors(nid)) < before:
+            if len(store.get_out_hierarchy(nid)) < before:
                 queue.append(nid)  # 仍可能超预算，继续收敛
 
         if reorgs >= self.max_reorg:
@@ -327,23 +331,27 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         净减边判据：仅当 ``|M| ≥ 2`` 才吸收——删 |M| 条加 1 条，净 -（|M|-1）。
         骨架识别依据节点 ``role``（``role=="hub"``），不依赖边方向。
         """
-        # 一次遍历：节点 → 出边目标集合
+        # 一次遍历：节点 → 层级出边目标集合（只看层级边——吸收是层级重连，事实边不参与）
         out_children: dict[str, set[str]] = {}
         for edge in store.get_all_edges():
+            if edge.kind != "hierarchy":
+                continue
             out_children.setdefault(edge.source_id, set()).add(edge.target_id)
 
         nodes = store.get_all_nodes()
         hubs = [n for n in nodes if n.role == "hub"]
 
         for hub in hubs:
-            # hub 的概念成员（出边目标中非 hub 者）。
-            # 排除语义出边：语义边成对出现（a→b + b→a），层级下行边是单向的
-            # （hub→member 无反向），因此用反向边存在与否区分。
+            # hub 的概念成员（kind="hierarchy" 出边目标中非 hub 者）。
+            # 新模型：直接按 kind 过滤，不再依赖"反向边启发式"。
+            hub_edges_out = [
+                e for e in store.get_all_edges()
+                if e.source_id == hub.id and e.kind == "hierarchy"
+            ]
             hub_members = {
-                t for t in out_children.get(hub.id, set())
-                if store.get_node(t) is not None
-                and store.get_node(t).role != "hub"
-                and store.get_edge(t, hub.id) is None  # 排除语义出边（有反向边的是语义对）
+                e.target_id for e in hub_edges_out
+                if store.get_node(e.target_id) is not None
+                and store.get_node(e.target_id).role != "hub"
             }
             # 净减边判据：至少 2 个成员才有收益
             if len(hub_members) < 2:
@@ -355,10 +363,13 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 children = out_children.get(node.id)
                 if not children or not hub_members.issubset(children):
                     continue
-                # 吸收：删 X→各成员，加 X→hub
+                # 吸收：删 X→各成员（层级边），加 X→hub
                 for m_id in hub_members:
-                    store.delete_edge(node.id, m_id)
-                store.add_edge(node.id, hub.id)
+                    for e in store.get_edges_between(node.id, m_id):
+                        if e.kind == "hierarchy":
+                            store.delete_edge(e.id)
+                            break
+                store.add_edge(node.id, hub.id, kind="hierarchy")
                 # 同步更新映射，供后续 hub 判定
                 children.difference_update(hub_members)
                 children.add(hub.id)
@@ -430,7 +441,6 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 len(current), half,
             )
             current = current[:half]
-        return None
         return None
 
     # === 重组相关 ===
@@ -505,12 +515,16 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         for m in members:
             if m.id == hub.id:
                 continue
-            # 删 node→member
-            store.delete_edge(node.id, m.id)
-            # 建 hub→member（下行）
-            store.add_edge(hub.id, m.id)
-        # 建 node→hub（下行）
-        store.add_edge(node.id, hub.id)
+            # 删 node→member（层级边）
+            edges = store.get_edges_between(node.id, m.id)
+            for e in edges:
+                if e.kind == "hierarchy":
+                    store.delete_edge(e.id)
+                    break
+            # 建 hub→member（下行层级边）
+            store.add_edge(hub.id, m.id, kind="hierarchy")
+        # 建 node→hub（下行层级边）
+        store.add_edge(node.id, hub.id, kind="hierarchy")
 
     def _reorganize_multi(
         self,
@@ -537,14 +551,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         from mcs.core.decisions import MultiHubDecision
         from mcs.prompts.decide_hub import validate_and_repair
 
-        # 保存回滚状态
-        rollback_state = {
-            "nodes": {
-                n.id: dc_replace(n, extensions=dict(n.extensions or {}))
-                for n in store.get_all_nodes()
-            },
-            "edges": list(store.get_all_edges()),
-        }
+        # 保存回滚状态（整体快照：保留边 id + 变更跟踪集，回滚不污染持久化）
+        rollback_state = store.snapshot()
 
         # 计算重组前中心节点 + 全部一跳邻域的 token 总量（同口径）
         before_token_total = None
@@ -631,7 +639,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             store.delete_node(m.id)
 
         # 建立下行边 node→rep
-        store.add_edge(node.id, rep.id)
+        store.add_edge(node.id, rep.id, kind="hierarchy")
 
         logger.info(
             "合并同义：%d 个节点合并到 '%s'（id=%s）",
@@ -646,8 +654,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         """把 old_id 的所有单向边迁移到 new_id，避免悬空边。
 
         对于 old_id 的每条边：
-        - 如果 new_id 与对端之间已有边，跳过（不重复）
-        - 否则，创建新边，删除旧边
+        - 如果 new_id 与对端之间已有同 kind 边，跳过（不重复）
+        - 否则，创建新边（保留 kind/label/priority），删除旧边
         - 跳过自环
         """
         edges_to_migrate: list[Edge] = []
@@ -666,12 +674,19 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             # 不迁移自环
             if new_source == new_target:
                 continue
-            # 如果 new_id 与 other 之间已有边，跳过（去重）
-            if store.get_edge(new_source, new_target) is not None:
+            # 去重：层级边按 kind（label 恒空）；事实边须 kind+label 都相同才算重复，
+            # 否则会丢掉同一对端点间不同 label 的事实（创立 vs 属于 是两条事实）。
+            existing = store.get_edges_between(new_source, new_target)
+            if any(
+                e.kind == edge.kind and e.label == edge.label for e in existing
+            ):
                 continue
 
-            store.delete_edge(edge.source_id, edge.target_id)
-            store.add_edge(new_source, new_target)
+            store.delete_edge(edge.id)
+            store.add_edge(
+                new_source, new_target,
+                kind=edge.kind, label=edge.label, priority=edge.priority,
+            )
 
     def _validate_reorg(
         self,
@@ -699,7 +714,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             return True
 
         # 计算重组后中心节点 + 全部一跳邻域的 token（同口径）
-        neighbors = store.get_neighbors(center_node.id)
+        neighbors = store.get_out_hierarchy(center_node.id)
         after_token_total = self._neighborhood_tokens(center_node, neighbors)
 
         if after_token_total >= before_token_total:
@@ -713,18 +728,13 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         return True
 
     def _rollback_reorg(self, store: StoreInterface, state: dict) -> None:
-        """回滚重组操作。"""
-        # 清空当前图
-        for n in list(store.get_all_nodes()):
-            store._nodes.pop(n.id, None)
-            store._adjacency.pop(n.id, None)
-        store._edges.clear()
+        """回滚重组：从 ``store.snapshot()`` 快照整体还原。
 
-        # 恢复快照
-        for n in state["nodes"].values():
-            store.add_node(n)
-        for e in state["edges"]:
-            store.add_edge(e.source_id, e.target_id)
+        委托 ``store.restore`` —— 保留原边 id 并还原变更跟踪集，避免旧实现
+        ``add_edge`` 重建（生成新 uuid + 绕过删除跟踪）导致增量持久化残留
+        旧行 + 插入新行、边在 DB 翻倍。
+        """
+        store.restore(state)
 
     def _create_hub_from_community(
         self,

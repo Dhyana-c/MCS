@@ -26,32 +26,59 @@ The system SHALL define a unified LLM call signature: `call(purpose: str, nodes_
 
 ### Requirement: purpose 枚举固定且与流程位置对应
 
-The `purpose` parameter SHALL be one of a fixed set of named purposes. Phase 1 MUST support at least: `extract_concepts`, `judge_relations`, `decide_directions`, `decide_hub`, `navigate_hub`, `arbitrate`, `synthesize`, `gen_aliases`, `gen_summary`, `select_nodes`, `select_nodes_batch`. The `select_nodes_batch` purpose SHALL use the `BATCH_USER_TEMPLATE` prompt template, separate from `select_nodes`.
+`purpose` SHALL 为固定命名集合之一。Phase 1 MUST 至少支持：`extract_concepts`、`judge_relations`、`decide_directions`、`decide_hub`、`navigate_hub`、`arbitrate`、`synthesize`、`gen_aliases`、`gen_summary`、`select_facts`。
 
-#### Scenario: purpose 取值完整
+#### Scenario: purpose 含 select_facts
 
 - **WHEN** 检查 LLMInterface 与文档
-- **THEN** 上述 11 个 purpose MUST 被明确定义；每个 MUST 对应到读/写流程中的一个具体调用位置
+- **THEN** `select_facts` MUST 被定义为独立 purpose；其渲染 MUST 将候选节点与事实边统一编号平铺为事实条目
 
-#### Scenario: 未注册的 purpose 报错
+#### Scenario: 未注册 purpose 报错
 
-- **WHEN** 调用方传入未注册的 `purpose` 字符串
-- **THEN** 框架 MUST 抛出明确错误（未知 purpose），不静默回退
+- **WHEN** 传入未注册 `purpose`
+- **THEN** 框架 MUST 抛明确错误，不静默回退
 
-#### Scenario: purpose 决定 prompt 与渲染
+---
 
-- **WHEN** 同样的 `nodes_in` 被以不同 purpose 调用
-- **THEN** ContextRenderer 渲染出的内容 MUST 可能不同；prompt 模板 MUST 不同
+### Requirement: select_facts 渲染为统一编号的事实条目
 
-#### Scenario: select_nodes_batch 有独立模板
+`ContextRenderer` SHALL 提供 `render_facts(nodes, edges) -> str`，将节点与事实边按**单一连续编号**（①②③… 跨节点与事实边单调递增、节点在前事实边在后）平铺：节点为 `① name (id=xxx)\n  content`，事实边为 `② 主 —label→ 宾`。框架 MUST 维护「编号 → 节点 / 事实边」映射，供 parser 回查。事实边渲染 MUST 与 token 估算共用同一函数（铁律一）。`select_facts` prompt MUST 指导 LLM 返回选中的事实编号列表。
 
-- **WHEN** `_traverse` 批量扩展阶段调用 LLM
-- **THEN** MUST 使用 `purpose="select_nodes_batch"` 和对应的 `BATCH_USER_TEMPLATE`；MUST NOT 通过 try/finally 动态替换 `select_nodes` 的模板
+#### Scenario: 事实边条目格式
 
-#### Scenario: select_nodes_batch 在初始化时注册
+- **WHEN** 渲染事实边 `(小明, fact, "喜欢", 苹果)`
+- **THEN** 输出 MUST 为 `② 小明 —喜欢→ 苹果` 格式（带编号）
 
-- **WHEN** LLM 适配器初始化
-- **THEN** `select_nodes_batch` purpose 及其模板 MUST 在初始化时一次性注册；MUST NOT 在运行时动态换装
+#### Scenario: 渲染与估算同口径
+
+- **WHEN** 估算事实边 token
+- **THEN** MUST 调用渲染事实边的同一函数再计 token，MUST NOT 用近似公式
+
+#### Scenario: parser 返回编号列表
+
+- **WHEN** LLM 返回 `[1, 3, 4]`
+- **THEN** parser MUST 返回 `list[int]`，框架据编号映射回节点 / 事实边
+
+---
+
+### Requirement: judge_relations 输出事实边 label
+
+`judge_relations` prompt MUST 指导 LLM 为**每条有向关系**输出一个粗粒度 label。Decision 的 `edges_to`（到已有节点）与 `edges_to_names`（到同批新概念）MUST 均为 `list[dict]`，每项含 `target_id`（或 `target_name`）与 `label`。**一条关系 = 一个方向 + 一个 label**：写入时只存一份事实边、两端可达，MUST NOT 自动生成反向 label 副本。
+
+#### Scenario: edges_to / edges_to_names 含 label
+
+- **WHEN** `judge_relations` 返回 create 决策
+- **THEN** `edges_to` MUST 为 `[{"target_id": "...", "label": "喜欢"}, ...]`；`edges_to_names` MUST 为 `[{"target_name": "...", "label": "..."}, ...]`
+
+#### Scenario: 一条关系一个方向一个 label
+
+- **WHEN** judge_relations 判定 A 对 B 有关系"喜欢"
+- **THEN** MUST 输出一条 `A→B label="喜欢"`（存一份、两端可达）；MUST NOT 自动生成 `B→A` 反向 label 副本
+
+#### Scenario: 反向若是不同关系则为独立事实
+
+- **WHEN** A、B 间还存在方向相反、语义不同的关系（如 B 对 A 是"营养来源"）
+- **THEN** 那是**另一条独立事实** `B→A label="营养来源"`（同样存一份）；二者 MAY 并存——同一对节点允许多条方向 / 语义不同的事实边
 
 ---
 

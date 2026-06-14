@@ -169,16 +169,18 @@ def main() -> None:
 
     # 第一轮
     print("\n-- Turn 1: '什么是机器学习？' --")
-    turn1 = mcs.query("什么是机器学习？")
-    print(f"  → {len(turn1)} nodes")
-    for n in turn1:
+    result1 = mcs.query("什么是机器学习？")
+    turn1_nodes = result1.nodes if hasattr(result1, "nodes") else result1
+    print(f"  → {len(turn1_nodes)} nodes")
+    for n in turn1_nodes:
         print(f"    - {n.name}")
 
     # 第二轮：将 turn1 的结果作为 existing_context 传入以延续对话线程。
     print("\n-- Turn 2 (continuation): '它和深度学习什么关系？' --")
-    turn2 = mcs.query("它和深度学习什么关系？", existing_context=turn1)
-    print(f"  → {len(turn2)} nodes")
-    for n in turn2:
+    result2 = mcs.query("它和深度学习什么关系？", existing_context=turn1_nodes)
+    turn2_nodes = result2.nodes if hasattr(result2, "nodes") else result2
+    print(f"  → {len(turn2_nodes)} nodes")
+    for n in turn2_nodes:
         print(f"    - {n.name}")
 
     mcs.shutdown()

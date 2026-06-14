@@ -206,7 +206,7 @@ def test_node_has_only_minimal_core_fields() -> None:
 
 
 def test_query_context_has_4_lifecycle_fields() -> None:
-    """QueryContext：system_prompt / user_input / intermediate / result_set + metadata。"""
+    """QueryContext：system_prompt / user_input / intermediate / result_set + metadata + selected_edges。"""
     from mcs.core.query_engine import QueryContext
 
     field_names = {f.name for f in fields(QueryContext)}
@@ -216,6 +216,7 @@ def test_query_context_has_4_lifecycle_fields() -> None:
         "intermediate",
         "result_set",
         "metadata",
+        "selected_edges",
     }
     assert field_names == expected, (
         f"QueryContext fields mismatch: {field_names ^ expected}"
@@ -311,7 +312,7 @@ def test_context_renderer_get_summary_fallback() -> None:
 
 
 def test_default_prompts_has_9_purposes() -> None:
-    """DEFAULT_PROMPTS 注册了全部 11 个 Phase 1 目的（含 select_nodes_batch）。"""
+    """DEFAULT_PROMPTS 注册了全部 Phase 1 目的（含 select_nodes_batch + select_facts）。"""
     from mcs.prompts import DEFAULT_PROMPTS
 
     expected_purposes = {
@@ -326,6 +327,7 @@ def test_default_prompts_has_9_purposes() -> None:
         "gen_summary",
         "select_nodes",
         "select_nodes_batch",
+        "select_facts",
     }
     assert set(DEFAULT_PROMPTS.keys()) == expected_purposes
 

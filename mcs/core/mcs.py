@@ -62,8 +62,8 @@ class MCS:
         text: str,
         existing_context: list | None = None,
     ) -> Any:
-        """执行查询管线。默认返回 ``List[Node]``
-        （或配置的后处理链产生的任何类型）。
+        """执行查询管线。默认返回 ``Subgraph``（nodes + 选中事实边 edges），
+        后处理插件可将其转换为其他类型（如自然语言字符串）。
         """
         return self.query_engine.query(text, existing_context=existing_context)
 

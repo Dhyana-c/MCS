@@ -1,7 +1,7 @@
 """上下文渲染 - 将 ``List[Node]`` 序列化为 LLM 可读字符串。
 
 替代旧的 ``Serializer.serialize(subgraph, mode)`` API。新契约由 ``purpose`` 字符串
-（9 个 LLM 目的之一）驱动；``NodeExtensionInterface.render(node, purpose)`` 允许插件
+（10+ 个 LLM 目的之一）驱动；``NodeExtensionInterface.render(node, purpose)`` 允许插件
 为每个目的贡献额外的提示片段。
 
 参见 openspec/specs/llm-interaction/spec.md。
@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
+    from mcs.core.graph import Edge, Node
     from mcs.core.plugin_manager import PluginManager
     from mcs.interfaces.node_extension import NodeExtensionInterface
 
@@ -126,3 +126,72 @@ class ContextRenderer:
                     lines.append(f"  {fragment}")
 
         return "\n".join(lines)
+
+    # === 事实渲染（select_facts purpose） ===
+
+    def render_facts(
+        self, nodes: list[Node], edges: list[Edge], purpose: str = "select_facts"
+    ) -> str:
+        """将节点 + 事实边统一编号平铺为事实条目（purpose=select_facts）。
+
+        节点在前、事实边在后，单一连续编号（1. 2. 3. … 跨类型单调递增）。
+        事实边渲染 `主 —label→ 宾`，与 TokenBudget 估算共用此格式（铁律一）。
+
+        Args:
+            nodes: 候选节点列表
+            edges: 候选事实边列表（kind="fact"）
+            purpose: LLM 目的（默认 select_facts）
+
+        Returns:
+            渲染文本，含编号 → 节点/事实边映射
+        """
+        if not nodes and not edges:
+            return "(无)"
+
+        node_map = {n.id: n for n in nodes}
+        lines: list[str] = []
+        idx = 1
+
+        # 节点条目（委托 render_node_full 保持口径一致，铁律一）
+        extensions = self._get_extensions()
+        for node in nodes:
+            full = ContextRenderer.render_node_full(
+                node, purpose=purpose, is_focus=True, extensions=extensions
+            )
+            # 将 render_node_full 的 "- name (id=id)\n  body" 格式
+            # 替换为编号格式 "N. name (id=id)\n  body"
+            first_newline = full.find("\n")
+            if first_newline != -1:
+                lines.append(f"{idx}.{full[1:first_newline]}")
+                lines.append(full[first_newline + 1:])
+            else:
+                lines.append(f"{idx}.{full[1:]}")
+            idx += 1
+
+        # 事实边条目
+        for edge in edges:
+            rendered = ContextRenderer.render_fact_edge(edge, node_map)
+            lines.append(f"{idx}. {rendered}")
+            idx += 1
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def render_fact_edge(edge: Edge, node_map: dict[str, Node] | None = None) -> str:
+        """渲染单条事实边为 `主 —label→ 宾` 格式。
+
+        用于 token 估算（铁律一）和 render_facts 内部。
+        与 render_facts 中的事实边条目格式完全一致。
+
+        Args:
+            edge: 事实边
+            node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
+        """
+        label = getattr(edge, "label", "") or ""
+        if node_map:
+            src_name = node_map[edge.source_id].name if edge.source_id in node_map else edge.source_id
+            tgt_name = node_map[edge.target_id].name if edge.target_id in node_map else edge.target_id
+        else:
+            src_name = edge.source_id
+            tgt_name = edge.target_id
+        return f"{src_name} —{label}→ {tgt_name}"

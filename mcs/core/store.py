@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import warnings
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,9 @@ class StoreInterface(ABC):
     使一个存储后端只需实现一个接口。
 
     消费者（QueryEngine、WritePipeline、插件等）依赖此接口而非具体实现。
+
+    边模型：全图两类边——层级边 (kind="hierarchy") 与事实边 (kind="fact")。
+    事实边一条只存一份，但两端邻接都索引到它（支持反查）。
     """
 
     # === 节点 CRUD ===
@@ -49,39 +53,104 @@ class StoreInterface(ABC):
     # === 边 CRUD ===
 
     @abstractmethod
-    def add_edge(self, source_id: str, target_id: str) -> None:
-        """添加有向边 ``source → target``。所有边一律单向。"""
-        ...
+    def add_edge(
+        self,
+        source_id: str,
+        target_id: str,
+        kind: str = "hierarchy",
+        label: str = "",
+        priority: float = 0.0,
+    ) -> str:
+        """添加有向边 ``source → target``，返回边 id。
 
-    @abstractmethod
-    def get_edge(self, source_id: str, target_id: str) -> Edge | None:
-        """获取两个节点之间的边，不存在返回 None。"""
-        ...
-
-    @abstractmethod
-    def delete_edge(self, source_id: str, target_id: str) -> None:
-        """删除两个节点之间的边。"""
-        ...
-
-    def add_bidirectional(self, source_id: str, target_id: str) -> None:
-        """一次性添加两条单向边 source→target + target→source（语义边）。
-
-        默认实现调用两次 ``add_edge``；子类可覆写以优化。
+        kind MUST 为 "hierarchy" 或 "fact"。
+        事实边 label MUST 非空；层级边 label MUST 为空串。
         """
-        self.add_edge(source_id, target_id)
-        self.add_edge(target_id, source_id)
-
-    # === 查询 ===
+        ...
 
     @abstractmethod
+    def delete_edge(self, edge_id: str) -> None:
+        """按边 id 删除边。"""
+        ...
+
+    def update_edge(self, edge_id: str, **fields) -> None:
+        """更新边属性（kind / label / priority）。
+
+        默认实现：find → replace；子类可覆写以优化。
+        """
+        raise NotImplementedError("update_edge not implemented")
+
+    # === 层级（骨架）查询 ===
+
+    @abstractmethod
+    def get_out_hierarchy(self, node_id: str) -> list[Node]:
+        """该节点的层级出边目标（kind="hierarchy" 的 source=node_id 边），驱动导航下钻。"""
+        ...
+
+    # === 事实（双向可达）查询 ===
+
+    @abstractmethod
+    def get_facts(self, node_id: str, limit: int | None = None) -> list[Edge]:
+        """返回该节点作**源或宾**的事实边（反查，双向可达）。
+
+        Phase 2 按 priority 降序、limit 截断 top-K。
+        Phase 1 priority 未用，返回全部（limit 仅作可选上限）。
+        """
+        ...
+
+    def get_out_facts(
+        self, node_id: str, limit: int | None = None
+    ) -> list[Edge]:
+        """该节点为**源**的事实出边。用于 Phase 2 查询视图（fanout 不用，见 spec）。
+
+        Phase 2 用 ``limit`` 截断；Phase 1 不用。默认实现过滤 ``get_facts``；
+        子类可覆写以优化。
+        """
+        out = [e for e in self.get_facts(node_id) if e.source_id == node_id]
+        return out[:limit] if limit is not None else out
+
+    def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:
+        """获取两个节点之间的所有边（不限 kind）。
+
+        替代旧 get_edge(source, target)——新模型下同一对节点可有多条不同 label 的事实边。
+        """
+        return [
+            e
+            for e in self.get_all_edges()
+            if e.source_id == source_id and e.target_id == target_id
+        ]
+
+    # === 旧 API（deprecated，迁移完成后删除） ===
+
     def get_neighbors(self, node_id: str) -> list[Node]:
-        """获取出邻居：该节点为源的全部有向边目标。"""
-        ...
+        """Deprecated: 迁移到 get_out_hierarchy / get_facts。"""
+        warnings.warn(
+            "get_neighbors is deprecated; use get_out_hierarchy / get_facts",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.get_out_hierarchy(node_id)
 
-    @abstractmethod
     def get_out_neighbors(self, node_id: str) -> list[Node]:
-        """获取出邻居。与 ``get_neighbors`` 同义，保留以减小迁移面。"""
-        ...
+        """Deprecated: 迁移到 get_out_hierarchy。"""
+        warnings.warn(
+            "get_out_neighbors is deprecated; use get_out_hierarchy",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.get_out_hierarchy(node_id)
+
+    def get_edge(self, source_id: str, target_id: str) -> Edge | None:
+        """Deprecated: 迁移到 get_edges_between。"""
+        warnings.warn(
+            "get_edge is deprecated; use get_edges_between",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        edges = self.get_edges_between(source_id, target_id)
+        return edges[0] if edges else None
+
+    # === 子图 / 全量查询 ===
 
     @abstractmethod
     def get_subgraph(
@@ -134,3 +203,21 @@ class StoreInterface(ABC):
         默认回退为 save()；事务型后端应覆写为「先清表再整图重写」。
         """
         self.save()
+
+    # === 快照 / 回滚 ===
+
+    def snapshot(self) -> dict:
+        """捕获内部图状态快照，供 fanout 裂变失败时整体回滚。
+
+        快照 MUST 保留边 id（回滚后边 id 不变），事务型后端还 MUST 一并捕获
+        变更跟踪集——否则增量持久化在回滚后会残留旧行 / 漏删，导致重复边。
+        具体存储 MUST 覆写本方法。
+        """
+        raise NotImplementedError("snapshot not implemented")
+
+    def restore(self, snapshot: dict) -> None:
+        """从 ``snapshot()`` 的快照整体还原内部状态（保留边 id）。
+
+        具体存储 MUST 覆写本方法。
+        """
+        raise NotImplementedError("restore not implemented")

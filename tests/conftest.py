@@ -84,6 +84,32 @@ class MockLLM(LLMInterface):
             if callable(value):
                 return value(nodes_in, free_args)
             return value
+        # select_facts 回退到 select_nodes 的 mock 响应（将 node_id 转为 1-based 编号，
+        # 同时附带所有 fact edge 编号）
+        if purpose == "select_facts" and "select_facts" not in self._typed:
+            if "select_nodes" in self._typed:
+                value = self._typed["select_nodes"]
+                if callable(value):
+                    selected_ids = value(nodes_in, free_args)
+                    node_id_list = [n.id for n in (nodes_in or [])]
+                    indices = []
+                    for nid in selected_ids:
+                        if nid in node_id_list:
+                            indices.append(node_id_list.index(nid) + 1)
+                    # 同时选中所有 fact edge 条目（编号 > n_nodes）
+                    n_nodes = len(node_id_list)
+                    material = (free_args or {}).get("material", "")
+                    if material:
+                        import re
+                        max_idx = max(
+                            (int(m.group(1)) for m in re.finditer(r'^(\d+)\.', material, re.MULTILINE)),
+                            default=0,
+                        )
+                        for i in range(n_nodes + 1, max_idx + 1):
+                            if i not in indices:
+                                indices.append(i)
+                    return sorted(indices)
+                return []
         return _default_for_purpose(purpose)
 
     def _raw_call(self, system: str, user: str) -> str:

@@ -7,37 +7,17 @@
 
 ### Requirement: _traverse 采用批量邻居扩展策略
 
-The system SHALL modify `QueryEngine._traverse` to use batch neighbor expansion. Instead of processing one node at a time, multiple nodes from the queue SHALL be packed together and their neighbors sent to LLM in a single call, as long as the total token count does not exceed the budget. The implementation SHALL use `collections.deque` for the queue, `{id: node}` dict for neighbor lookup, and reuse a single `ContextRenderer` instance across all batches within the same traversal.
+`_traverse` MUST 以 `purpose=select_facts` 进行**事实 BFS**：每访问一个节点，渲染其**活跃双向视图**（出事实 + 入事实 + 层级邻居）为统一编号的事实条目供 LLM 选取。多个待扩展节点的视图在总 token ≤ 预算余量内 MAY **合并进一次 LLM 调用**（按层级分批，富余合并）。旧的 `select_nodes` / `select_nodes_batch`（只选节点、不浮现事实）SHALL 被 `select_facts` 取代。
 
-#### Scenario: 批量打包从 queue 取多个节点
+#### Scenario: 批量合并减少调用
 
-- **WHEN** `_traverse` processes the queue
-- **THEN** the framework MUST greedily pack multiple nodes from the queue until the estimated token count (centers + all unique neighbors) approaches `token_budget.T * 0.8` (80% threshold)
+- **WHEN** 多个节点的活跃视图合计 ≤ 预算余量
+- **THEN** 框架 MUST 合并为一次 `select_facts` 调用，而非每节点一次
 
-#### Scenario: 单次 LLM 调用覆盖多节点扩展
+#### Scenario: 超预算时按层切分
 
-- **WHEN** a batch of centers and their neighbors is packed
-- **THEN** the framework MUST issue ONE `llm.call(purpose="select_nodes_batch", nodes_in=[*centers, *all_neighbors], ...)` call
-
-#### Scenario: 批量调用减少 LLM 次数
-
-- **WHEN** comparing batch mode vs single-node mode for the same traversal
-- **THEN** batch mode MUST result in fewer LLM calls (or equal, never more)
-
-#### Scenario: queue 使用 deque 实现
-
-- **WHEN** 检查 `_traverse` 的 queue 变量
-- **THEN** MUST 为 `collections.deque`；入队出队 MUST 使用 `popleft()` / `appendleft()`
-
-#### Scenario: neighbor 查找使用 dict
-
-- **WHEN** 从 LLM 返回的 selected_ids 查找对应的 Node 对象
-- **THEN** MUST 使用 `{node_id: node}` 字典 O(1) 查找；MUST NOT 使用 `next((n for n in batch_neighbors if n.id == ...), None)` 线性扫描
-
-#### Scenario: ContextRenderer 实例复用
-
-- **WHEN** `_traverse` 执行多轮批量扩展
-- **THEN** MUST 在 while 循环外创建一个 `ContextRenderer` 实例并复用；MUST NOT 在每轮/每批内重新创建
+- **WHEN** 合并视图超过预算
+- **THEN** 框架 MUST 按层级切分为更小批次
 
 ---
 
@@ -64,17 +44,12 @@ The system SHALL maintain correct BFS depth semantics when processing batched ex
 
 ### Requirement: 批量调用失败时回退到逐节点处理
 
-The system SHALL fallback to single-node processing when batch LLM call fails (e.g., parse error, timeout). This ensures robustness when batch mode encounters issues.
+当批量 `select_facts` 调用解析失败时，框架 MUST 回退到**逐节点** `select_facts`（单节点活跃双向视图），保证遍历不因单次批量失败而中断。
 
-#### Scenario: 解析失败触发回退
+#### Scenario: 解析失败逐节点回退
 
-- **WHEN** batch LLM call raises `LLMParseError`
-- **THEN** the framework MUST fallback to processing each center individually with separate LLM calls
-
-#### Scenario: 回退后结果与批量模式等价
-
-- **WHEN** fallback is triggered
-- **THEN** the final `accumulated` result MUST be semantically equivalent to what batch mode would have produced (modulo LLM non-determinism)
+- **WHEN** 批量 `select_facts` 返回无法解析
+- **THEN** 框架 MUST 对该批每个节点单独发 `select_facts` 调用
 
 ---
 
