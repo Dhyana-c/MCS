@@ -268,6 +268,7 @@ def run_queries(
     fh = open(results_file, "a", encoding="utf-8")
     quota = int((llm_config or {}).get("quota", 0))  # 0=不限配额
     llm_log = out / "llm_calls_query.jsonl"
+    base_calls = _count_llm_calls(llm_log)  # 续跑前的历史调用（本次增量基线）
     t0 = time.time()
     processed = 0
     consecutive_failures = 0
@@ -302,12 +303,14 @@ def run_queries(
         consecutive_failures = 0
         processed += 1
         if processed % 10 == 0 or processed == len(todo):
-            # 端点总消耗 = 内部 LLM 调用 + 文档重排调用（每 query 1 次 rerank）
-            used = (_count_llm_calls(llm_log) + len(done)) if quota else 0
-            quota_msg = f"，端点调用 {used}/{quota}" if quota else ""
+            # 本次 session 端点消耗 = 新增内部 LLM 调用 + 新增重排（processed）。
+            # 用 session 基线 base_calls 扣除续跑历史，避免历史调用累积导致续跑时
+            # quota 立即触发、剩余 query 跑不动。
+            used = ((_count_llm_calls(llm_log) - base_calls) + processed) if quota else 0
+            quota_msg = f"，本次端点调用 {used}/{quota}" if quota else ""
             print(f"  进度 {len(done)}/{len(selected)} ({time.time() - t0:.0f}s{quota_msg})")
             if quota and used >= quota:
-                stop_reason = f"LLM 调用达预算 {quota}（实际 {used}）"
+                stop_reason = f"本次 session 端点调用达预算 {quota}（实际 {used}）"
                 break
     fh.close()
     if stop_reason:
