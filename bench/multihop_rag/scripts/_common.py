@@ -191,6 +191,14 @@ def _built_titles(db: Path) -> set[str]:
         conn.close()
 
 
+def _count_llm_calls(path: Path) -> int:
+    """统计 LLM 调用记录文件行数（用于配额监控）。文件不存在返回 0。"""
+    if not path.exists():
+        return 0
+    with open(path, encoding="utf-8") as f:
+        return sum(1 for _ in f)
+
+
 def _make_reranker(mode: str, llm_config: dict | None = None):
     """返回 (nodes, query) -> ranked_doc_ids 的重排函数。"""
     from bench.multihop_rag.metrics import retrieved_docs
@@ -258,8 +266,13 @@ def run_queries(
     # 追加模式打开 results.jsonl，逐 query 持久化（断点 / 配额耗尽不丢）
     out.mkdir(parents=True, exist_ok=True)
     fh = open(results_file, "a", encoding="utf-8")
+    quota = int((llm_config or {}).get("quota", 0))  # 0=不限配额
+    llm_log = out / "llm_calls_query.jsonl"
     t0 = time.time()
     processed = 0
+    consecutive_failures = 0
+    FAILURE_LIMIT = 3  # 连续失败熔断阈值（疑似配额耗尽 / 端点不可用）
+    stop_reason = None
     for q in todo:
         try:
             res = mcs.query(q.query)
@@ -267,10 +280,16 @@ def run_queries(
                 res.nodes if hasattr(res, "nodes")
                 else (res if isinstance(res, list) else [])
             )
-        except Exception as e:  # 单 query 失败不中断
+            ranked = rerank(nodes, q.query)
+        except Exception as e:  # 单 query 失败不中断、不写入（续跑可重试）
             print(f"  query 失败 {q.query_id}: {e}")
-            nodes = []
-        ranked = rerank(nodes, q.query)
+            consecutive_failures += 1
+            if consecutive_failures >= FAILURE_LIMIT:
+                stop_reason = (
+                    f"连续 {consecutive_failures} 个 query 失败，疑似配额耗尽 / 端点不可用"
+                )
+                break
+            continue
         rec = {
             "query_id": q.query_id,
             "type": q.question_type,
@@ -280,10 +299,19 @@ def run_queries(
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
         fh.flush()
         done[q.query_id] = rec
+        consecutive_failures = 0
         processed += 1
         if processed % 10 == 0 or processed == len(todo):
-            print(f"  进度 {len(done)}/{len(selected)} ({time.time() - t0:.0f}s)")
+            # 端点总消耗 = 内部 LLM 调用 + 文档重排调用（每 query 1 次 rerank）
+            used = (_count_llm_calls(llm_log) + len(done)) if quota else 0
+            quota_msg = f"，端点调用 {used}/{quota}" if quota else ""
+            print(f"  进度 {len(done)}/{len(selected)} ({time.time() - t0:.0f}s{quota_msg})")
+            if quota and used >= quota:
+                stop_reason = f"LLM 调用达预算 {quota}（实际 {used}）"
+                break
     fh.close()
+    if stop_reason:
+        print(f"\n⚠ 提前停止：{stop_reason}")
 
     # 全量累积结果算指标（含续跑的历史，部分完成时也输出阶段性指标）
     all_results = [done[q.query_id] for q in selected if q.query_id in done]

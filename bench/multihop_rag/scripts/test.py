@@ -30,6 +30,11 @@ def main() -> None:
         default=None,
         help="LLM 端点配置文件（JSON）；指定后按其 backend 字段切后端，不指定则 deepseek 基线",
     )
+    p.add_argument(
+        "--restart",
+        action="store_true",
+        help="清除 results.jsonl 重新评测（默认 query 级断点续跑）",
+    )
     _common.add_query_args(p)
     args = p.parse_args()
 
@@ -48,7 +53,7 @@ def main() -> None:
     )
     _common.run_queries(
         mcs, db, args.output, args.queries, args.doc_rerank, args.token_budget,
-        llm_config=llm_config,
+        llm_config=llm_config, restart=args.restart,
     )
     mcs.shutdown()
     print("测试完成。")
