@@ -24,8 +24,10 @@ class StoreInterface(ABC):
 
     消费者（QueryEngine、WritePipeline、插件等）依赖此接口而非具体实现。
 
-    边模型：全图两类边——层级边 (kind="hierarchy") 与事实边 (kind="fact")。
-    事实边一条只存一份，但两端邻接都索引到它（支持反查）。
+    边模型随 ``relation_model`` 可插拔：层级边 (kind="hierarchy") 两模式共有；
+    ``property_graph`` 模式另有事实边 (kind="fact"，带 label)；
+    ``attribute_node`` 模式另有关联边 (kind="assoc"，无 label)。
+    事实边 / 关联边一条只存一份，但两端邻接都索引到它（支持反查）。
     """
 
     # === 节点 CRUD ===
@@ -63,8 +65,8 @@ class StoreInterface(ABC):
     ) -> str:
         """添加有向边 ``source → target``，返回边 id。
 
-        kind MUST 为 "hierarchy" 或 "fact"。
-        事实边 label MUST 非空；层级边 label MUST 为空串。
+        kind MUST 为 "hierarchy"、"fact" 或 "assoc"。
+        事实边 label MUST 非空；层级边 / 关联边 label MUST 为空串。
         """
         ...
 
@@ -108,6 +110,14 @@ class StoreInterface(ABC):
         """
         out = [e for e in self.get_facts(node_id) if e.source_id == node_id]
         return out[:limit] if limit is not None else out
+
+    @abstractmethod
+    def get_assoc(self, node_id: str, limit: int | None = None) -> list[Edge]:
+        """返回该节点作**任一端**的 ``kind="assoc"`` 无类型关联边（反查，双向可达）。
+
+        ``property_graph`` 模式通常无 assoc 边、返回空。``limit`` 仅作可选上限。
+        """
+        ...
 
     def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:
         """获取两个节点之间的所有边（不限 kind）。

@@ -130,20 +130,27 @@ class ContextRenderer:
     # === 事实渲染（select_facts purpose） ===
 
     def render_facts(
-        self, nodes: list[Node], edges: list[Edge], purpose: str = "select_facts"
+        self,
+        nodes: list[Node],
+        edges: list[Edge],
+        purpose: str = "select_facts",
+        mode: str = "property_graph",
     ) -> str:
-        """将节点 + 事实边统一编号平铺为事实条目（purpose=select_facts）。
+        """将节点 + 关系边统一编号平铺为事实/关联条目（purpose=select_facts）。
 
-        节点在前、事实边在后，单一连续编号（1. 2. 3. … 跨类型单调递增）。
-        事实边渲染 `主 —label→ 宾`，与 TokenBudget 估算共用此格式（铁律一）。
+        节点在前、关系边在后，单一连续编号（1. 2. 3. … 跨类型单调递增）。
+        关系边渲染随 ``mode``：``property_graph`` 用 ``主 —label→ 宾``（事实边）、
+        ``attribute_node`` 用 ``主 — 宾``（无 label 关联边）。与 TokenBudget 估算共用
+        此格式（铁律一，口径随模式）。
 
         Args:
             nodes: 候选节点列表
-            edges: 候选事实边列表（kind="fact"）
+            edges: 候选关系边列表（property_graph 为 fact、attribute_node 为 assoc）
             purpose: LLM 目的（默认 select_facts）
+            mode: 关系表示模式（默认 property_graph；渲染器不持 config、由调用方传）
 
         Returns:
-            渲染文本，含编号 → 节点/事实边映射
+            渲染文本，含编号 → 节点/关系边映射
         """
         if not nodes and not edges:
             return "(无)"
@@ -168,9 +175,14 @@ class ContextRenderer:
                 lines.append(f"{idx}.{full[1:]}")
             idx += 1
 
-        # 事实边条目
+        # 关系边条目（按 mode：property_graph 渲染事实边、attribute_node 渲染关联边）
+        render_edge = (
+            ContextRenderer.render_assoc_edge
+            if mode == "attribute_node"
+            else ContextRenderer.render_fact_edge
+        )
         for edge in edges:
-            rendered = ContextRenderer.render_fact_edge(edge, node_map)
+            rendered = render_edge(edge, node_map)
             lines.append(f"{idx}. {rendered}")
             idx += 1
 
@@ -195,3 +207,18 @@ class ContextRenderer:
             src_name = edge.source_id
             tgt_name = edge.target_id
         return f"{src_name} —{label}→ {tgt_name}"
+
+    @staticmethod
+    def render_assoc_edge(edge: Edge, node_map: dict[str, Node] | None = None) -> str:
+        """渲染单条无类型关联边为 `主 — 宾` 格式（**无 label**）。
+
+        用于 token 估算（铁律一）和 ``attribute_node`` 模式的 ``render_facts`` 内部。
+        与 ``render_facts`` 中关联边条目格式完全一致。
+        """
+        if node_map:
+            src_name = node_map[edge.source_id].name if edge.source_id in node_map else edge.source_id
+            tgt_name = node_map[edge.target_id].name if edge.target_id in node_map else edge.target_id
+        else:
+            src_name = edge.source_id
+            tgt_name = edge.target_id
+        return f"{src_name} — {tgt_name}"

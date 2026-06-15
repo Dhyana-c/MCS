@@ -32,6 +32,7 @@ class SQLiteStore(StoreInterface):
       - _edges: edge_id -> Edge（主存储）
       - _hierarchy_out: source_id -> set[target_id]（层级出边邻接）
       - _fact_by_node: node_id -> set[edge_id]（事实边两端索引）
+      - _assoc_by_node: node_id -> set[edge_id]（关联边两端索引）
 
     初始化时需调用 ``initialize()`` 设置数据库连接和可选的
     模式扩展插件列表。
@@ -49,6 +50,7 @@ class SQLiteStore(StoreInterface):
         self._edges: dict[str, Edge] = {}  # edge_id -> Edge
         self._hierarchy_out: dict[str, set[str]] = {}  # source_id -> {target_id}
         self._fact_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}
+        self._assoc_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}（关联边）
         # 增量持久化的变更跟踪
         self._dirty_nodes: set[str] = set()
         self._deleted_nodes: set[str] = set()
@@ -84,6 +86,7 @@ class SQLiteStore(StoreInterface):
         self._nodes[node.id] = node
         self._hierarchy_out.setdefault(node.id, set())
         self._fact_by_node.setdefault(node.id, set())
+        self._assoc_by_node.setdefault(node.id, set())
         self._track_node_dirty(node.id)
         return node.id
 
@@ -115,6 +118,8 @@ class SQLiteStore(StoreInterface):
                     edge_ids_to_remove.add(e.id)
         # 事实边
         edge_ids_to_remove |= set(self._fact_by_node.get(node_id, set()))
+        # 关联边
+        edge_ids_to_remove |= set(self._assoc_by_node.get(node_id, set()))
         # 层级入边（其他人指向该节点）
         for other_id, targets in self._hierarchy_out.items():
             if node_id in targets and other_id != node_id:
@@ -130,6 +135,7 @@ class SQLiteStore(StoreInterface):
             self._remove_edge_by_id(eid)
         self._hierarchy_out.pop(node_id, None)
         self._fact_by_node.pop(node_id, None)
+        self._assoc_by_node.pop(node_id, None)
         self._nodes.pop(node_id, None)
         self._track_node_deleted(node_id)
 
@@ -170,6 +176,18 @@ class SQLiteStore(StoreInterface):
                 ):
                     return e.id
 
+        # 关联边去重：同一对节点 (source, target) 的 assoc 边只存一份（无 label 可区分）。
+        if kind == "assoc":
+            for eid in self._assoc_by_node.get(source_id, ()):
+                e = self._edges.get(eid)
+                if (
+                    e is not None
+                    and e.source_id == source_id
+                    and e.target_id == target_id
+                    and e.kind == "assoc"
+                ):
+                    return e.id
+
         edge = Edge(
             source_id=source_id,
             target_id=target_id,
@@ -182,9 +200,14 @@ class SQLiteStore(StoreInterface):
 
         if kind == "hierarchy":
             self._hierarchy_out.setdefault(source_id, set()).add(target_id)
-        else:
+        elif kind == "fact":
+            # fact 边：两端索引
             self._fact_by_node.setdefault(source_id, set()).add(edge.id)
             self._fact_by_node.setdefault(target_id, set()).add(edge.id)
+        else:
+            # assoc 边：两端索引（与 fact 物理隔离，各自独立索引）
+            self._assoc_by_node.setdefault(source_id, set()).add(edge.id)
+            self._assoc_by_node.setdefault(target_id, set()).add(edge.id)
 
         self._track_edge_dirty(edge.id)
         return edge.id
@@ -240,6 +263,11 @@ class SQLiteStore(StoreInterface):
             if eid in self._edges and self._edges[eid].source_id == node_id
         ]
         return out[:limit] if limit is not None else out
+
+    def get_assoc(self, node_id: str, limit: int | None = None) -> list[Edge]:
+        edge_ids = self._assoc_by_node.get(node_id, set())
+        assoc = [self._edges[eid] for eid in edge_ids if eid in self._edges]
+        return assoc[:limit] if limit is not None else assoc
 
     def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:
         return [
@@ -315,6 +343,7 @@ class SQLiteStore(StoreInterface):
             "edges": {eid: dc_replace(e) for eid, e in self._edges.items()},
             "hierarchy_out": {k: set(v) for k, v in self._hierarchy_out.items()},
             "fact_by_node": {k: set(v) for k, v in self._fact_by_node.items()},
+            "assoc_by_node": {k: set(v) for k, v in self._assoc_by_node.items()},
             "dirty_nodes": set(self._dirty_nodes),
             "deleted_nodes": set(self._deleted_nodes),
             "dirty_edges": set(self._dirty_edges),
@@ -330,6 +359,9 @@ class SQLiteStore(StoreInterface):
         }
         self._fact_by_node = {
             k: set(v) for k, v in snapshot["fact_by_node"].items()
+        }
+        self._assoc_by_node = {
+            k: set(v) for k, v in snapshot.get("assoc_by_node", {}).items()
         }
         self._dirty_nodes = set(snapshot["dirty_nodes"])
         self._deleted_nodes = set(snapshot["deleted_nodes"])
@@ -381,6 +413,7 @@ class SQLiteStore(StoreInterface):
             )
             self._hierarchy_out.setdefault(row[0], set())
             self._fact_by_node.setdefault(row[0], set())
+            self._assoc_by_node.setdefault(row[0], set())
 
         for row in self.conn.execute(
             "SELECT id, source_id, target_id, kind, label, priority FROM edges"
@@ -396,9 +429,12 @@ class SQLiteStore(StoreInterface):
             self._edges[edge.id] = edge
             if edge.kind == "hierarchy":
                 self._hierarchy_out.setdefault(edge.source_id, set()).add(edge.target_id)
-            else:
+            elif edge.kind == "fact":
                 self._fact_by_node.setdefault(edge.source_id, set()).add(edge.id)
                 self._fact_by_node.setdefault(edge.target_id, set()).add(edge.id)
+            else:  # assoc
+                self._assoc_by_node.setdefault(edge.source_id, set()).add(edge.id)
+                self._assoc_by_node.setdefault(edge.target_id, set()).add(edge.id)
 
         self._clear_change_tracking()
 
@@ -567,7 +603,10 @@ class SQLiteStore(StoreInterface):
             return
         if edge.kind == "hierarchy":
             self._hierarchy_out.get(edge.source_id, set()).discard(edge.target_id)
-        else:
+        elif edge.kind == "fact":
             self._fact_by_node.get(edge.source_id, set()).discard(edge.id)
             self._fact_by_node.get(edge.target_id, set()).discard(edge.id)
+        else:  # assoc
+            self._assoc_by_node.get(edge.source_id, set()).discard(edge.id)
+            self._assoc_by_node.get(edge.target_id, set()).discard(edge.id)
         self._track_edge_deleted(edge_id)

@@ -1,9 +1,4 @@
-# dual-edge-model Specification
-
-## Purpose
-定义全图两类边模型：层级边（kind="hierarchy"）与事实边（kind="fact"），替代旧的无类型单向边模型。事实边存一份、两端可达（反查），带 label 与 priority 字段。节点 content 精简为裸定义+短属性，关系语义上事实边。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: 全图两类边——层级边与事实边
 
@@ -31,43 +26,6 @@
 
 - **WHEN** `relation_model="attribute_node"`
 - **THEN** 写入 MUST NOT 产生 `kind="fact"` 带 label 边；关系改由属性节点 + `kind="assoc"` 无类型边表达（见 `attribute-node-model`）
-
----
-
-### Requirement: 事实边存一份、两端可达（反查）
-
-一条事实边 MUST **只存一份**（保留方向语义 `主→宾`），但**两端的邻接都 MUST 能索引到它**——即从主或从宾都能取到这条事实（反查）。系统 MUST NOT 为同一事实双向对存两条边。
-
-#### Scenario: 从宾端反查命中
-
-- **WHEN** 存在事实边 `小明 —喜欢→ 苹果`，从 `苹果` 取事实
-- **THEN** 该事实 MUST 出现在 `苹果` 的事实集合中（作为入边），其原始方向 / label MUST 原样保留
-
-#### Scenario: 不双向对存
-
-- **WHEN** 写入一条事实
-- **THEN** 系统 MUST 只新增一条 `kind="fact"` 边，MUST NOT 同时写 `主→宾` 与 `宾→主` 两条
-
----
-
-### Requirement: 事实边带 priority（为遗忘预留）
-
-每条事实边 SHALL 带 `priority`（activation）分，**初始默认 `0.0`**。**Phase 1** MUST 仅提供该字段（恒为默认值），MUST NOT 用它排序 / 截断、MUST NOT 实现 activation 衰减；**Phase 2** 由 activation 策略赋值，用 `priority` 在查询渲染期排序、对超预算的活跃视图截断，等值时按 recency / id 做确定性 tie-break（赋值与 tie-break 细节属 Phase 2）。任何阶段 MUST NOT 引入"存放装不进活跃视图的长尾事实"的溢出索引。
-
-#### Scenario: Phase 1 只留字段不截断
-
-- **WHEN** Phase 1 下节点事实超出配置 T
-- **THEN** 系统 MUST NOT 用 `priority` 排序 / 截断（依赖配置 T 远小于真实窗口）；`priority` 字段 MUST 存在
-
-#### Scenario: Phase 2 按 priority 截断且不删
-
-- **WHEN** Phase 2 下节点事实超出活跃视图预算
-- **THEN** 系统 MUST 按 `priority` 降序取 top、截断到 ≤ T；其余 MUST 留在存储（不删）
-
-#### Scenario: 任何阶段不建溢出索引
-
-- **WHEN** 检查实现
-- **THEN** MUST NOT 存在与有界图并行、专门承载溢出长尾的检索存储
 
 ---
 

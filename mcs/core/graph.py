@@ -30,17 +30,19 @@ class Node:
 class Edge:
     """有向边 ``source → target``。
 
-    全图两类边——层级边 (kind="hierarchy") 与事实边 (kind="fact")。
-    层级边：纯下行、无 label，结构骨架。
-    事实边：带 label（粗粒度谓词）、带 priority（为遗忘预留），
-    一条事实只存一份，但两端邻接都索引到它（支持反查）。
+    关系表示随 ``relation_model`` 可插拔，全图三类边：
+      - 层级边 (kind="hierarchy")：两模式共有，纯下行、无 label，结构骨架。
+      - 事实边 (kind="fact")：仅 ``property_graph`` 模式，带 label（粗粒度谓词）、
+        带 priority（为遗忘预留）；一条事实只存一份，但两端邻接都索引到它。
+      - 关联边 (kind="assoc")：仅 ``attribute_node`` 模式，无 label、表"相关/共现"，
+        关系语义由属性节点 content 承载；一条只存一份、两端邻接都索引到它。
     """
 
     source_id: str
     target_id: str
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    kind: str = "hierarchy"  # "hierarchy" | "fact"
-    label: str = ""  # fact 边 MUST 非空；hierarchy 边 MUST 为空串
+    kind: str = "hierarchy"  # "hierarchy" | "fact" | "assoc"
+    label: str = ""  # fact 边 MUST 非空；hierarchy / assoc 边 MUST 为空串
     priority: float = 0.0  # Phase 1 仅留字段；Phase 2 用于排序/截断
 
 

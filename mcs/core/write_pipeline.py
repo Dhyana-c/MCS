@@ -97,6 +97,15 @@ class WritePipeline:
         self.merge_content_threshold: int = int(
             cfg_dict.get("merge_content_threshold", 500)
         )
+        # 关系表示模式（单一真相：从 config 读，core 分支点统一据此）
+        self.relation_model: str = (
+            getattr(config, "relation_model", "property_graph")
+            if config else "property_graph"
+        )
+        # attribute_node 模式：属性节点 content 上限（超则 LLM 压缩）
+        self.attribute_content_max: int = int(
+            getattr(config, "attribute_content_max", 200) if config else 200
+        )
 
     # === 公共 API ===
 
@@ -236,6 +245,12 @@ class WritePipeline:
                 continue
             if d.action == "attach_statement" and not d.target_id:
                 continue  # deprecated，静默丢弃
+            if d.action == "create_attribute":
+                if not d.attr_content and not d.assoc_to and not d.assoc_to_names:
+                    logger.warning(
+                        "Dropping empty create_attribute (no attr_content/endpoints)"
+                    )
+                    continue
             cleaned.append(d)
         return cleaned
 
@@ -252,6 +267,7 @@ class WritePipeline:
         changed: list[Node] = []
         name_to_id: dict[str, str] = {}
         pending_named_edges: list[tuple[str, list[dict]]] = []
+        pending_assoc_named: list[tuple[str, list[dict]]] = []
         # 精确同名去重索引：create 时若已有同名节点则并入而非新建（确定性兜底，
         # 不依赖 judge_relations 的 merge 判定——其 prompt 偏向 create 会让同名实体
         # 裂成多个节点、碎片化事实、压低召回）。
@@ -292,6 +308,23 @@ class WritePipeline:
                             existing_by_name.setdefault(key, node.id)  # 同批后续同名也并入
                     if decision.edges_to_names:
                         pending_named_edges.append((node.id, decision.edges_to_names))
+            elif action == "create_attribute":
+                if self.relation_model != "attribute_node":
+                    logger.warning(
+                        "create_attribute 在 %s 模式被忽略 (attr_name=%r)",
+                        self.relation_model, decision.attr_name,
+                    )
+                    continue
+                attr_node, assoc_named = self._dispatch_create_attribute(
+                    decision, existing_by_name
+                )
+                if attr_node is not None:
+                    changed.append(attr_node)
+                    # 属性节点纳入 name_to_id，供后续 create_attribute 的 by-name 端点解析
+                    if attr_node.name:
+                        name_to_id.setdefault(attr_node.name, attr_node.id)
+                    if assoc_named:
+                        pending_assoc_named.append((attr_node.id, assoc_named))
             elif action == "attach_statement":
                 # deprecated: no-op，日志在 _dispatch_attach 中
                 self._dispatch_attach(decision)
@@ -300,14 +333,24 @@ class WritePipeline:
             else:
                 raise UnknownActionError(action)
 
-        # 第二遍：篇内关系边——一条带 label 的事实边、两端索引（不双向对存）
-        for source_id, edge_specs in pending_named_edges:
-            for edge_info in edge_specs:
-                target_name = edge_info.get("target_name", "")
-                label = edge_info.get("label", "")
-                target_id = name_to_id.get(target_name)
-                if target_id:
-                    self.store.add_edge(source_id, target_id, kind="fact", label=label)
+        # 第二遍：篇内关系边按 relation_model
+        if self.relation_model == "attribute_node":
+            # assoc 边（无 label）：by-name 端点解析（一条只存一份、两端索引）
+            for source_id, endpoints in pending_assoc_named:
+                for ep in endpoints:
+                    target_name = ep.get("target_name", "")
+                    target_id = name_to_id.get(target_name)
+                    if target_id:
+                        self.store.add_edge(source_id, target_id, kind="assoc")
+        else:
+            # fact 边（带 label）：一条事实只存一份、两端索引（不双向对存）
+            for source_id, edge_specs in pending_named_edges:
+                for edge_info in edge_specs:
+                    target_name = edge_info.get("target_name", "")
+                    label = edge_info.get("label", "")
+                    target_id = name_to_id.get(target_name)
+                    if target_id:
+                        self.store.add_edge(source_id, target_id, kind="fact", label=label)
         return changed
 
     def _dispatch_merge(self, decision: Decision) -> None:
@@ -357,7 +400,12 @@ class WritePipeline:
                 )
 
     def _dispatch_create(self, decision: Decision) -> Node:
-        """创建：新节点 + 到 ``edges_to`` 中每个锚点的带 label 事实边。"""
+        """创建：新节点 + 到 ``edges_to`` 中每个锚点的带 label 事实边。
+
+        ``attribute_node`` 模式不建 fact 边（关系由 ``create_attribute`` + assoc 承载），
+        故该模式下跳过 ``edges_to``——核心代码自洽保证"MUST NOT 产生 fact 边"，
+        不依赖 prompt 不产 edges_to 的间接性。
+        """
         from mcs.core.graph import Node
 
         c = decision.concept
@@ -370,17 +418,19 @@ class WritePipeline:
             role="concept",
         )
         self.store.add_node(node)
-        for edge_info in decision.edges_to or []:
-            anchor_id = edge_info.get("target_id", edge_info) if isinstance(edge_info, dict) else edge_info
-            label = edge_info.get("label", "") if isinstance(edge_info, dict) else ""
-            self.store.add_edge(node.id, anchor_id, kind="fact", label=label)
+        if self.relation_model != "attribute_node":
+            for edge_info in decision.edges_to or []:
+                anchor_id = edge_info.get("target_id", edge_info) if isinstance(edge_info, dict) else edge_info
+                label = edge_info.get("label", "") if isinstance(edge_info, dict) else ""
+                self.store.add_edge(node.id, anchor_id, kind="fact", label=label)
         return node
 
     def _merge_concept_into(self, existing_id: str, decision: Decision) -> Node:
         """同名去重：把本应 create 的概念并入既有同名节点，返回既有节点。
 
         复用 ``_dispatch_merge`` 合 content/别名，再把该概念的 ``edges_to`` 锚点边
-        挂到既有节点（create 的 edges_to 不能丢）。
+        挂到既有节点（create 的 edges_to 不能丢）。``attribute_node`` 模式跳过 edges_to
+        （不建 fact 边）。
         """
         self._dispatch_merge(
             Decision(
@@ -390,10 +440,11 @@ class WritePipeline:
                 aliases_to_add=decision.aliases_to_add,
             )
         )
-        for edge_info in decision.edges_to or []:
-            anchor_id = edge_info.get("target_id", edge_info) if isinstance(edge_info, dict) else edge_info
-            label = edge_info.get("label", "") if isinstance(edge_info, dict) else ""
-            self.store.add_edge(existing_id, anchor_id, kind="fact", label=label)
+        if self.relation_model != "attribute_node":
+            for edge_info in decision.edges_to or []:
+                anchor_id = edge_info.get("target_id", edge_info) if isinstance(edge_info, dict) else edge_info
+                label = edge_info.get("label", "") if isinstance(edge_info, dict) else ""
+                self.store.add_edge(existing_id, anchor_id, kind="fact", label=label)
         return self.store.get_node(existing_id)
 
     def _dispatch_attach(self, decision: Decision) -> None:
@@ -405,6 +456,68 @@ class WritePipeline:
             "attach_statement is deprecated (concept=%r); treating as no-op",
             getattr(decision.concept, "name", None),
         )
+
+    def _dispatch_create_attribute(
+        self, decision: Decision, existing_by_name: dict[str, str]
+    ) -> tuple[Node | None, list[dict]]:
+        """attribute_node 模式：建/复用属性节点 + 连 assoc 边（by-id 端点）。
+
+        返回 (属性节点, 待第二遍按名解析的 by-name 端点列表)。content 过长则 LLM 压缩。
+        概念-概念关系连两端；纯字面值（无端点或单端点）的值内联进 attr_content。
+        同名属性节点去重复用（"单一当前说法"——复用时不覆盖既有 content）。
+        """
+        from mcs.core.graph import Node
+
+        attr_name = (decision.attr_name or "").strip() or "attribute"
+        attr_content = (decision.attr_content or "").strip()
+
+        # 同名属性节点去重（复用）；否则新建
+        key = _norm_name(attr_name)
+        dup_id = existing_by_name.get(key) if key else None
+        if dup_id is not None and self.store.get_node(dup_id) is not None:
+            attr_node = self.store.get_node(dup_id)
+        else:
+            attr_node = Node(
+                id=str(uuid.uuid4()),
+                name=attr_name,
+                content=attr_content,
+                role="attribute",
+            )
+            self.store.add_node(attr_node)
+            if key:
+                existing_by_name.setdefault(key, attr_node.id)
+            # content 过长 → LLM 压缩（沿用 merge 的 gen_summary 模式；失败保留原文）
+            if (
+                attr_content
+                and self.attribute_content_max > 0
+                and len(attr_content) > self.attribute_content_max
+            ):
+                try:
+                    compressed = self.llm.call(
+                        purpose="gen_summary",
+                        nodes_in=[attr_node],
+                        free_args={"max_tokens": 200},
+                    )
+                    if isinstance(compressed, str) and compressed.strip():
+                        attr_node.content = compressed.strip()
+                except Exception:
+                    logger.warning(
+                        "attribute content 压缩失败，保留原文 (node=%s)",
+                        attr_node.id,
+                        exc_info=True,
+                    )
+
+        # by-id 端点立即连 assoc 边
+        for ep in decision.assoc_to or []:
+            tid = ep.get("target_id") if isinstance(ep, dict) else ep
+            if tid:
+                self.store.add_edge(attr_node.id, tid, kind="assoc")
+
+        # by-name 端点留第二遍解析
+        assoc_named = [
+            ep for ep in (decision.assoc_to_names or []) if isinstance(ep, dict)
+        ]
+        return attr_node, assoc_named
 
     def _run_compaction(self, changed_nodes: list[Node]) -> None:
         """阶段 ⑥：每个 CompactionPlugin 检查 should_run，然后运行。"""

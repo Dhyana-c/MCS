@@ -59,8 +59,26 @@ class MCSConfig:
     plugin_configs: dict = field(default_factory=dict)
     prompt_overrides: dict[str, dict] = field(default_factory=dict)
 
+    # 关系表示模式（property_graph 默认 / attribute_node）；建图时选定，写读须同模式
+    relation_model: str = "property_graph"
+    # attribute_node 模式：属性节点 content 上限（超此阈值触发 LLM 压缩，量级同 lean 基线）
+    attribute_content_max: int = 200
+
+    def __post_init__(self) -> None:
+        """校验枚举型字段。"""
+        if self.relation_model not in {"property_graph", "attribute_node"}:
+            raise ValueError(
+                f"unknown relation_model={self.relation_model!r}; "
+                "expected 'property_graph' or 'attribute_node'"
+            )
+
     @classmethod
-    def knowledge_graph(cls, write_llm: str = "deepseek", read_llm: str | None = None) -> MCSConfig:
+    def knowledge_graph(
+        cls,
+        write_llm: str = "deepseek",
+        read_llm: str | None = None,
+        relation_model: str = "property_graph",
+    ) -> MCSConfig:
         """第一阶段默认配置：shared+write+read 插件分离，T=8000，max_rounds=5，max_accumulated_nodes=1000。
 
         ``write_llm`` / ``read_llm`` 选择厂商 LLM 后端：
@@ -99,6 +117,20 @@ class MCSConfig:
         if read_llm_name != write_llm_name:
             _add_llm_config(plugin_configs, read_llm, read_llm_name)
 
+        # attribute_node 模式：注入专属 judge_relations prompt（不产 label、产 create_attribute）
+        prompt_overrides: dict[str, dict] = {}
+        if relation_model == "attribute_node":
+            from mcs.prompts.judge_relations_attr import (
+                SYSTEM_PROMPT as _attr_system,
+                USER_TEMPLATE as _attr_template,
+                parse as _attr_parse,
+            )
+            prompt_overrides["judge_relations"] = {
+                "system": _attr_system,
+                "template": _attr_template,
+                "parser": _attr_parse,
+            }
+
         return cls(
             mode="knowledge_graph",
             token_budget=8000,
@@ -110,6 +142,8 @@ class MCSConfig:
             write_llm=write_llm_name,
             read_llm=read_llm_name,
             plugin_configs=plugin_configs,
+            relation_model=relation_model,
+            prompt_overrides=prompt_overrides,
         )
 
     @classmethod

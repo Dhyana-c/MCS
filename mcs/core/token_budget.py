@@ -106,6 +106,20 @@ class TokenBudget:
         rendered = ContextRenderer.render_fact_edge(edge, node_map)
         return self.estimate(rendered)
 
+    def estimate_assoc_edge(
+        self, edge: Edge, node_map: dict[str, Node] | None = None
+    ) -> int:
+        """估算单条无类型关联边的渲染 token（铁律一：与 render_assoc_edge 同口径）。
+
+        Args:
+            edge: 关联边（kind="assoc"）
+            node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
+        """
+        from mcs.core.context_renderer import ContextRenderer
+
+        rendered = ContextRenderer.render_assoc_edge(edge, node_map)
+        return self.estimate(rendered)
+
     def estimate_active_view(
         self,
         node: Node,
@@ -113,31 +127,40 @@ class TokenBudget:
         out_facts: list[Edge],
         in_facts: list[Edge] | None = None,
         node_map: dict[str, Node] | None = None,
+        mode: str = "property_graph",
     ) -> int:
-        """估算节点的活跃双向视图 token（task 2.2）。
+        """估算节点的活跃双向视图 token。
 
-        视图 = 中心节点 + 层级邻居 + 出事实边 + 入事实边（反查）。
-        Phase 1 不截断，返回全部估算值。
-        估算口径 == 渲染口径（铁律一）：事实边经 ``node_map`` 取 **name** 渲染，与
+        视图 = 中心节点 + 层级邻居 + 出关系边 + 入关系边（反查）。关系边口径随 ``mode``：
+        ``property_graph`` 为事实边（``主 —label→ 宾``）、``attribute_node`` 为关联边
+        （``主 — 宾``）。Phase 1 不截断，返回全部估算值。
+
+        估算口径 == 渲染口径（铁律一）：关系边经 ``node_map`` 取 **name** 渲染，与
         ``render_facts`` 一致（MUST NOT 用 id，否则 uuid 远长于 name、严重高估）。
 
         Args:
             node: 中心节点
             out_hierarchy: 层级子节点列表
-            out_facts: 出事实边列表
-            in_facts: 入事实边列表（可选，Phase 1 通常不截断）
-            node_map: id→Node 映射（取事实边端点 name）。None 时由中心+层级子节点
+            out_facts: 出关系边列表（property_graph 为 fact、attribute_node 为 assoc）
+            in_facts: 入关系边列表（可选，Phase 1 通常不截断）
+            node_map: id→Node 映射（取关系边端点 name）。None 时由中心+层级子节点
                 构建；Phase 2 接预算时应传入与渲染相同的完整视图 node_map。
+            mode: 关系表示模式（默认 property_graph）
         """
         if node_map is None:
             node_map = {node.id: node}
             for child in out_hierarchy:
                 node_map[child.id] = child
+        est_edge = (
+            self.estimate_assoc_edge
+            if mode == "attribute_node"
+            else self.estimate_fact_edge
+        )
         total = self.estimate_node(node)
         for child in out_hierarchy:
             total += self.estimate_node(child)
         for edge in out_facts:
-            total += self.estimate_fact_edge(edge, node_map)
+            total += est_edge(edge, node_map)
         for edge in (in_facts or []):
-            total += self.estimate_fact_edge(edge, node_map)
+            total += est_edge(edge, node_map)
         return total

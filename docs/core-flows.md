@@ -39,12 +39,19 @@ OUTPUT: 图状态更新 + 已持久化
 
 关系以**两条对向单向边**（`a→b` 与 `b→a`）表达。
 
+> **`relation_model` 分支**：`property_graph`（默认）产带 label 事实边决策；`attribute_node`
+> 产"建属性节点 + 无类型关联边"决策（`create_attribute`，无 label）。
+
 ### ⑤ 图更新（无 LLM）
 
 根据 `DecisionList` 更新图结构：
 - 新建节点 + 挂到 `__seed_root__`（单条下行 `root→concept`）
 - 建立语义边（双向）
 - 合并同义节点
+
+> **按 `relation_model` 分支**：`property_graph` 建事实边；`attribute_node` 建属性节点 +
+> `kind="assoc"` 边。孤儿挂根判定为 `get_facts ∪ get_assoc` 皆空（否则 `attribute_node` 模式
+> `get_facts` 恒空 → 全概念挂 root → 根扁平化破坏不变量）。
 
 ### ⑥ 压缩判定插件链（Compaction）
 
@@ -83,6 +90,9 @@ OUTPUT: List[Node]
 ### ③ 语义理解 Loop
 
 BFS 遍历，从种子节点出发，沿出边扩展邻居。受 `visited`、`max_rounds`、`max_picked` 约束。按 token 预算贪婪扩展全邻居。
+
+> **关系边来源按 `relation_model` 切换**：`property_graph` 取 `get_facts`、`attribute_node`
+> 取 `get_assoc`（含属性节点端点）；遍历机制（visited / 分层分批 / 回退）两模式一致。
 
 ### ④ 仲裁
 

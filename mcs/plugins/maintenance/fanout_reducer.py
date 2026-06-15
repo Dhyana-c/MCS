@@ -273,16 +273,18 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             )
             store.add_node(root)
 
-        # 新概念**仅在"孤儿"（零事实关联）时**挂根（单条下行 root→concept，D6）。
-        # 有事实关联者经字面入口（alias_entry）+ 事实 BFS 可达，不挂根——避免 root
-        # 扁平化、让图成森林。此处在阶段⑥运行，stage⑤ 的事实边已落库，get_facts 准确。
+        # 新概念**仅在"孤儿"（零关系关联）时**挂根（单条下行 root→concept，D6）。
+        # 有关系关联者经字面入口（alias_entry）+ 关系 BFS 可达，不挂根——避免 root
+        # 扁平化、让图成森林。此处在阶段⑥运行，stage⑤ 的关系边已落库，判定准确。
+        # 关系关联 = fact（property_graph）或 assoc（attribute_node）任一；property_graph
+        # 模式下 get_assoc 恒空，等价于原"仅 get_facts"判定（基线零变化）。
         for n in list(changed_nodes):
             if n.id == root.id:
                 continue
             if getattr(n, "role", "concept") != "concept" or not store.get_node(n.id):
                 continue
-            if store.get_facts(n.id):
-                continue  # 有事实关联 → 不挂根
+            if store.get_facts(n.id) or store.get_assoc(n.id):
+                continue  # 有关系关联 → 不挂根
             store.add_edge(root.id, n.id, kind="hierarchy")
 
         # 递归分层（自根向下；进展检查 + max_reorg 双重防死循环）
