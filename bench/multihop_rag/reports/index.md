@@ -9,7 +9,7 @@
 | [doc_rerank_experiment.md](doc_rerank_experiment.md) | 2026-06-02 | 文档级重排实验报告：recall@10 从 0.140 提升到 0.503 |
 | [metrics_1000_full.md](metrics_1000_full.md) | 2026-06-11 | 全量 609 篇 · 1000 query（lexical doc_rerank, T=32k）：hit@10=0.649 |
 | [dual_edge_full_608.md](dual_edge_full_608.md) | 2026-06-14 | dual-edge · 全量 608 篇 · 200 query（llm doc_rerank, T=16k, 概念去重后）：**hit@10=0.770**；含 8 项修复 + 去重 before/after + 成本分析 |
-| [glm_query_179.md](glm_query_179.md) | 2026-06-15 | GLM-5.1 查询侧（同图换 read 模型）· 179/200 query（llm doc_rerank, T=16k, quota 1708/1800）：**hit@10=0.749**；含端点配置文件化 + query 级续跑 + 配额软上限/熔断保护 |
+| [glm_query_200.md](glm_query_200.md) | 2026-06-15 | GLM-5.1 查询侧（同图换 read 模型）· 全量 200 query（llm doc_rerank, T=16k，分两批续跑）：**hit@10=0.765**（vs deepseek 同图 0.770，基本持平；inference 反超 +5.7pp）；含端点配置文件化 + query 级续跑 + 配额软上限/熔断保护 |
 
 ## 指标口径
 
