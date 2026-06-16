@@ -11,6 +11,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from mcs.core.store import StoreInterface
+from mcs.interfaces.priority_scorer import DefaultPriorityScorer
 
 if TYPE_CHECKING:
     from mcs.core.token_budget import TokenBudget
@@ -34,6 +35,8 @@ class InMemoryStore(StoreInterface):
         self._hierarchy_out: dict[str, set[str]] = {}  # source_id -> {target_id}
         self._fact_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}
         self._assoc_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}
+        # 派生优先级打分器（seam，Phase 1 持有但不在 chokepoint 调用，留 Phase 2 接线）
+        self._priority_scorer = DefaultPriorityScorer()
 
     # === 节点 CRUD ===
 
@@ -100,6 +103,7 @@ class InMemoryStore(StoreInterface):
         kind: str = "hierarchy",
         label: str = "",
         priority: float = 0.0,
+        extensions: dict | None = None,
     ) -> str:
         if source_id == target_id:
             return ""
@@ -147,6 +151,7 @@ class InMemoryStore(StoreInterface):
             kind=kind,
             label=label,
             priority=priority,
+            extensions=dict(extensions) if extensions else {},
         )
         self._edges[edge.id] = edge
 
@@ -290,7 +295,10 @@ class InMemoryStore(StoreInterface):
                 nid: dc_replace(n, extensions=dict(n.extensions or {}))
                 for nid, n in self._nodes.items()
             },
-            "edges": {eid: dc_replace(e) for eid, e in self._edges.items()},
+            "edges": {
+                eid: dc_replace(e, extensions=dict(e.extensions or {}))
+                for eid, e in self._edges.items()
+            },
             "hierarchy_out": {k: set(v) for k, v in self._hierarchy_out.items()},
             "fact_by_node": {k: set(v) for k, v in self._fact_by_node.items()},
             "assoc_by_node": {k: set(v) for k, v in self._assoc_by_node.items()},

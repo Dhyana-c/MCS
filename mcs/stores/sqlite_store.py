@@ -21,6 +21,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# 存储库 schema 版本（随库持久化，便于未来迁移判别）。
+SCHEMA_VERSION = "1"
+
+
+class StoreProvenanceError(RuntimeError):
+    """库出处（``relation_model`` 等）与当前配置不一致，拒绝打开以防混库静默损坏。
+
+    宪法：不同 ``relation_model`` 混库为未定义行为，故 ``relation_model`` 不一致是
+    开库唯一的硬拒条件。扩展集变化只告警放行（合法迁移），不抛本异常。
+    """
+
 
 class SQLiteStore(StoreInterface):
     """基于 SQLite 的持久化图存储。
@@ -45,6 +56,12 @@ class SQLiteStore(StoreInterface):
         self._schema_extensions: list = []
         # name -> NodeExtensionInterface 插件，用于 extensions 的保真编解码（D5）
         self._node_extensions: dict[str, Any] = {}
+        # name -> EdgeExtensionInterface 插件，用于边 extensions 的保真编解码（与节点同构）
+        self._edge_extensions: dict[str, Any] = {}
+        # 建库出处（relation_model）；开库校验据此拒绝混库。默认 property_graph
+        self._relation_model: str = "property_graph"
+        # 派生优先级打分器（seam，Phase 1 持有但不在 chokepoint 调用，留 Phase 2 接线）
+        self._priority_scorer: Any = None
         # 内存图数据
         self._nodes: dict[str, Node] = {}
         self._edges: dict[str, Edge] = {}  # edge_id -> Edge
@@ -64,15 +81,35 @@ class SQLiteStore(StoreInterface):
         conn: sqlite3.Connection | None = None,
         schema_extensions: list | None = None,
         node_extensions: dict[str, Any] | None = None,
+        edge_extensions: dict[str, Any] | None = None,
+        relation_model: str | None = None,
+        priority_scorer: Any = None,
     ) -> None:
-        """设置数据库连接和模式扩展。"""
+        """设置数据库连接和模式扩展，并在任何读写前完成出处校验 + 旧库补列。
+
+        ``relation_model`` 不一致 MUST 抛 ``StoreProvenanceError`` 拒绝（防混库）；
+        扩展集变化仅告警放行；旧库无出处时按当前配置补写放行；旧库缺
+        ``extensions_json`` 列时 ``ALTER TABLE`` 补齐（保证放行后可写）。
+        ``priority_scorer`` 为派生优先级 seam（Phase 1 持有但不在 chokepoint 调用）。
+        """
         if conn is not None:
             self.conn = conn
         else:
             self.conn = sqlite3.connect(self.path)
         self._schema_extensions = schema_extensions or []
         self._node_extensions = node_extensions or {}
+        self._edge_extensions = edge_extensions or {}
+        self._relation_model = relation_model or "property_graph"
+        if priority_scorer is not None:
+            self._priority_scorer = priority_scorer
+        elif self._priority_scorer is None:
+            from mcs.interfaces.priority_scorer import DefaultPriorityScorer
+
+            self._priority_scorer = DefaultPriorityScorer()
         self._create_tables(self._schema_extensions)
+        # 任何读写前：补齐旧库附加列 + 校验 / 补写出处（D5）
+        self._ensure_edges_extensions_column()
+        self._validate_or_write_provenance()
 
     def shutdown(self) -> None:
         """关闭数据库连接。"""
@@ -148,6 +185,7 @@ class SQLiteStore(StoreInterface):
         kind: str = "hierarchy",
         label: str = "",
         priority: float = 0.0,
+        extensions: dict | None = None,
     ) -> str:
         if source_id == target_id:
             return ""
@@ -195,6 +233,7 @@ class SQLiteStore(StoreInterface):
             kind=kind,
             label=label,
             priority=priority,
+            extensions=dict(extensions) if extensions else {},
         )
         self._edges[edge.id] = edge
 
@@ -340,7 +379,10 @@ class SQLiteStore(StoreInterface):
                 nid: dc_replace(n, extensions=dict(n.extensions or {}))
                 for nid, n in self._nodes.items()
             },
-            "edges": {eid: dc_replace(e) for eid, e in self._edges.items()},
+            "edges": {
+                eid: dc_replace(e, extensions=dict(e.extensions or {}))
+                for eid, e in self._edges.items()
+            },
             "hierarchy_out": {k: set(v) for k, v in self._hierarchy_out.items()},
             "fact_by_node": {k: set(v) for k, v in self._fact_by_node.items()},
             "assoc_by_node": {k: set(v) for k, v in self._assoc_by_node.items()},
@@ -416,8 +458,10 @@ class SQLiteStore(StoreInterface):
             self._assoc_by_node.setdefault(row[0], set())
 
         for row in self.conn.execute(
-            "SELECT id, source_id, target_id, kind, label, priority FROM edges"
+            "SELECT id, source_id, target_id, kind, label, priority, extensions_json FROM edges"
         ):
+            raw = json.loads(row[6]) if row[6] else {}
+            ext = self._deserialize_extensions(raw, self._edge_extensions)
             edge = Edge(
                 id=row[0],
                 source_id=row[1],
@@ -425,6 +469,7 @@ class SQLiteStore(StoreInterface):
                 kind=row[3] or "hierarchy",
                 label=row[4] or "",
                 priority=row[5] if row[5] is not None else 0.0,
+                extensions=ext,
             )
             self._edges[edge.id] = edge
             if edge.kind == "hierarchy":
@@ -493,9 +538,23 @@ class SQLiteStore(StoreInterface):
             return
         self.conn.execute(
             "INSERT OR REPLACE INTO edges "
-            "(id, source_id, target_id, kind, label, priority) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (edge.id, edge.source_id, edge.target_id, edge.kind, edge.label, edge.priority),
+            "(id, source_id, target_id, kind, label, priority, extensions_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                edge.id,
+                edge.source_id,
+                edge.target_id,
+                edge.kind,
+                edge.label,
+                edge.priority,
+                json.dumps(
+                    self._serialize_extensions(
+                        edge.extensions, self._edge_extensions
+                    ),
+                    default=str,
+                    ensure_ascii=False,
+                ),
+            ),
         )
 
     # === 变更跟踪（增量持久化） ===
@@ -522,11 +581,18 @@ class SQLiteStore(StoreInterface):
         self._dirty_edges.clear()
         self._deleted_edges.clear()
 
-    def _serialize_extensions(self, extensions: dict | None) -> dict:
-        """对带编解码的 NodeExtension 走其 ``serialize()`` 产出 dict。"""
+    def _serialize_extensions(
+        self, extensions: dict | None, plugin_map: dict[str, Any] | None = None
+    ) -> dict:
+        """对带编解码的扩展走其 ``serialize()`` 产出 dict。
+
+        ``plugin_map`` 默认 ``self._node_extensions``（节点路径零变化）；
+        边扩展传入 ``self._edge_extensions`` 复用同一保真编解码路径。
+        """
+        plugins = plugin_map if plugin_map is not None else self._node_extensions
         out: dict = {}
         for key, value in (extensions or {}).items():
-            ext = self._node_extensions.get(key)
+            ext = plugins.get(key)
             if ext is not None:
                 try:
                     out[key] = ext.serialize(value)
@@ -538,11 +604,17 @@ class SQLiteStore(StoreInterface):
             out[key] = value
         return out
 
-    def _deserialize_extensions(self, raw: dict | None) -> dict:
-        """对带编解码的 NodeExtension 走其 ``deserialize()`` 还原结构化记录。"""
+    def _deserialize_extensions(
+        self, raw: dict | None, plugin_map: dict[str, Any] | None = None
+    ) -> dict:
+        """对带编解码的扩展走其 ``deserialize()`` 还原结构化记录。
+
+        ``plugin_map`` 默认 ``self._node_extensions``；边扩展传入 ``self._edge_extensions``。
+        """
+        plugins = plugin_map if plugin_map is not None else self._node_extensions
         out: dict = {}
         for key, value in (raw or {}).items():
-            ext = self._node_extensions.get(key)
+            ext = plugins.get(key)
             if ext is not None:
                 try:
                     out[key] = ext.deserialize(value)
@@ -577,23 +649,138 @@ class SQLiteStore(StoreInterface):
                 target_id TEXT NOT NULL,
                 kind TEXT NOT NULL DEFAULT 'hierarchy',
                 label TEXT NOT NULL DEFAULT '',
-                priority REAL NOT NULL DEFAULT 0.0
+                priority REAL NOT NULL DEFAULT 0.0,
+                extensions_json TEXT
             )
         """
         idx_source_sql = "CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_id)"
         idx_target_sql = "CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_id)"
+        meta_sql = """
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """
 
         cursor = self.conn.cursor()
         cursor.execute(nodes_sql)
         cursor.execute(edges_sql)
         cursor.execute(idx_source_sql)
         cursor.execute(idx_target_sql)
+        cursor.execute(meta_sql)
 
         for ext in schema_extensions:
             for _name, sql in (ext.auxiliary_tables() or {}).items():
                 cursor.executescript(sql)
 
         self.conn.commit()
+
+    # === 出处（provenance）与旧库补列 ===
+
+    def _ensure_edges_extensions_column(self) -> None:
+        """旧库 ``edges`` 表无 ``extensions_json`` 列时补齐（让放行后可写）。
+
+        ``CREATE TABLE IF NOT EXISTS`` 对既存表是 no-op、不会追加新列；故开库 MUST
+        显式检测并 ``ALTER TABLE ... ADD COLUMN``（附加列、SQLite 下 O(1)、安全）。
+        """
+        if self.conn is None:
+            return
+        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(edges)")}
+        if "extensions_json" not in cols:
+            self.conn.execute("ALTER TABLE edges ADD COLUMN extensions_json TEXT")
+            self.conn.commit()
+
+    def _read_meta_all(self) -> dict[str, str]:
+        """读取 ``meta`` 表全部键值；表不存在 / 空返回 ``{}``。"""
+        if self.conn is None:
+            return {}
+        try:
+            return {
+                row[0]: row[1]
+                for row in self.conn.execute("SELECT key, value FROM meta")
+            }
+        except sqlite3.Error:
+            return {}
+
+    def _has_graph_data(self) -> bool:
+        """库是否已存有节点 / 边数据（用于区分"真旧库"与"全新空库"）。"""
+        if self.conn is None:
+            return False
+        try:
+            n = self.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+            e = self.conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+            return (n + e) > 0
+        except sqlite3.Error:
+            return False
+
+    def _write_provenance(self, relation_model: str, ext_names: list[str]) -> None:
+        """写入 / 覆盖出处元信息（``relation_model`` / ``schema_version`` / ``extensions``）。"""
+        if self.conn is None:
+            return
+        self.conn.executemany(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            [
+                ("relation_model", relation_model),
+                ("schema_version", SCHEMA_VERSION),
+                ("extensions", json.dumps(ext_names, ensure_ascii=False)),
+            ],
+        )
+        self.conn.commit()
+
+    @staticmethod
+    def _parse_ext_set(raw: str | None) -> set[str]:
+        """从 meta 的 ``extensions`` 串还原扩展名集合；损坏返回空集。"""
+        if not raw:
+            return set()
+        try:
+            val = json.loads(raw)
+            return {str(x) for x in val} if isinstance(val, list) else set()
+        except (ValueError, TypeError):
+            return set()
+
+    def _current_ext_names(self) -> list[str]:
+        """当前已挂扩展名集（点 + 边扩展 ``get_name()`` 排序序列化）。"""
+        return sorted(set(self._node_extensions) | set(self._edge_extensions))
+
+    def _validate_or_write_provenance(self) -> None:
+        """开库出处校验三态（MUST 先于任何读写）。
+
+        - ``relation_model`` 不一致 → 抛 ``StoreProvenanceError`` 拒绝（唯一硬拒）；
+        - 出处缺失（旧库 / 空库）→ 按当前配置补写；旧库有数据时记 WARNING 放行；
+        - 扩展名集变化 → 记 WARNING、刷新为当前集、放行（合法迁移，新字段取默认）。
+        """
+        ext_names = self._current_ext_names()
+        stored = self._read_meta_all()
+        stored_model = stored.get("relation_model")
+
+        if stored_model is None:
+            # 旧库无出处（或全新空库）：按当前配置补写；真旧库（有数据）告警
+            self._write_provenance(self._relation_model, ext_names)
+            if self._has_graph_data():
+                logger.warning(
+                    "打开无出处元信息的旧库（legacy），已按当前配置 "
+                    "relation_model=%s 补写 provenance 放行。",
+                    self._relation_model,
+                )
+            return
+
+        # relation_model 不一致 → 硬拒（防混库静默损坏）
+        if stored_model != self._relation_model:
+            raise StoreProvenanceError(
+                f"库出处 relation_model={stored_model!r} 与当前配置 "
+                f"{self._relation_model!r} 不一致；混库为未定义行为，拒绝打开。"
+            )
+
+        # 扩展名集变化 → 仅告警、刷新为当前集、放行
+        stored_ext = self._parse_ext_set(stored.get("extensions"))
+        current_ext = set(ext_names)
+        if stored_ext != current_ext:
+            logger.warning(
+                "库出处扩展集 %s 与当前配置 %s 不一致（合法迁移，新字段取默认、"
+                "旧 orphan 字段被忽略），已刷新为当前集并放行。",
+                sorted(stored_ext), sorted(current_ext),
+            )
+            self._write_provenance(self._relation_model, ext_names)
 
     # === 内部边操作 ===
 

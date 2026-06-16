@@ -25,6 +25,11 @@ def get_phase1_plugin_registry() -> dict[str, type["Plugin"]]:
       - `rerank`, `community_merger`（opt-in，不入默认链）
 
     注意：`sqlite_storage` 不是插件，是 Store 配置项，不在此注册表中。
+
+    边扩展（``EdgeExtensionInterface``，``PluginType.EDGE_EXTENSION``）与派生优先级
+    打分器（``PriorityScorer``）为 opt-in：Phase1 默认插件集**不**挂边扩展（基线零变化）；
+    用户实现的边扩展经此注册表登记后，``MCSBuilder.build()`` 会按名自动收集并以
+    name→plugin 传给 store（与节点扩展对称）。默认 scorer 由 builder 注入（Phase 1 固定 0.0）。
     """
     from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
     from mcs.plugins.index.alias_index import AliasEntryPlugin, AliasIndexPlugin

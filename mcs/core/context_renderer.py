@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginManager
     from mcs.entities.graph import Edge, Node
+    from mcs.interfaces.edge_extension import EdgeExtensionInterface
     from mcs.interfaces.node_extension import NodeExtensionInterface
 
 
@@ -64,6 +65,14 @@ class ContextRenderer:
         from mcs.core.plugin import PluginType
 
         return self.plugin_manager.get_all(PluginType.NODE_EXTENSION)  # type: ignore[return-value]
+
+    def _get_edge_extensions(self) -> list[EdgeExtensionInterface]:
+        """返回所有已注册的 EdgeExtension 插件（去重）。"""
+        if self.plugin_manager is None:
+            return []
+        from mcs.core.plugin import PluginType
+
+        return self.plugin_manager.get_all(PluginType.EDGE_EXTENSION)  # type: ignore[return-value]
 
     @staticmethod
     def get_summary(node: Node) -> str:
@@ -181,23 +190,31 @@ class ContextRenderer:
             if mode == "attribute_node"
             else ContextRenderer.render_fact_edge
         )
+        edge_extensions = self._get_edge_extensions()
         for edge in edges:
-            rendered = render_edge(edge, node_map)
+            rendered = render_edge(edge, node_map, edge_extensions, purpose)
             lines.append(f"{idx}. {rendered}")
             idx += 1
 
         return "\n".join(lines)
 
     @staticmethod
-    def render_fact_edge(edge: Edge, node_map: dict[str, Node] | None = None) -> str:
+    def render_fact_edge(
+        edge: Edge,
+        node_map: dict[str, Node] | None = None,
+        extensions: list[EdgeExtensionInterface] | None = None,
+        purpose: str = "select_facts",
+    ) -> str:
         """渲染单条事实边为 `主 —label→ 宾` 格式。
 
-        用于 token 估算（铁律一）和 render_facts 内部。
+        用于 token 估算（查询侧一致性）和 render_facts 内部。
         与 render_facts 中的事实边条目格式完全一致。
 
         Args:
             edge: 事实边
             node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
+            extensions: 边扩展插件列表（``render(edge, purpose)`` 非 None 的片段追加到边文本）
+            purpose: LLM 目的（默认 ``select_facts``；按 purpose 切换边扩展可见性）
         """
         label = getattr(edge, "label", "") or ""
         if node_map:
@@ -206,14 +223,27 @@ class ContextRenderer:
         else:
             src_name = edge.source_id
             tgt_name = edge.target_id
-        return f"{src_name} —{label}→ {tgt_name}"
+        parts = [f"{src_name} —{label}→ {tgt_name}"]
+        ContextRenderer._append_edge_extension_parts(parts, edge, extensions, purpose)
+        return "\n".join(parts)
 
     @staticmethod
-    def render_assoc_edge(edge: Edge, node_map: dict[str, Node] | None = None) -> str:
+    def render_assoc_edge(
+        edge: Edge,
+        node_map: dict[str, Node] | None = None,
+        extensions: list[EdgeExtensionInterface] | None = None,
+        purpose: str = "select_facts",
+    ) -> str:
         """渲染单条无类型关联边为 `主 — 宾` 格式（**无 label**）。
 
-        用于 token 估算（铁律一）和 ``attribute_node`` 模式的 ``render_facts`` 内部。
+        用于 token 估算（查询侧一致性）和 ``attribute_node`` 模式的 ``render_facts`` 内部。
         与 ``render_facts`` 中关联边条目格式完全一致。
+
+        Args:
+            edge: 关联边（kind="assoc"）
+            node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
+            extensions: 边扩展插件列表（可见片段追加到边文本）
+            purpose: LLM 目的（默认 ``select_facts``；按 purpose 切换可见性）
         """
         if node_map:
             src_name = node_map[edge.source_id].name if edge.source_id in node_map else edge.source_id
@@ -221,4 +251,29 @@ class ContextRenderer:
         else:
             src_name = edge.source_id
             tgt_name = edge.target_id
-        return f"{src_name} — {tgt_name}"
+        parts = [f"{src_name} — {tgt_name}"]
+        ContextRenderer._append_edge_extension_parts(parts, edge, extensions, purpose)
+        return "\n".join(parts)
+
+    @staticmethod
+    def _append_edge_extension_parts(
+        parts: list[str],
+        edge: Edge,
+        extensions: list[EdgeExtensionInterface] | None,
+        purpose: str,
+    ) -> None:
+        """把边扩展在该 purpose 下的可见片段（``render`` 非 None）追加到 ``parts``。
+
+        返回 ``None`` 的扩展在此 purpose 下隐藏、不进渲染文本（字段级可见性判定规则，
+        与 ``NodeExtensionInterface.render`` 一致）。
+        """
+        if not extensions:
+            return
+        for ext in extensions:
+            try:
+                fragment = ext.render(edge, purpose)
+            except Exception:
+                # 扩展渲染失败不应破坏整条边渲染；静默跳过（与节点扩展一致）。
+                continue
+            if fragment:
+                parts.append(f"  {fragment}")

@@ -62,11 +62,13 @@ class StoreInterface(ABC):
         kind: str = "hierarchy",
         label: str = "",
         priority: float = 0.0,
+        extensions: dict | None = None,
     ) -> str:
         """添加有向边 ``source → target``，返回边 id。
 
         kind MUST 为 "hierarchy"、"fact" 或 "assoc"。
         事实边 label MUST 非空；层级边 / 关联边 label MUST 为空串。
+        ``extensions`` 为边扩展槽（与 ``Node.extensions`` 对称），落到 ``Edge.extensions``。
         """
         ...
 

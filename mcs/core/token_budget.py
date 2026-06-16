@@ -93,31 +93,53 @@ class TokenBudget:
         return self.T * 2
 
     def estimate_fact_edge(
-        self, edge: Edge, node_map: dict[str, Node] | None = None
+        self,
+        edge: Edge,
+        node_map: dict[str, Node] | None = None,
+        extensions: list | None = None,
+        purpose: str = "select_facts",
     ) -> int:
-        """估算单条事实边的渲染 token（铁律一：与 render_fact_edge 同口径）。
+        """估算单条事实边的渲染 token（查询侧一致性：与 render_fact_edge 同口径）。
+
+        委托 ``render_fact_edge`` 取文本后估算（**不另开估算公式 / 路径**），随渲染签名
+        透传 ``extensions`` / ``purpose``，使可见扩展片段在渲染 / 估算两侧一致。
 
         Args:
             edge: 事实边
             node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
+            extensions: 边扩展插件列表（可见片段计入估算）
+            purpose: LLM 目的（默认 ``select_facts``；按 purpose 切换可见性）
         """
         from mcs.core.context_renderer import ContextRenderer
 
-        rendered = ContextRenderer.render_fact_edge(edge, node_map)
+        rendered = ContextRenderer.render_fact_edge(
+            edge, node_map, extensions, purpose
+        )
         return self.estimate(rendered)
 
     def estimate_assoc_edge(
-        self, edge: Edge, node_map: dict[str, Node] | None = None
+        self,
+        edge: Edge,
+        node_map: dict[str, Node] | None = None,
+        extensions: list | None = None,
+        purpose: str = "select_facts",
     ) -> int:
-        """估算单条无类型关联边的渲染 token（铁律一：与 render_assoc_edge 同口径）。
+        """估算单条无类型关联边的渲染 token（查询侧一致性：与 render_assoc_edge 同口径）。
+
+        委托 ``render_assoc_edge`` 取文本后估算（**不另开估算公式 / 路径**），随渲染签名
+        透传 ``extensions`` / ``purpose``。
 
         Args:
             edge: 关联边（kind="assoc"）
             node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
+            extensions: 边扩展插件列表（可见片段计入估算）
+            purpose: LLM 目的（默认 ``select_facts``）
         """
         from mcs.core.context_renderer import ContextRenderer
 
-        rendered = ContextRenderer.render_assoc_edge(edge, node_map)
+        rendered = ContextRenderer.render_assoc_edge(
+            edge, node_map, extensions, purpose
+        )
         return self.estimate(rendered)
 
     def estimate_active_view(

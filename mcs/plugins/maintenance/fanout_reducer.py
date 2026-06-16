@@ -688,6 +688,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             store.add_edge(
                 new_source, new_target,
                 kind=edge.kind, label=edge.label, priority=edge.priority,
+                extensions=dict(edge.extensions or {}),
             )
 
     def _validate_reorg(

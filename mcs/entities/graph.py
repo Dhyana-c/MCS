@@ -36,6 +36,12 @@ class Edge:
         带 priority（为遗忘预留）；一条事实只存一份，但两端邻接都索引到它。
       - 关联边 (kind="assoc")：仅 ``attribute_node`` 模式，无 label、表"相关/共现"，
         关系语义由属性节点 content 承载；一条只存一份、两端邻接都索引到它。
+
+    ``extensions`` 与 ``Node.extensions`` 对称：插件经 ``EdgeExtensionInterface``
+    向其挂载字段（创建时间、活跃数等 Phase 2 字段），逐条随边保真存取 / 反查 / 重组。
+
+    ``priority`` 的**目标态**为派生值——Phase 2 由 ``PriorityScorer`` 从扩展字段算出、
+    非写入方权威原语；Phase 1 仅留默认 ``0.0``（``edges.priority`` 列作 Phase 2 派生值缓存）。
     """
 
     source_id: str
@@ -43,7 +49,8 @@ class Edge:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     kind: str = "hierarchy"  # "hierarchy" | "fact" | "assoc"
     label: str = ""  # fact 边 MUST 非空；hierarchy / assoc 边 MUST 为空串
-    priority: float = 0.0  # Phase 1 仅留字段；Phase 2 用于排序/截断
+    priority: float = 0.0  # 派生值（Phase 2 经 scorer 算）；Phase 1 默认 0.0
+    extensions: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

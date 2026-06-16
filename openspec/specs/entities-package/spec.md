@@ -20,12 +20,17 @@ The system SHALL maintain a dedicated `mcs.entities` package that holds all pure
 
 ### Requirement: 实体模块内容
 
-The system SHALL expose the pure data models in `mcs.entities` with field-for-field identical content to their pre-refactor definitions.
+The system SHALL expose the pure data models in `mcs.entities`. `Edge` SHALL gain an `extensions: dict[str, Any]` field (default empty dict), 与 `Node.extensions` 对称，供 `EdgeExtensionInterface` 插件挂载字段；其余实体字段不变。
 
 #### Scenario: graph 模块导出图数据类
 
 - **WHEN** 加载 `mcs.entities.graph`
-- **THEN** 存在 `Node` dataclass（字段 `id, name, content, role, extensions`）、`Edge` dataclass（字段 `source_id, target_id, id, kind, label, priority`）、`Subgraph` dataclass（字段 `focus_id, nodes, edges`）
+- **THEN** 存在 `Node` dataclass（字段 `id, name, content, role, extensions`）、`Edge` dataclass（字段 `source_id, target_id, id, kind, label, priority, extensions`）、`Subgraph` dataclass（字段 `focus_id, nodes, edges`）
+
+#### Scenario: Edge.extensions 默认空字典
+
+- **WHEN** 不传 `extensions` 构造 `Edge`
+- **THEN** `edge.extensions` MUST 为独立空字典（`default_factory=dict`，各实例不共享）
 
 #### Scenario: decisions 模块导出管线数据类
 

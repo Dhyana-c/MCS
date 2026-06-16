@@ -35,6 +35,7 @@ class PluginType(str, Enum):
     INDEX = "index"
     LLM = "llm"
     NODE_EXTENSION = "node_extension"
+    EDGE_EXTENSION = "edge_extension"
     STORAGE_SCHEMA_EXT = "storage_schema_ext"
     MAINTENANCE = "maintenance"
 

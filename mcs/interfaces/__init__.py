@@ -3,7 +3,9 @@
 参见 architecture.md §3。
 """
 
+from mcs.interfaces.edge_extension import EdgeExtensionInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
+from mcs.interfaces.priority_scorer import DefaultPriorityScorer, PriorityScorer
 from mcs.interfaces.query_preprocess_plugin import QueryPreprocessPluginInterface
 from mcs.interfaces.seed_selector_plugin import SeedSelectorPluginInterface
 from mcs.interfaces.write_preprocess_plugin import WritePreprocessPluginInterface
@@ -17,4 +19,7 @@ __all__ = [
     "PreprocessPluginInterface",  # 废弃，保留向后兼容
     "PostprocessPluginInterface",
     "SeedSelectorPluginInterface",
+    "EdgeExtensionInterface",
+    "PriorityScorer",
+    "DefaultPriorityScorer",
 ]

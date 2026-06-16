@@ -66,6 +66,7 @@ class MCSBuilder(ABC):
         from mcs.core.query_engine import QueryEngine
         from mcs.core.token_budget import TokenBudget
         from mcs.core.write_pipeline import WritePipeline
+        from mcs.interfaces.priority_scorer import DefaultPriorityScorer
         from mcs.stores.in_memory import InMemoryStore
         from mcs.stores.sqlite_store import SQLiteStore
 
@@ -90,9 +91,16 @@ class MCSBuilder(ABC):
                 p.get_name(): p
                 for p in write_manager.get_all(PluginType.NODE_EXTENSION)
             }
+            edge_exts = {
+                p.get_name(): p
+                for p in write_manager.get_all(PluginType.EDGE_EXTENSION)
+            }
             store.initialize(
                 schema_extensions=schema_exts,
                 node_extensions=node_exts,
+                edge_extensions=edge_exts,
+                relation_model=self.config.relation_model,
+                priority_scorer=DefaultPriorityScorer(),
             )
 
         # 6. 创建 ContextRenderer（传入 read_manager）
