@@ -19,10 +19,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Edge, Node
     from mcs.core.plugin_manager import PluginManager
     from mcs.core.store import StoreInterface
     from mcs.core.token_budget import TokenBudget
+    from mcs.entities.graph import Edge, Node
     from mcs.interfaces.llm import LLMInterface
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ class QueryEngine:
         返回最后一个后处理插件的输出；如果没有后处理插件转换类型，
         则返回 ``Subgraph``（nodes + 选中事实边 edges）。
         """
-        from mcs.core.graph import Subgraph
+        from mcs.entities.graph import Subgraph
 
         ctx = QueryContext(
             system_prompt=self.system_prompt,
@@ -505,8 +505,8 @@ class QueryEngine:
         返回的 ``List[Node]`` 自动重建为 ``Subgraph``。
         无后置插件时返回原始 Subgraph。
         """
-        from mcs.core.graph import Node, Subgraph
         from mcs.core.plugin import PluginType
+        from mcs.entities.graph import Node, Subgraph
 
         plugins = self.plugin_manager.get_all(PluginType.POSTPROCESS)
         if not plugins:

@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mcs.core.config import MCSConfig
     from mcs.core.plugin import Plugin
+    from mcs.entities.config import MCSConfig
 
 
 def get_phase1_plugin_registry() -> dict[str, type["Plugin"]]:
@@ -75,7 +75,7 @@ class Phase1Builder:
 
     用法：
         from mcs.presets import Phase1Builder
-        from mcs.core.config import MCSConfig
+        from mcs.entities.config import MCSConfig
 
         config = MCSConfig.knowledge_graph(write_llm="ollama", read_llm="deepseek")
         builder = Phase1Builder(config)
@@ -159,7 +159,7 @@ def create_mcs(
         # 读写不同模型
         mcs = create_mcs(write_llm="ollama", read_llm="deepseek", db_path="test.db")
     """
-    from mcs.core.config import MCSConfig
+    from mcs.entities.config import MCSConfig
 
     # 处理 llm 共用参数
     if llm is not None:

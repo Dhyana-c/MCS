@@ -12,8 +12,8 @@ from __future__ import annotations
 import json
 import logging
 
-from mcs.core.decisions import ConceptDraft
 from mcs.core.errors import LLMParseError
+from mcs.entities.decisions import ConceptDraft
 from mcs.utils.text_utils import salvage_json_array, strip_json_fence
 
 logger = logging.getLogger(__name__)

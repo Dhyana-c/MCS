@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
     from mcs.core.store import StoreInterface
+    from mcs.entities.graph import Node
 
 
 class CompactionPluginInterface(Plugin):

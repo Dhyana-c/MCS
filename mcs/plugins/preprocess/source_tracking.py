@@ -21,10 +21,10 @@ from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
 from mcs.interfaces.write_preprocess_plugin import WritePreprocessPluginInterface
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.store import StoreInterface
     from mcs.core.write_pipeline import WriteContext
+    from mcs.entities.graph import Node
 
 
 @dataclass

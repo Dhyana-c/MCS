@@ -122,7 +122,11 @@ class MCSConfig:
         if relation_model == "attribute_node":
             from mcs.prompts.judge_relations_attr import (
                 SYSTEM_PROMPT as _attr_system,
+            )
+            from mcs.prompts.judge_relations_attr import (
                 USER_TEMPLATE as _attr_template,
+            )
+            from mcs.prompts.judge_relations_attr import (
                 parse as _attr_parse,
             )
             prompt_overrides["judge_relations"] = {

@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 from mcs.core.store import StoreInterface
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Edge, Node, Subgraph
     from mcs.core.token_budget import TokenBudget
+    from mcs.entities.graph import Edge, Node, Subgraph
 
 
 class InMemoryStore(StoreInterface):
@@ -106,7 +106,7 @@ class InMemoryStore(StoreInterface):
         if source_id not in self._nodes or target_id not in self._nodes:
             return ""
 
-        from mcs.core.graph import Edge
+        from mcs.entities.graph import Edge
 
         # 层级边去重：同一对节点只允许一条 hierarchy 边
         if kind == "hierarchy":
@@ -231,7 +231,7 @@ class InMemoryStore(StoreInterface):
     def get_subgraph(
         self, node_id: str, token_budget: TokenBudget | None = None
     ) -> Subgraph:
-        from mcs.core.graph import Subgraph
+        from mcs.entities.graph import Subgraph
 
         sub = Subgraph(focus_id=node_id)
         focus = self._nodes.get(node_id)

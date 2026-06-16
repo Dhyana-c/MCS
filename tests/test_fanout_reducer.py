@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-from mcs.core.decisions import Community, MultiHubDecision
-from mcs.core.graph import Node
 from mcs.core.token_budget import TokenBudget
+from mcs.entities.decisions import Community, MultiHubDecision
+from mcs.entities.graph import Node
 from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
 from mcs.stores.in_memory import InMemoryStore
 

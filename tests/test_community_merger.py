@@ -1,7 +1,8 @@
 """Unit tests for CommunityMerger plugin."""
 
 import pytest
-from mcs.core.graph import Node
+
+from mcs.entities.graph import Node
 from mcs.plugins.index.community_merger import CommunityMergerPlugin
 from mcs.stores.in_memory import InMemoryStore
 

@@ -7,8 +7,8 @@ from typing import Any
 import pytest
 
 from mcs.core.context_renderer import ContextRenderer
-from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginManager
+from mcs.entities.graph import Node
 from mcs.interfaces.node_extension import NodeExtensionInterface
 
 

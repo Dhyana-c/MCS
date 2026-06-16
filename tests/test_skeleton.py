@@ -5,7 +5,7 @@
 (a) 所有 ``mcs.*`` 子包和模块可导入。
 (b) 带抽象方法的接口直接实例化时抛出 ``TypeError``。
 (c) ``Source`` 数据类位于 ``mcs.plugins.preprocess.source_tracking``，
-    而非 ``mcs.core.graph``。
+    而非 ``mcs.entities.graph``。
 (d) Phase 1 插件类的 ``name`` 类属性与设计一致。
 (e) 结构健全性（Node 字段、QueryContext / WriteContext 字段、
     默认配置插件、ContextRenderer.get_summary 回退行为）。
@@ -21,14 +21,16 @@ import pytest
 # 在全新检出时必须可导入的模块。
 ALL_MODULES = [
     "mcs",
+    # entities (纯数据模型：graph / decisions / config)
+    "mcs.entities",
+    "mcs.entities.graph",
+    "mcs.entities.decisions",
+    "mcs.entities.config",
     # core
     "mcs.core",
     "mcs.core.builder",
-    "mcs.core.config",
     "mcs.core.context_renderer",
-    "mcs.core.decisions",
     "mcs.core.errors",
-    "mcs.core.graph",
     "mcs.core.mcs",
     "mcs.core.plugin_manager",
     "mcs.core.query_engine",
@@ -104,6 +106,7 @@ def test_module_importable(module_path: str) -> None:
 
 def test_abc_interfaces_not_instantiable() -> None:
     """带抽象方法的接口不能直接实例化。"""
+    from mcs.core.store import StoreInterface
     from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
     from mcs.interfaces.compaction_plugin import CompactionPluginInterface
     from mcs.interfaces.entry_plugin import EntryPluginInterface
@@ -114,7 +117,6 @@ def test_abc_interfaces_not_instantiable() -> None:
     from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
     from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
     from mcs.interfaces.trim_plugin import TrimPluginInterface
-    from mcs.core.store import StoreInterface
 
     for interface_cls in [
         ArbitrationPluginInterface,
@@ -141,10 +143,10 @@ def test_source_lives_in_plugin_not_core() -> None:
 
     assert Source is not None
 
-    import mcs.core.graph as core_graph
+    import mcs.entities.graph as core_graph
 
     assert not hasattr(core_graph, "Source"), (
-        "Source 不能从 mcs.core.graph 导出"
+        "Source 不能从 mcs.entities.graph 导出"
         "（它属于 SourceTrackingPlugin）。"
     )
 
@@ -154,6 +156,7 @@ def test_source_lives_in_plugin_not_core() -> None:
 
 def test_plugin_names_match_design() -> None:
     """每个 Phase 1 插件类都有默认配置和测试所期望的 ``get_name()`` 方法。"""
+    from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
     from mcs.plugins.index.alias_index import (
         AliasEntryPlugin,
         AliasIndexPlugin,
@@ -161,14 +164,13 @@ def test_plugin_names_match_design() -> None:
     from mcs.plugins.llm.claude_llm import ClaudeLLMPlugin
     from mcs.plugins.llm.deepseek_llm import DeepSeekLLMPlugin
     from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
-    from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
-    from mcs.plugins.trim.priority_trim import PriorityTrimPlugin
+    from mcs.plugins.maintenance.summary_regen import SummaryRegenPlugin
+    from mcs.plugins.postprocess.summary import SummaryPlugin
     from mcs.plugins.preprocess.source_tracking import (
         IdempotencyCheckPlugin,
         SourceTrackingPlugin,
     )
-    from mcs.plugins.postprocess.summary import SummaryPlugin
-    from mcs.plugins.maintenance.summary_regen import SummaryRegenPlugin
+    from mcs.plugins.trim.priority_trim import PriorityTrimPlugin
 
     assert AliasIndexPlugin().get_name() == "alias_index"
     assert AliasEntryPlugin().get_name() == "alias_entry"
@@ -196,7 +198,7 @@ def test_alias_entry_plugin_priority() -> None:
 
 
 def test_node_has_only_minimal_core_fields() -> None:
-    from mcs.core.graph import Node
+    from mcs.entities.graph import Node
 
     field_names = {f.name for f in fields(Node)}
     expected = {"id", "name", "content", "role", "extensions"}
@@ -245,7 +247,7 @@ def test_write_context_has_7_lifecycle_fields() -> None:
 
 def test_decision_action_types() -> None:
     """Decision 数据类必须接受四种文档化的 action 类型。"""
-    from mcs.core.decisions import ConceptDraft, Decision
+    from mcs.entities.decisions import ConceptDraft, Decision
 
     c = ConceptDraft(name="X", content="...")
     Decision(action="merge", concept=c, target_id="n1")
@@ -256,11 +258,11 @@ def test_decision_action_types() -> None:
 
 def test_default_phase1_config_plugins() -> None:
     """默认 Phase 1 插件列表符合 phase1-defaults 规范。"""
-    from mcs.core.config import (
+    from mcs.entities.config import (
         PHASE1_DEFAULT_PLUGINS,
+        PHASE1_READ_PLUGINS,
         PHASE1_SHARED_PLUGINS,
         PHASE1_WRITE_PLUGINS,
-        PHASE1_READ_PLUGINS,
         MCSConfig,
     )
 
@@ -296,7 +298,7 @@ def test_default_phase1_config_plugins() -> None:
 def test_context_renderer_get_summary_fallback() -> None:
     """ContextRenderer.get_summary：读取 extension；回退到 content[:200]。"""
     from mcs.core.context_renderer import ContextRenderer
-    from mcs.core.graph import Node
+    from mcs.entities.graph import Node
 
     node = Node(id="n1", name="X", content="hello world", role="concept")
     assert ContextRenderer.get_summary(node) == "hello world"
@@ -335,8 +337,8 @@ def test_default_prompts_has_9_purposes() -> None:
 def test_plugin_manager_arbitration_singleton() -> None:
     """注册第二个 ArbitrationPlugin 必须抛出 ConfigurationError。"""
     from mcs.core.errors import ConfigurationError
-    from mcs.core.plugin_manager import PluginManager
     from mcs.core.plugin import PluginType
+    from mcs.core.plugin_manager import PluginManager
     from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
 
     class FakeArb(ArbitrationPluginInterface):
@@ -358,8 +360,8 @@ def test_plugin_manager_arbitration_singleton() -> None:
 
 def test_plugin_manager_entry_plugin_priority_sort() -> None:
     """get_all(PluginType.ENTRY) 返回按优先级排序的列表。"""
-    from mcs.core.plugin_manager import PluginManager
     from mcs.core.plugin import PluginType
+    from mcs.core.plugin_manager import PluginManager
     from mcs.interfaces.entry_plugin import EntryPluginInterface
 
     class FakeEntry(EntryPluginInterface):

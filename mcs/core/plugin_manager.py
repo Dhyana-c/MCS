@@ -12,10 +12,10 @@ from mcs.core.errors import ConfigurationError
 from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
-    from mcs.core.config import MCSConfig
     from mcs.core.context_renderer import ContextRenderer
     from mcs.core.store import StoreInterface
     from mcs.core.token_budget import TokenBudget
+    from mcs.entities.config import MCSConfig
 
 
 @dataclass

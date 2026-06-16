@@ -5,13 +5,13 @@ import sqlite3
 
 import pytest
 
-from mcs.core.graph import Node
 from mcs.diagnostics.graph_quality import diagnose_graph
+from mcs.entities.graph import Node
 from mcs.plugins.preprocess.cross_doc_linker import (
     cross_doc_link_pass,
     cross_doc_link_pass_from_db,
-    find_cross_doc_candidates_by_name,
     find_cross_doc_candidates_by_alias,
+    find_cross_doc_candidates_by_name,
     load_graph_from_db,
     persist_new_edges,
 )

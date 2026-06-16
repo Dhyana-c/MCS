@@ -12,8 +12,8 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Edge, Node, Subgraph
     from mcs.core.token_budget import TokenBudget
+    from mcs.entities.graph import Edge, Node, Subgraph
 
 
 class StoreInterface(ABC):

@@ -17,9 +17,9 @@ from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import Edge, Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.store import StoreInterface
+    from mcs.entities.graph import Edge, Node
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +264,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         提/建中间 hub、把全部子节点重挂到 hub 下，直至每层扇出 ≤ 窗口（或达
         max_reorg 上限）；4) 把根 + 新增/改动的 hub 追加进 ``changed_nodes``。
         """
-        from mcs.core.graph import Node
+        from mcs.entities.graph import Node
 
         root = store.get_node(SEED_ROOT_ID)
         if root is None:
@@ -550,7 +550,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         Returns:
             新建的 hub 节点列表
         """
-        from mcs.core.decisions import MultiHubDecision
+        from mcs.entities.decisions import MultiHubDecision
         from mcs.prompts.decide_hub import validate_and_repair
 
         # 保存回滚状态（整体快照：保留边 id + 变更跟踪集，回滚不污染持久化）
@@ -751,7 +751,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         - merge：找到第一个成员作为代表，提拔为 hub
         - summarize：新建概括性 hub
         """
-        from mcs.core.graph import Node as GraphNode
+        from mcs.entities.graph import Node as GraphNode
 
         strategy = getattr(community, "strategy", "summarize")
 

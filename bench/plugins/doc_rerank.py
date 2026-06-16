@@ -21,7 +21,7 @@ from mcs.plugins.postprocess.rerank import _tokenize
 from mcs.utils.tokenizer import ChineseTokenizer
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
+    from mcs.entities.graph import Node
 
 logger = logging.getLogger(__name__)
 

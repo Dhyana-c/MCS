@@ -55,17 +55,8 @@ class Subgraph:
     edges: list[Edge] = field(default_factory=list)
 
 
-# Re-export StoreInterface for convenience (core dependency)
-from mcs.core.store import StoreInterface  # noqa: E402
-
-# Backward compatibility aliases
-GraphStoreInterface = StoreInterface
-
 __all__ = [
     "Node",
     "Edge",
     "Subgraph",
-    "StoreInterface",
-    # Backward compatibility
-    "GraphStoreInterface",
 ]

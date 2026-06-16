@@ -20,16 +20,16 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from mcs.core.decisions import ConceptDraft, Decision, DecisionList
 from mcs.core.errors import InvalidDecisionError, UnknownActionError
+from mcs.entities.decisions import ConceptDraft, Decision, DecisionList
 
 if TYPE_CHECKING:
-    from mcs.core.config import MCSConfig
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginManager
     from mcs.core.query_engine import QueryEngine
     from mcs.core.store import StoreInterface
     from mcs.core.token_budget import TokenBudget
+    from mcs.entities.config import MCSConfig
+    from mcs.entities.graph import Node
     from mcs.interfaces.llm import LLMInterface
 
 
@@ -406,7 +406,7 @@ class WritePipeline:
         故该模式下跳过 ``edges_to``——核心代码自洽保证"MUST NOT 产生 fact 边"，
         不依赖 prompt 不产 edges_to 的间接性。
         """
-        from mcs.core.graph import Node
+        from mcs.entities.graph import Node
 
         c = decision.concept
         if c is None:
@@ -466,7 +466,7 @@ class WritePipeline:
         概念-概念关系连两端；纯字面值（无端点或单端点）的值内联进 attr_content。
         同名属性节点去重复用（"单一当前说法"——复用时不覆盖既有 content）。
         """
-        from mcs.core.graph import Node
+        from mcs.entities.graph import Node
 
         attr_name = (decision.attr_name or "").strip() or "attribute"
         attr_content = (decision.attr_content or "").strip()

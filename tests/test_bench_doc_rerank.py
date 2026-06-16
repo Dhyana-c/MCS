@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from bench.plugins.doc_rerank import aggregate_docs, doc_rerank
 from bench.multihop_rag import MultiHopEvalConfig, MultiHopEvalRunner
-from mcs.core.graph import Node
+from bench.plugins.doc_rerank import aggregate_docs, doc_rerank
+from mcs.entities.graph import Node
 from mcs.plugins.preprocess.source_tracking import Source
 
 

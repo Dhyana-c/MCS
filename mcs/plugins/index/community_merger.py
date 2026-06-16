@@ -21,9 +21,9 @@ from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.store import StoreInterface
+    from mcs.entities.graph import Node
 
 
 class CommunityMergerPlugin(CompactionPluginInterface):
@@ -167,7 +167,7 @@ class CommunityMergerPlugin(CompactionPluginInterface):
 
         Uses LLM to generate a summary name for the community.
         """
-        from mcs.core.graph import Node
+        from mcs.entities.graph import Node
 
         # Use LLM to generate hub name/summary（decide_hub 现返回 MultiHubDecision：
         # 读首个社区的 key_concept / summary，不再读已废弃的 hub_id /

@@ -19,8 +19,8 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mcs.core.config import MCSConfig
     from mcs.core.plugin import Plugin
+    from mcs.entities.config import MCSConfig
 
 logger = logging.getLogger(__name__)
 

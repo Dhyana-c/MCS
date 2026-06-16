@@ -13,10 +13,10 @@ from mcs.core.plugin import PluginType
 from mcs.interfaces.trim_plugin import TrimPluginInterface
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.query_engine import QueryContext
     from mcs.core.token_budget import TokenBudget
+    from mcs.entities.graph import Node
     from mcs.interfaces.llm import LLMInterface
 
 logger = logging.getLogger(__name__)

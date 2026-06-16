@@ -9,7 +9,7 @@
 
     # 或完整自定义
     from mcs.presets import Phase1Builder
-    from mcs.core.config import MCSConfig
+    from mcs.entities.config import MCSConfig
 
     config = MCSConfig.knowledge_graph(write_llm="deepseek", read_llm="deepseek")
     config.plugin_configs["deepseek_llm"]["api_key"] = "..."
@@ -31,10 +31,10 @@ from __future__ import annotations
 __version__ = "0.1.0"
 
 from mcs.core.builder import MCSBuilder
-from mcs.core.config import MCSConfig
 from mcs.core.mcs import MCS
 from mcs.core.plugin import Plugin, PluginType
 from mcs.core.store import StoreInterface
+from mcs.entities.config import MCSConfig
 from mcs.presets import Phase1Builder, create_mcs, get_phase1_plugin_registry
 from mcs.stores.in_memory import InMemoryStore
 from mcs.stores.sqlite_store import SQLiteStore

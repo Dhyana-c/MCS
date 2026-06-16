@@ -16,9 +16,9 @@ from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.store import StoreInterface
+    from mcs.entities.graph import Node
 
 
 class SummaryRegenPlugin(CompactionPluginInterface):

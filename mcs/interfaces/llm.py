@@ -25,7 +25,7 @@ from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
     from mcs.core.context_renderer import ContextRenderer
-    from mcs.core.graph import Node
+    from mcs.entities.graph import Node
 
 logger = logging.getLogger(__name__)
 

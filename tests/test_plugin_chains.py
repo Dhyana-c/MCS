@@ -7,14 +7,14 @@ from typing import Any
 import pytest
 
 from mcs.core.errors import ConfigurationError
-from mcs.core.graph import Node
+from mcs.core.plugin import PluginType
 from mcs.core.plugin_manager import PluginManager
+from mcs.entities.graph import Node
 from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 from mcs.interfaces.query_preprocess_plugin import QueryPreprocessPluginInterface
 from mcs.interfaces.write_preprocess_plugin import WritePreprocessPluginInterface
-from mcs.core.plugin import PluginType
 
 # === EntryPlugin 优先级排序 ===
 
@@ -207,6 +207,7 @@ def test_deprecated_preprocess_alias_emits_warning():
         warnings.simplefilter("always")
         # 重新导入以触发警告
         import importlib
+
         import mcs.interfaces.preprocess_plugin as pp
         importlib.reload(pp)
 

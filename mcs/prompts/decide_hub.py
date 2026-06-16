@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 
-from mcs.core.decisions import Community, MultiHubDecision
 from mcs.core.errors import LLMParseError
+from mcs.entities.decisions import Community, MultiHubDecision
 from mcs.utils.text_utils import strip_json_fence
 
 SYSTEM_PROMPT = (

@@ -36,7 +36,7 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 from mcs import MCS, MCSConfig  # noqa: E402
-from mcs.core.decisions import ConceptDraft, Decision  # noqa: E402
+from mcs.entities.decisions import ConceptDraft, Decision  # noqa: E402
 
 WIKI_CHUNKS = [
     {
@@ -62,7 +62,7 @@ WIKI_CHUNKS = [
 
 def build_mock_mcs() -> MCS:
     from mcs.core.builder import MCSBuilder
-    from mcs.core.config import MCSConfig
+    from mcs.entities.config import MCSConfig
     from tests.conftest import MockLLM
 
     config = MCSConfig(

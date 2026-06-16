@@ -52,7 +52,7 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 from mcs import MCS, MCSConfig  # noqa: E402
-from mcs.core.decisions import ConceptDraft, Decision  # noqa: E402
+from mcs.entities.decisions import ConceptDraft, Decision  # noqa: E402
 
 SAMPLE_TEXTS = [
     "深度学习是机器学习的一个子领域，它使用多层神经网络来学习数据的表示。",
@@ -65,7 +65,7 @@ QUERY = "什么是深度学习？"
 def build_mock_mcs() -> MCS:
     """使用脚本化 MockLLM 构建 MCS（无网络，无需 API 密钥）。"""
     from mcs.core.builder import MCSBuilder
-    from mcs.core.config import MCSConfig
+    from mcs.entities.config import MCSConfig
     from tests.conftest import MockLLM
 
     config = MCSConfig(

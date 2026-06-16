@@ -16,9 +16,9 @@ from typing import Any
 
 import pytest
 
-from mcs.core.config import MCSConfig
-from mcs.core.decisions import ConceptDraft, Decision, MultiHubDecision
-from mcs.core.graph import Edge, Node
+from mcs.entities.config import MCSConfig
+from mcs.entities.decisions import ConceptDraft, Decision, MultiHubDecision
+from mcs.entities.graph import Edge, Node
 from mcs.interfaces.llm import LLMInterface
 from mcs.stores.in_memory import InMemoryStore
 

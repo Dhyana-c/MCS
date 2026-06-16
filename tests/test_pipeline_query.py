@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from mcs.core.graph import Node, Subgraph
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
+from mcs.entities.graph import Node, Subgraph
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 from mcs.interfaces.query_preprocess_plugin import QueryPreprocessPluginInterface

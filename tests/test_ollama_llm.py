@@ -244,7 +244,7 @@ class TestOllamaLLMPluginFactory:
     """3.5 工厂：knowledge_graph(write_llm="ollama") 用 ollama_llm；默认仍 deepseek"""
 
     def test_factory_ollama(self):
-        from mcs.core.config import MCSConfig
+        from mcs.entities.config import MCSConfig
 
         config = MCSConfig.knowledge_graph(write_llm="ollama", read_llm="ollama")
         assert "ollama_llm" == config.write_llm
@@ -255,7 +255,7 @@ class TestOllamaLLMPluginFactory:
         assert config.plugin_configs["ollama_llm"]["think"] is False
 
     def test_factory_default_deepseek(self):
-        from mcs.core.config import MCSConfig
+        from mcs.entities.config import MCSConfig
 
         config = MCSConfig.knowledge_graph()
         assert "deepseek_llm" == config.write_llm

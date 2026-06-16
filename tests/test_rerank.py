@@ -7,11 +7,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from mcs.core.config import PHASE1_DEFAULT_PLUGINS, MCSConfig
-from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
+from mcs.entities.config import PHASE1_DEFAULT_PLUGINS, MCSConfig
+from mcs.entities.graph import Node
 from mcs.plugins.postprocess.rerank import LexicalScorer, RerankPlugin
 from mcs.stores.in_memory import InMemoryStore
 
@@ -160,7 +160,7 @@ def test_query_unchanged_without_rerank(mock_llm):
     # select_facts 选中所有种子（经 MockLLM 回退）
     mock_llm.set_response("select_nodes", lambda nodes_in, _: [n.id for n in (nodes_in or [])])
     out = qe.query("Tesla Model 3", existing_context=seeds)
-    from mcs.core.graph import Subgraph
+    from mcs.entities.graph import Subgraph
 
     assert isinstance(out, Subgraph)
     assert [n.id for n in out.nodes] == ["irrelevant", "relevant"]  # 原顺序，未重排
@@ -176,7 +176,7 @@ def test_query_reranks_when_enabled(mock_llm):
     # select_facts 选中所有种子（经 MockLLM 回退）
     mock_llm.set_response("select_nodes", lambda nodes_in, _: [n.id for n in (nodes_in or [])])
     out = qe.query("Tesla Model 3", existing_context=seeds)
-    from mcs.core.graph import Subgraph
+    from mcs.entities.graph import Subgraph
 
     assert isinstance(out, Subgraph)
     assert out.nodes[0].id == "relevant"

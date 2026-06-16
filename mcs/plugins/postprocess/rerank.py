@@ -21,8 +21,8 @@ from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 from mcs.utils.tokenizer import ChineseTokenizer
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
+    from mcs.entities.graph import Node
 
 logger = logging.getLogger(__name__)
 

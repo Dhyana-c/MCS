@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from mcs.core.graph import Edge, Node
+    from mcs.entities.graph import Edge, Node
 
 
 class TokenBudget:

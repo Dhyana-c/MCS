@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any
 from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
     from mcs.core.query_engine import QueryContext
+    from mcs.entities.graph import Node
 
 
 class SeedSelectorPluginInterface(Plugin):

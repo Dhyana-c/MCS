@@ -12,8 +12,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Edge, Node
     from mcs.core.plugin_manager import PluginManager
+    from mcs.entities.graph import Edge, Node
     from mcs.interfaces.node_extension import NodeExtensionInterface
 
 

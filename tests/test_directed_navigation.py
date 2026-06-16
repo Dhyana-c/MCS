@@ -5,12 +5,12 @@
 
 from __future__ import annotations
 
-from mcs.core.config import MCSConfig
-from mcs.core.graph import Node
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.token_budget import TokenBudget
-from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
+from mcs.entities.config import MCSConfig
+from mcs.entities.graph import Node
 from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
+from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore

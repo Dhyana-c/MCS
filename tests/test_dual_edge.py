@@ -9,13 +9,12 @@ from __future__ import annotations
 import pytest
 
 from mcs.core.context_renderer import ContextRenderer
-from mcs.core.graph import Edge, Node, Subgraph
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
+from mcs.entities.graph import Edge, Node, Subgraph
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.stores.in_memory import InMemoryStore
-
 
 # === 辅助 ===
 

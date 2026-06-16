@@ -13,8 +13,8 @@ from __future__ import annotations
 import json
 import logging
 
-from mcs.core.decisions import ConceptDraft, Decision
 from mcs.core.errors import LLMParseError
+from mcs.entities.decisions import ConceptDraft, Decision
 from mcs.utils.text_utils import salvage_json_array
 
 logger = logging.getLogger(__name__)

@@ -15,9 +15,9 @@ from mcs.core.plugin import PluginType
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.store import StoreInterface
+    from mcs.entities.graph import Node
 
 
 class HubFallbackEntryPlugin(EntryPluginInterface):

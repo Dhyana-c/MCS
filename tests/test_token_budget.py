@@ -49,7 +49,7 @@ def test_estimate_node_matches_rendering():
     estimate_node 使用 render_node_full（含格式行、body），与实际渲染一致。
     """
     from mcs.core.context_renderer import ContextRenderer
-    from mcs.core.graph import Node
+    from mcs.entities.graph import Node
 
     b = TokenBudget(8000)
     # name == content：去重，只计一份
@@ -75,7 +75,7 @@ def test_estimate_node_deduplication_saves_tokens():
     两节点正文长度相同，唯一差异是 name 是否等于 content：相等者去重只计一份，
     不相等者 name+content 都计——后者必然更大。
     """
-    from mcs.core.graph import Node
+    from mcs.entities.graph import Node
 
     b = TokenBudget(8000)
     text = "Some Long Concept Name That Would Be Counted Twice" * 10
@@ -86,7 +86,7 @@ def test_estimate_node_deduplication_saves_tokens():
 
 def test_check_subgraph_uses_node_estimate():
     """check_subgraph 使用 estimate_node（口径统一）。"""
-    from mcs.core.graph import Node
+    from mcs.entities.graph import Node
 
     b = TokenBudget(100)
     nodes = [Node(id=str(i), name=f"n{i}", content="x" * 50) for i in range(5)]

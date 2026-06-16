@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import tempfile
 
-from mcs.core.graph import Edge, Node
+from mcs.entities.graph import Edge, Node
 from mcs.stores.in_memory import InMemoryStore
 from mcs.stores.sqlite_store import SQLiteStore
 

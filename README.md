@@ -44,7 +44,7 @@ for n in nodes:
 
 ```python
 from mcs.presets import Phase1Builder
-from mcs.core.config import MCSConfig
+from mcs.entities.config import MCSConfig
 
 config = MCSConfig.knowledge_graph(write_llm="deepseek", read_llm="deepseek")
 config.plugin_configs["deepseek_llm"]["api_key"] = "your-api-key"

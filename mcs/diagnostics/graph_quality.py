@@ -2,11 +2,11 @@
 
 import json
 from collections import defaultdict
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import TextIO
 
-from mcs.core.graph import Node, Edge
 from mcs.core.store import StoreInterface
+from mcs.entities.graph import Edge, Node
 
 
 @dataclass
@@ -205,8 +205,8 @@ def diagnose_from_db(db_path: str) -> GraphQualityReport:
     """
     import sqlite3
 
+    from mcs.entities.graph import Edge, Node
     from mcs.stores.in_memory import InMemoryStore
-    from mcs.core.graph import Node, Edge
 
     graph = InMemoryStore()
     conn = sqlite3.connect(db_path)

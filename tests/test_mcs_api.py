@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from mcs.core.config import MCSConfig
-from mcs.core.graph import Node
 from mcs.core.plugin import Plugin, PluginType
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
+from mcs.entities.config import MCSConfig
+from mcs.entities.graph import Node
 from mcs.stores.in_memory import InMemoryStore
 from tests.conftest import MockLLM
 

@@ -19,9 +19,9 @@ from mcs.interfaces.node_extension import NodeExtensionInterface
 from mcs.utils.tokenizer import ChineseTokenizer
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
     from mcs.core.store import StoreInterface
+    from mcs.entities.graph import Node
 
 
 class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):

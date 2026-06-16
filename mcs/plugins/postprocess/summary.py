@@ -13,8 +13,8 @@ from mcs.core.plugin import PluginType
 from mcs.interfaces.node_extension import NodeExtensionInterface
 
 if TYPE_CHECKING:
-    from mcs.core.graph import Node
     from mcs.core.plugin_manager import PluginContext
+    from mcs.entities.graph import Node
 
 
 class SummaryPlugin(NodeExtensionInterface):
