@@ -22,6 +22,7 @@
 | 技术方案 | [technical-design.md](technical-design.md) | 完整的机制设计文档（双层结构、边语义、社区合并、激活扩散等） |
 | 已知问题 | [known-issues.md](known-issues.md) | 未修复的开放问题 |
 | 常见问题 | [faq.md](faq.md) | 常见问题与解答 |
+| 配置文件 | [configuration.md](configuration.md) | YAML 配置加载（preset 叠加、`${VAR}` 插值、import-path 插件、受信输入） |
 
 ## L3 规范层
 

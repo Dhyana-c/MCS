@@ -53,6 +53,39 @@ builder = Phase1Builder(config)
 mcs = builder.build()  # 返回即用的 MCS 实例
 ```
 
+### 配置文件（YAML）
+
+也支持从 **YAML 文件**配置（preset 铺底 + 字段叠加 + `${VAR}` 环境变量插值 + import-path 第三方插件）：
+
+```bash
+pip install -e ".[yaml]"   # 可选依赖 PyYAML
+```
+
+```yaml
+# mcs.yaml
+preset: knowledge_graph          # 复用默认 Phase1 插件集，只覆盖要改的字段
+write_llm: deepseek
+plugin_configs:
+  deepseek_llm:
+    api_key: ${DEEPSEEK_API_KEY}  # 秘密走环境、不进文件
+  sqlite_storage:
+    path: mcs.db
+shared_plugins:
+  - my_pkg.exts:MyEdgeExtension   # import-path 第三方插件
+```
+
+```python
+from mcs.entities.config import MCSConfig
+from mcs.presets import Phase1Builder
+
+config = MCSConfig.from_file("mcs.yaml")
+mcs = Phase1Builder(config).build()
+```
+
+> ⚠️ 配置文件是**受信输入**：YAML 经 import-path 可加载任意代码，**勿接受陌生来源**。
+> 自定义 LLM 必须走**无 preset** 路径（`knowledge_graph()` 只认 deepseek/claude/ollama）。
+> 详见 [配置文件文档](docs/configuration.md)。
+
 ### 切换后端
 
 <details>

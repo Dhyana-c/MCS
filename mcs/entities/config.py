@@ -7,6 +7,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from mcs.utils.env_expand import expand_env
+from mcs.utils.imports import import_from_path
+
 # ── Phase1 默认插件分配 ──────────────────────────────────────────────────
 # 参见 openspec/specs/mcs-presets/spec.md "Phase1 默认插件分配"
 
@@ -166,6 +169,173 @@ class MCSConfig:
             write_llm="deepseek_llm",
             read_llm="deepseek_llm",
         )
+
+    @classmethod
+    def from_file(cls, path: str) -> MCSConfig:
+        """从 YAML 文件加载 MCSConfig（纯新增，既有构造路径逐字不变）。
+
+        算法：惰性 ``import yaml``（缺失报 ``pip install mcs[yaml]``）→ 解析 →
+        ``expand_env`` 展开 ``${VAR}`` → 若有 ``preset`` 键则调对应 preset 工厂铺底、
+        否则以 ``MCSConfig()`` 默认为底 → 用其余字段叠加 → 返回。
+
+        叠加规则（见 openspec/changes/config-file-loading/design.md D1）：
+          - 标量字段覆盖；
+          - ``shared_plugins`` / ``write_plugins`` / ``read_plugins`` 显式给出则**替换**、
+            否则保留底；
+          - ``plugin_configs`` 按插件名**两层深合并**（底的 ``model`` 与文件的 ``api_key`` 共存）；
+          - ``prompt_overrides`` 按 purpose 合并；``parser`` 为 import-path 串时解析为 Callable；
+          - 有 ``preset`` 时 ``write_llm`` / ``read_llm`` / ``relation_model`` **仅作工厂参数
+            消费、不再二次叠加**（否则把工厂产出的 ``deepseek_llm`` 覆盖回短名 ``deepseek``）。
+
+        Args:
+            path: YAML 配置文件路径。
+
+        Returns:
+            与手写形状一致的 MCSConfig。
+
+        Raises:
+            ImportError: 缺 PyYAML（信息含 ``pip install mcs[yaml]``）。
+            FileNotFoundError: 配置文件不存在。
+            yaml.YAMLError: YAML 解析失败。
+            EnvExpansionError: ``${VAR}`` 引用的环境变量未设置。
+            ValueError: 未知 preset / 非法 relation_model / 根非 mapping。
+        """
+        data = cls._load_yaml(path)
+        data = expand_env(data)
+        preset = data.pop("preset", None)
+
+        if preset is not None:
+            base = cls._build_preset_base(preset, data)
+        else:
+            base = cls()
+
+        cls._apply_overlay(base, data, preset_consumed=preset is not None)
+        return base
+
+    @staticmethod
+    def _load_yaml(path: str) -> dict:
+        """惰性加载并解析 YAML（PyYAML 缺失报含安装指引的错误）。"""
+        try:
+            import yaml
+        except ImportError as exc:
+            raise ImportError(
+                "PyYAML is required to load YAML config. "
+                "Install it with: pip install mcs[yaml]"
+            ) from exc
+        with open(path, encoding="utf-8") as f:
+            loaded = yaml.safe_load(f)
+        if loaded is None:
+            return {}
+        if not isinstance(loaded, dict):
+            raise ValueError(
+                f"config root must be a mapping, got {type(loaded).__name__}"
+            )
+        return loaded
+
+    @classmethod
+    def _build_preset_base(cls, preset: str, data: dict) -> MCSConfig:
+        """调 preset 工厂铺底；消费 write_llm / read_llm / relation_model（不二次叠加）。"""
+        if preset == "knowledge_graph":
+            return cls.knowledge_graph(
+                write_llm=data.pop("write_llm", "deepseek"),
+                read_llm=data.pop("read_llm", None),
+                relation_model=data.pop("relation_model", "property_graph"),
+            )
+        if preset == "memory_system":
+            # memory_system() 不接受 LLM 参数；消费这三个键以免被当字段二次叠加。
+            data.pop("write_llm", None)
+            data.pop("read_llm", None)
+            data.pop("relation_model", None)
+            return cls.memory_system()
+        raise ValueError(
+            f"unknown preset {preset!r}; expected 'knowledge_graph' or 'memory_system'"
+        )
+
+    @classmethod
+    def _apply_overlay(
+        cls, base: MCSConfig, data: dict, *, preset_consumed: bool
+    ) -> None:
+        """把 data 中剩余字段叠加到 base（就地修改）。
+
+        Args:
+            base: preset 工厂产出或 MCSConfig() 默认底。
+            data: 经 expand_env 处理、已弹出 preset（及 preset 分支消费的 LLM 三键）后的字段。
+            preset_consumed: 是否已用 preset（True 时 write_llm/read_llm/relation_model 已消费、
+                不再当字段叠加）。
+        """
+        scalar_fields = (
+            "mode",
+            "token_budget",
+            "max_rounds",
+            "max_accumulated_nodes",
+            "auto_persist",
+            "attribute_content_max",
+        )
+        for field_name in scalar_fields:
+            if field_name in data:
+                setattr(base, field_name, data[field_name])
+
+        # relation_model：无 preset 时是原始字段（有 preset 时已消费、跳过）。
+        if not preset_consumed and "relation_model" in data:
+            rm = data["relation_model"]
+            if rm not in {"property_graph", "attribute_node"}:
+                raise ValueError(
+                    f"unknown relation_model={rm!r}; "
+                    "expected 'property_graph' or 'attribute_node'"
+                )
+            base.relation_model = rm
+
+        # LLM 原始字段：仅无 preset 时叠加。
+        if not preset_consumed:
+            if "write_llm" in data:
+                base.write_llm = data["write_llm"]
+            if "read_llm" in data:
+                base.read_llm = data["read_llm"]
+
+        # 插件列表：显式给出则替换、否则留底。
+        for plist in ("shared_plugins", "write_plugins", "read_plugins"):
+            if plist in data:
+                setattr(base, plist, list(data[plist]))
+
+        # plugin_configs：按插件名两层深合并。
+        if "plugin_configs" in data:
+            _deep_merge_plugin_configs(base.plugin_configs, data["plugin_configs"])
+
+        # prompt_overrides：按 purpose 合并；parser import-path 串 → Callable。
+        if "prompt_overrides" in data:
+            _merge_prompt_overrides(base.prompt_overrides, data["prompt_overrides"])
+
+
+def _deep_merge_plugin_configs(target: dict, overlay: dict) -> None:
+    """按插件名两层深合并：外层按插件名、内层合并该插件 dict 的键（就地修改 target）。
+
+    使 preset 的 ``{model: ...}`` 与文件的 ``{api_key: ...}`` 共存（非整体替换）。
+    """
+    for name, cfg in overlay.items():
+        if (
+            name in target
+            and isinstance(target.get(name), dict)
+            and isinstance(cfg, dict)
+        ):
+            merged = dict(target[name])
+            merged.update(cfg)
+            target[name] = merged
+        else:
+            target[name] = cfg
+
+
+def _merge_prompt_overrides(target: dict, overlay: dict) -> None:
+    """按 purpose 合并 prompt_overrides；parser 为 import-path 串时解析为 Callable（就地修改 target）。
+
+    ``system`` / ``template`` 保持文本；``parser`` 若为字符串则视为 import-path 解析为
+    可调用对象，与 ``MCSConfig`` 内存形状（parser 为 Callable）一致。
+    """
+    for purpose, overrides in overlay.items():
+        merged = dict(target.get(purpose, {}))
+        merged.update(overrides)
+        if "parser" in merged and isinstance(merged["parser"], str):
+            merged["parser"] = import_from_path(merged["parser"])
+        target[purpose] = merged
 
 
 def _add_llm_config(plugin_configs: dict, llm: str, llm_name: str) -> None:

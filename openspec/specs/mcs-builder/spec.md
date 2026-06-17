@@ -3,9 +3,7 @@
 ## Purpose
 
 定义 MCS 实例的构建契约：Builder 全量组装、MCS 瘦门面、双 PluginManager 架构、插件注册/注销 API。
-
 ## Requirements
-
 ### Requirement: MCSConfig 支持读写分离插件配置
 
 `MCSConfig` SHALL 使用 `shared_plugins`、`write_plugins`、`read_plugins` 三个列表替代旧的 `plugins` 列表，并用 `write_llm`、`read_llm` 分别指定写入和读取的 LLM。
@@ -100,7 +98,11 @@
 
 ### Requirement: MCSBuilder 通过抽象方法查找插件类
 
-`MCSBuilder` SHALL 定义抽象方法 `get_plugin_class(name: str) -> type[Plugin] | None`，由子类实现具体插件查找逻辑。
+`MCSBuilder` SHALL 定义抽象方法 `get_plugin_class(name: str) -> type[Plugin] | None`，由子类实现具体插件查找逻辑（基类**不**提供默认实现）。框架默认构建器 `Phase1Builder.get_plugin_class` SHALL 在内置注册表（`get_phase1_plugin_registry()`）未命中时支持 **import-path 回退**：
+
+- name 形如 `module:attr` 时经 `import_from_path` 解析为插件类，结果 MUST 是 `Plugin` 子类（否则报错）；
+- 无 `:` 的未知名 SHALL 返回 `None`（"未知名跳过、不抛异常"逐字保留）；
+- `module:attr` 形但解析失败（模块 / 属性不存在或非 `Plugin` 子类）SHALL 抛清晰错误（用户配置错误，不静默吞）。
 
 #### Scenario: 插件类查找委托给子类
 
@@ -110,11 +112,24 @@
 
 #### Scenario: 未知插件名不报错
 
-- **WHEN** `get_plugin_class("nonexistent")` 返回 None
+- **WHEN** `Phase1Builder.get_plugin_class("nonexistent")`（无 `:` 的未知名）返回 None
 - **THEN** Builder MUST 跳过该插件名继续构建
 - **AND** MUST NOT 抛出异常
 
----
+#### Scenario: 内置名仍走内置注册表
+
+- **WHEN** `Phase1Builder.get_plugin_class("fanout_reducer")`（内置名）
+- **THEN** MUST 返回内置注册表中的对应类（import-path 回退 MUST 仅在内置未命中时触发）
+
+#### Scenario: import-path 名解析外部插件
+
+- **WHEN** `Phase1Builder.get_plugin_class("my_pkg.exts:MyEdgeExt")` 且该类存在且是 `Plugin` 子类
+- **THEN** MUST 经 import-path 解析并返回该类
+
+#### Scenario: import-path 解析失败抛错
+
+- **WHEN** name 形如 `module:attr` 但模块 / 属性不存在或非 `Plugin` 子类
+- **THEN** MUST 抛清晰错误（含原始 name）；MUST NOT 静默返回 None（与"无 `:` 的未知名"区分）
 
 ### Requirement: MCS 类瘦门面设计
 
@@ -272,3 +287,4 @@ MCS MUST NOT 持有 `MCSConfig` 实例，MUST NOT 有 `initialize()` 方法，MU
 
 - **WHEN** 检查 `mcs/core/mcs.py` 的非 TYPE_CHECKING 导入
 - **THEN** MUST NOT 导入 `mcs/plugins/` 或 `mcs/presets/`
+

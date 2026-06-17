@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from mcs.utils.imports import import_from_path
+
 if TYPE_CHECKING:
     from mcs.core.plugin import Plugin
     from mcs.entities.config import MCSConfig
 
 
-def get_phase1_plugin_registry() -> dict[str, type["Plugin"]]:
+def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
     """返回 Phase1 全部插件类的名称→类映射。
 
     包含：
@@ -87,29 +89,60 @@ class Phase1Builder:
         mcs = builder.build()
     """
 
-    def __init__(self, config: "MCSConfig"):
+    def __init__(self, config: MCSConfig):
         """初始化 Phase1 构建器。
 
         Args:
             config: MCS 配置对象
         """
         self.config = config
-        self._registry: dict[str, type["Plugin"]] | None = None
+        self._registry: dict[str, type[Plugin]] | None = None
 
-    def get_plugin_class(self, name: str) -> type["Plugin"] | None:
-        """从 Phase1 插件注册表查找插件类。
+    def get_plugin_class(self, name: str) -> type[Plugin] | None:
+        """从 Phase1 插件注册表查找插件类；未命中且形如 ``module:attr`` 时回退 import-path 解析。
+
+        查找顺序：
+          1. 内置注册表（``get_phase1_plugin_registry()``）命中 → 返回；
+          2. 无 ``":"`` 的未知名 → 返回 ``None``（"未知名跳过、不抛异常"逐字保留——
+             既有契约不变，避免破坏默认构建路径）；
+          3. 含 ``":"`` 的 ``module:attr`` 形 → ``import_from_path`` 解析；
+             解析失败（格式非法 / 模块或属性不存在）或结果非 ``Plugin`` 子类 MUST 抛
+             清晰错误（用户配置错误，不静默）。
 
         Args:
-            name: 插件名称
+            name: 插件名称（内置短名，或 ``"module:attr"`` import-path）
 
         Returns:
             插件类，若未找到则返回 None
+
+        Raises:
+            ValueError: ``module:attr`` 形但格式非法（由 ``import_from_path`` 抛）。
+            ImportError: ``module:attr`` 形但模块不存在（含原始 name）。
+            AttributeError: ``module:attr`` 形但属性不存在（含原始 name）。
+            TypeError: ``module:attr`` 解析结果不是 ``Plugin`` 子类。
         """
         if self._registry is None:
             self._registry = get_phase1_plugin_registry()
-        return self._registry.get(name)
+        cls = self._registry.get(name)
+        if cls is not None:
+            return cls
 
-    def build(self) -> "MCS":
+        # 内置未命中：无 ":" 的未知名 → None（逐字保留"未知名跳过、不抛异常"）。
+        if ":" not in name:
+            return None
+
+        # 含 ":" → import-path 解析（用户配置错误则抛、不静默吞）。
+        obj = import_from_path(name)
+        from mcs.core.plugin import Plugin
+
+        if not (isinstance(obj, type) and issubclass(obj, Plugin)):
+            raise TypeError(
+                f"import-path {name!r} resolved to {obj!r}, "
+                f"which is not a Plugin subclass"
+            )
+        return obj
+
+    def build(self) -> MCS:
         """构建并返回即用的 MCS 实例。
 
         Returns:
@@ -123,7 +156,7 @@ class Phase1Builder:
                 super().__init__(config)
                 self._outer = outer
 
-            def get_plugin_class(self, name: str) -> type["Plugin"] | None:
+            def get_plugin_class(self, name: str) -> type[Plugin] | None:
                 return self._outer.get_plugin_class(name)
 
         builder = _Phase1MCSBuilder(self.config, self)
@@ -140,7 +173,7 @@ def create_mcs(
     max_accumulated_nodes: int = 1000,
     plugin_configs: dict | None = None,
     **kwargs,
-) -> "MCS":
+) -> MCS:
     """快捷工厂函数 — 一键创建已初始化的 MCS 实例。
 
     Args:
