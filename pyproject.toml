@@ -30,6 +30,13 @@ claude = [
 yaml = [
     "pyyaml>=6",
 ]
+mcp = [
+    "mcp>=1.0",
+    "pyyaml>=6",
+]
+
+[project.scripts]
+mcs-mcp = "mcs.mcp.server:main"
 
 [tool.setuptools.packages.find]
 include = ["mcs*"]

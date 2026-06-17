@@ -144,6 +144,28 @@ python examples/basic_usage.py
 
 </details>
 
+## 作为 MCP Server
+
+MCS 可作为 **MCP（stdio）server** 暴露 `query` / `ingest` 工具，供 Claude Desktop 等客户端把知识图谱当工具用：
+
+```bash
+pip install -e ".[mcp]"          # 可选依赖 mcp + pyyaml
+export MCS_CONFIG=/path/to/mcs.yaml   # YAML 配置（见「配置文件」）
+mcs-mcp                          # 或 python -m mcs.mcp
+```
+
+```json
+// Claude Desktop: claude_desktop_config.json
+{
+  "mcpServers": {
+    "mcs": { "command": "mcs-mcp", "args": ["--config", "/abs/path/mcs.yaml"],
+             "env": { "DEEPSEEK_API_KEY": "sk-..." } }
+  }
+}
+```
+
+> 工具调用慢（多轮 LLM）、调用串行（MCS 非线程安全）。详见 [MCP Server 文档](docs/mcp-server.md)。
+
 ## 文档
 
 | 文档 | 说明 |
