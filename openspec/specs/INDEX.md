@@ -64,6 +64,12 @@
 | [project-skeleton](project-skeleton/spec.md) | 项目目录结构与接口层完整性 |
 | [phase1-defaults](phase1-defaults/spec.md) | Phase 1 默认插件清单与优先级配置 |
 
+## 应用接口
+
+| Capability | 关注 |
+|------------|------|
+| [memory-agent](memory-agent/spec.md) | 基于 MCS 的记忆 agent 应用骨架（单线程 MCS 包装 + ReAct loop + FastAPI + 前端 + 启动入口） |
+
 ## 研究型
 
 | Capability | 关注 |
