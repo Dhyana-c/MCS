@@ -18,11 +18,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from mcs.agent.llm import make_openai_llm_call
-from mcs.agent.loop import MemoryAgent
-from mcs.agent.memory import MemoryStore
 from mcs.entities.config import MCSConfig
 from mcs.presets import Phase1Builder
+from mcs_agent.llm import make_openai_llm_call
+from mcs_agent.loop import MemoryAgent
+from mcs_agent.memory import MemoryStore
 
 __all__ = ["create_app", "build_agent_from_env", "run", "ChatRequest", "ChatResponse"]
 

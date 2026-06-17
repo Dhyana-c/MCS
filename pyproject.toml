@@ -44,7 +44,7 @@ agent = [
 mcs-mcp = "mcs.mcp.server:main"
 
 [tool.setuptools.packages.find]
-include = ["mcs*"]
+include = ["mcs*", "mcs_agent*"]
 exclude = ["tests*", "examples*"]
 
 [tool.pytest.ini_options]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from mcs.agent.app import create_app
+from mcs_agent.app import create_app
 
 
 class FakeAgent:

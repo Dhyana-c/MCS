@@ -168,6 +168,16 @@ class QueryEngine:
         result = self._run_postprocess_nodes(ctx.result_set, ctx)
         return result if isinstance(result, list) else ctx.result_set
 
+    def locate_seeds(self, query: str) -> list[Node]:
+        """公共薄方法：种子定位（阶段②），供外部（如 ``mcs_agent.search``）复用。
+
+        构造临时 ``QueryContext``、经前置插件链处理后调 ``_locate_seeds``——与
+        ``query()`` 内部的种子定位逐字等价，不改现有 ``query()`` 行为。
+        """
+        ctx = QueryContext(system_prompt=self.system_prompt, user_input=query)
+        processed = self._run_preprocess(query, ctx)
+        return self._locate_seeds(processed, ctx)
+
     # === 阶段辅助方法 ===
 
     def _run_preprocess(self, text: str, ctx: QueryContext) -> str:
