@@ -1,7 +1,7 @@
 """记忆 agent 的 FastAPI 对话后端。
 
 - ``create_app(agent)``：接受任意带 ``chat(user_message) -> str`` 的 agent（可注入
-  fake，便于测试），挂 ``/chat``、``/health`` 路由。
+  fake，便于测试），挂 ``/chat``、``/health`` 路由 + 静态前端（``static/index.html``）。
 - ``build_agent_from_env()``：从环境变量构建生产 ``MemoryAgent``（``MemoryStore``
   经 ``Phase1Builder`` build + openai 兼容 ``llm_call``）。
 - ``run()``：起 uvicorn。
@@ -10,10 +10,12 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from mcs.agent.llm import make_openai_llm_call
@@ -38,9 +40,10 @@ class _AgentProto(Protocol):
 
 
 def create_app(agent: _AgentProto) -> FastAPI:
-    """构建 FastAPI app，把 ``/chat`` 接到 ``agent.chat``。
+    """构建 FastAPI app：``/chat``、``/health`` API + 静态前端兜底。
 
-    CORS 开发期全开（前端独立起服务时可跨域调），生产按域名收紧。
+    API 路由先注册、优先匹配；``StaticFiles`` 挂在 ``/`` 兜底（访问 ``/`` 返回
+    ``index.html``）。CORS 开发期全开，生产按域名收紧。
     """
     app = FastAPI(title="MCS Memory Agent")
     app.state.agent = agent
@@ -60,6 +63,11 @@ def create_app(agent: _AgentProto) -> FastAPI:
     def chat(req: ChatRequest) -> ChatResponse:
         reply = agent.chat(req.message)
         return ChatResponse(reply=reply)
+
+    # 静态前端兜底挂载（API 路由已先注册，优先匹配）
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.is_dir():
+        app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
     return app
 

@@ -54,3 +54,11 @@ def test_agent_exception_returns_500():
     client = TestClient(create_app(Crash()), raise_server_exceptions=False)
     r = client.post("/chat", json={"message": "x"})
     assert r.status_code == 500
+
+
+def test_root_serves_index_html():
+    client = TestClient(create_app(FakeAgent()))
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers.get("content-type", "")
+    assert "记忆助手" in r.text  # 前端页面标题
