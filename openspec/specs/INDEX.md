@@ -68,7 +68,7 @@
 
 | Capability | 关注 |
 |------------|------|
-| [memory-agent](memory-agent/spec.md) | 基于 MCS 的记忆 agent 应用骨架（单线程 MCS 包装 + ReAct loop + FastAPI + 前端 + 启动入口） |
+| [memory-agent](memory-agent/spec.md) | 基于 MCS 的记忆 agent（独立 `mcs_agent` 包）：单线程 MCS 包装 + 5 导航工具（learn/search/associate/reason/recall）+ ReAct loop + FastAPI + 前端 |
 
 ## 研究型
 
