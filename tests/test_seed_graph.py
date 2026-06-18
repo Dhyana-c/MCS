@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from mcs.core.plugin_manager import PluginContext, PluginManager
-from mcs.core.query_engine import QueryContext, QueryEngine
+from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.entities.config import MCSConfig
 from mcs.entities.decisions import Community, MultiHubDecision
@@ -61,24 +61,7 @@ def _group_response(nodes_in, free_args):
     ])
 
 
-def _fanout_with_root(graph, token_budget, mock_llm):
-    pm = PluginManager()
-    pm.register(mock_llm)
-    fr = FanoutReducerPlugin({"floor": 16})
-    pm.register(fr)
-    pm.initialize_all(
-        PluginContext(
-            store=graph,
-            config=MCSConfig(),  # seed_graph_bounding 已删除
-            token_budget=token_budget,
-            context_renderer=None,  # type: ignore[arg-type]
-            plugin_manager=pm,
-        )
-    )
-    return fr
-
-
-def test_fanout_maintains_persistent_root(mock_llm):
+def test_fanout_maintains_persistent_root(mock_llm, fanout_reducer):
     """fanout_reducer 维护持久虚拟根：新概念挂持久根、超阈值递归分层、产物入 changed_nodes。"""
     g = GraphStore()
     concepts = []
@@ -87,7 +70,7 @@ def test_fanout_maintains_persistent_root(mock_llm):
         g.add_node(n)
         concepts.append(n)
     mock_llm.set_response("decide_hub", _group_response)
-    fr = _fanout_with_root(g, TokenBudget(500), mock_llm)
+    fr = fanout_reducer(g, mock_llm, TokenBudget(500))
 
     changed = list(concepts)
     fr.run(changed, g, mock_llm.call)
@@ -103,7 +86,7 @@ def test_fanout_maintains_persistent_root(mock_llm):
     assert g.get_node("c0") is not None
 
 
-def test_seed_root_maintained_without_budget_pressure(mock_llm):
+def test_seed_root_maintained_without_budget_pressure(mock_llm, fanout_reducer):
     """回归：无预算压力（大 T）下，经 should_run 闸门仍必须建根并把概念挂到根。
 
     旧实现 should_run 只看预算超限，故小语料 / 大窗口 / 整篇摄入永不建根 → 整图扁平、
@@ -116,7 +99,7 @@ def test_seed_root_maintained_without_budget_pressure(mock_llm):
     ]
     for n in concepts:
         g.add_node(n)
-    fr = _fanout_with_root(g, TokenBudget(8000), mock_llm)  # 大 T：3 个小概念不会超预算
+    fr = fanout_reducer(g, mock_llm, TokenBudget(8000))  # 大 T：3 个小概念不会超预算
 
     changed = list(concepts)
     assert fr.should_run(changed, g)            # 有新概念 → 需维护根（即便无预算压力）
@@ -130,7 +113,7 @@ def test_seed_root_maintained_without_budget_pressure(mock_llm):
     assert all(n.role != "hub" for n in g.get_all_nodes() if n.id != SEED_ROOT_ID)
 
 
-def test_root_attaches_only_orphans(mock_llm):
+def test_root_attaches_only_orphans(mock_llm, fanout_reducer):
     """P2/D6：只有零事实关联的"孤儿"概念挂根；有事实关联者不挂根
 
     （经字面入口 alias_entry + 事实 BFS 可达，挂根只会让图扁平化）。
@@ -140,7 +123,7 @@ def test_root_attaches_only_orphans(mock_llm):
         g.add_node(Node(id=nid, name=nid, content="x", role="concept"))
     g.add_edge("a", "b", kind="fact", label="涉及")  # a、b 有事实关联（b 为宾也算关联）
 
-    fr = _fanout_with_root(g, TokenBudget(8000), mock_llm)
+    fr = fanout_reducer(g, mock_llm, TokenBudget(8000))
     fr.run([g.get_node(n) for n in ("a", "b", "c")], g, mock_llm.call)
 
     assert not g.get_edges_between(SEED_ROOT_ID, "a")  # 有关联 → 不挂根
@@ -148,7 +131,7 @@ def test_root_attaches_only_orphans(mock_llm):
     assert g.get_edges_between(SEED_ROOT_ID, "c")      # 孤儿 → 挂根
 
 
-def test_absorb_skips_fact_only_node(mock_llm):
+def test_absorb_skips_fact_only_node(mock_llm, fanout_reducer):
     """边吸收 bug 回归：仅经**事实边**连到 hub 全部成员的节点，不应被层级吸收。
 
     旧实现 out_children 含 fact 目标 → X（仅事实边连 m1/m2）被误判为 hub 成员的父，
@@ -163,7 +146,7 @@ def test_absorb_skips_fact_only_node(mock_llm):
     g.add_edge("X", "m1", kind="fact", label="涉及")    # X 仅经事实边连成员
     g.add_edge("X", "m2", kind="fact", label="涉及")
 
-    fr = _fanout_with_root(g, TokenBudget(8000), mock_llm)
+    fr = fanout_reducer(g, mock_llm, TokenBudget(8000))
     fr._absorb_hub_edges(g)
 
     # X 不应被吸收：不该新增 X→H 层级边

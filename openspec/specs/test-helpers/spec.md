@@ -1,5 +1,8 @@
-## ADDED Requirements
+# test-helpers Specification
 
+## Purpose
+TBD - created by archiving change test-and-script-cleanup. Update Purpose after archive.
+## Requirements
 ### Requirement: MockLLMBuilder 继承 MCSBuilder
 
 测试代码 SHALL 提供 `MockLLMBuilder` 类，继承 `MCSBuilder` 并覆写 `get_plugin_class()` 和 `_instantiate_plugin()`，使 `build()` 走父类完整流程。
@@ -47,7 +50,7 @@
 #### Scenario: 不注入 Store 时使用默认行为
 
 - **WHEN** 创建 `MockLLMBuilder(config, mock_llm)` 不指定 store 参数
-- **THEN** `_init_store()` MUST 返回 `InMemoryStore()`
+- **THEN** `_init_store()` MUST 委托 `MCSBuilder._init_store()` 的默认逻辑（`default_config` 下 `plugin_configs` 为空，故返回 `InMemoryStore()`）
 
 ---
 
@@ -74,20 +77,50 @@
 
 ---
 
+### Requirement: QueryEngine 构建 helper
+
+`tests/conftest.py` SHALL 提供 `make_query_engine()` 函数，封装 PluginManager + PluginContext 初始化 + QueryEngine 构建模式（用于 `test_pipeline_query` / `test_dual_edge` 的 `_build_engine` 去重）。
+
+#### Scenario: 返回已初始化的 QueryEngine
+
+- **WHEN** 调用 `make_query_engine(store, llm, extra_plugin)`
+- **THEN** MUST 创建 PluginManager，注册 `llm` 与 `extra_plugin`
+- **AND** MUST 构建 PluginContext 并调用 `pm.initialize_all(ctx)`
+- **AND** MUST 返回已就绪的 `QueryEngine` 实例
+
+#### Scenario: 默认参数
+
+- **WHEN** 调用 `make_query_engine(store, llm)` 不指定其余参数
+- **THEN** QueryEngine MUST 使用 `max_rounds=3`、`max_accumulated_nodes=1000`、`token_budget=8000`
+- **AND** PluginContext 的 `config` MUST 为 `None`（QueryEngine 侧无需 config）
+
+#### Scenario: 自定义引擎参数
+
+- **WHEN** 调用 `make_query_engine(store, llm, max_rounds=5, token_budget=4000)`
+- **THEN** QueryEngine MUST 使用指定的 `max_rounds` 与 `token_budget`
+
+---
+
 ### Requirement: FanoutReducer fixture
 
-`tests/conftest.py` SHALL 提供 `fanout_reducer` fixture，封装 FanoutReducerPlugin 的初始化模式。
+`tests/conftest.py` SHALL 提供 `fanout_reducer` factory fixture，封装 FanoutReducerPlugin 的初始化模式；factory 接受 `token_budget`（`TokenBudget`）参数，以支持不同预算下的测试。
 
 #### Scenario: fixture 返回已初始化的 FanoutReducerPlugin
 
-- **WHEN** 测试使用 `fanout_reducer` fixture
+- **WHEN** 测试调用 `fanout_reducer(graph, mock_llm, token_budget)`
 - **THEN** MUST 返回已初始化的 `FanoutReducerPlugin` 实例
 - **AND** 该实例 MUST 已通过 `pm.initialize_all()` 初始化
 
-#### Scenario: fixture 使用默认参数
+#### Scenario: fixture 使用默认 floor
 
 - **WHEN** 使用 `fanout_reducer` fixture
 - **THEN** FanoutReducerPlugin MUST 使用 `{"floor": 16}` 配置
+
+#### Scenario: fixture 支持 token_budget 参数化
+
+- **WHEN** 测试分别传入 `TokenBudget(500)` 与 `TokenBudget(8000)` 调用 factory
+- **THEN** PluginContext MUST 分别使用对应的 `token_budget`
+- **AND** 该参数化对应 `test_directed_hierarchy` / `test_seed_graph` 中 500 / 8000 的真实调用
 
 ---
 
@@ -97,11 +130,12 @@
 
 - `test_pipeline_write.py`：删除 `_build_mcs_with_store`
 - `test_pipeline_query.py`：删除 `_build_engine`
-- `test_mcs_api.py`：删除 `_build_mcs`
+- `test_dual_edge.py`：删除 `_build_engine`
 - `test_hub_fallback.py`：删除 `_init`
 - `test_directed_navigation.py`：删除 `_init_plugin`
 - `test_directed_hierarchy.py`：删除 `_fanout_with_root`
 - `test_seed_graph.py`：删除 `_fanout_with_root`
+- `test_anti_regression.py`：删除 `_fanout_with_root`
 
 #### Scenario: 测试使用 conftest 构建工厂
 
@@ -115,7 +149,14 @@
 - **THEN** MUST 使用 `init_plugin_manager()` helper
 - **AND** MUST NOT 包含手动创建 PluginManager + PluginContext 的代码
 
+#### Scenario: 测试使用 QueryEngine 构建 helper
+
+- **WHEN** 测试需要构建 QueryEngine（如 `test_pipeline_query` / `test_dual_edge`）
+- **THEN** MUST 使用 `make_query_engine()` helper
+- **AND** MUST NOT 包含手动创建 PluginManager + PluginContext + QueryEngine 的代码
+
 #### Scenario: 重构后所有测试通过
 
 - **WHEN** 运行 `pytest tests/`
 - **THEN** 所有测试 MUST 通过，无回归
+

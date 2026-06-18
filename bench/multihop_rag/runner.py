@@ -33,15 +33,10 @@ def _ensure_utf8_stdout() -> None:
 
 def _maybe_load_dotenv() -> None:
     """若存在 .env（项目根或当前目录），把其中的键值灌进环境变量。"""
-    for p in (Path("D:/code/mcs/.env"), Path(".env")):
-        if not p.exists():
-            continue
-        for line in p.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
-        return
+    from bench._env import load_dotenv
+
+    if not load_dotenv():
+        load_dotenv(Path(".env"))
 
 
 from bench.multihop_rag.builder import build_shared_graph, chunk_body

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from conftest import MockLLMBuilder
 
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryEngine
@@ -402,128 +402,12 @@ def test_persisted_field_set_correctly(empty_graph, mock_llm):
 # === Load-on-startup 测试 ===
 
 
-def _build_mcs_with_store(config: MCSConfig, store: SQLiteStore, mock_llm):
-    """使用指定 store 和 mock_llm 构建 MCS 实例。"""
-    from mcs.core.builder import MCSBuilder
-    from mcs.core.context_renderer import ContextRenderer
-    from mcs.core.mcs import MCS
-    from mcs.core.plugin_manager import PluginContext, PluginManager
-    from mcs.core.query_engine import QueryEngine
-    from mcs.core.token_budget import TokenBudget
-    from mcs.core.write_pipeline import WritePipeline
-
-    token_budget = TokenBudget(config.token_budget)
-    write_manager = PluginManager()
-    read_manager = PluginManager()
-
-    # 注册配置中的插件
-    from mcs.presets import get_phase1_plugin_registry
-    registry = get_phase1_plugin_registry()
-
-    def _instantiate(name: str):
-        cls = registry.get(name)
-        if cls is None:
-            return None
-        plugin_config = config.plugin_configs.get(name, {})
-        try:
-            return cls(plugin_config)
-        except TypeError:
-            return cls()
-
-    for plugin_name in config.shared_plugins:
-        plugin = _instantiate(plugin_name)
-        if plugin:
-            write_manager.register(plugin)
-            read_manager.register(plugin)
-
-    for plugin_name in config.write_plugins:
-        plugin = _instantiate(plugin_name)
-        if plugin:
-            write_manager.register(plugin)
-
-    for plugin_name in config.read_plugins:
-        plugin = _instantiate(plugin_name)
-        if plugin:
-            read_manager.register(plugin)
-
-    # 注册 mock_llm 到两侧（共享）
-    write_manager.register(mock_llm)
-    read_manager.register(mock_llm)
-
-    # 初始化 SQLiteStore
-    from mcs.core.plugin import PluginType
-    if store.conn is None:
-        schema_exts = write_manager.get_all(PluginType.STORAGE_SCHEMA_EXT)
-        node_exts = {
-            p.get_name(): p
-            for p in write_manager.get_all(PluginType.NODE_EXTENSION)
-        }
-        store.initialize(schema_extensions=schema_exts, node_extensions=node_exts)
-
-    # 初始化插件
-    context_renderer = ContextRenderer(read_manager)
-    write_ctx = PluginContext(
-        store=store,
-        config=config,
-        token_budget=token_budget,
-        context_renderer=context_renderer,
-        plugin_manager=write_manager,
-    )
-    write_manager.initialize_all(write_ctx)
-    read_ctx = PluginContext(
-        store=store,
-        config=config,
-        token_budget=token_budget,
-        context_renderer=context_renderer,
-        plugin_manager=read_manager,
-    )
-    read_manager.initialize_all(read_ctx)
-
-    # 构建管线
-    query_engine = QueryEngine(
-        store=store,
-        llm=mock_llm,
-        plugin_manager=read_manager,
-        token_budget=token_budget,
-        max_rounds=config.max_rounds,
-        max_accumulated_nodes=config.max_accumulated_nodes,
-    )
-    write_pipeline = WritePipeline(
-        store=store,
-        llm=mock_llm,
-        query_engine=query_engine,
-        plugin_manager=write_manager,
-        token_budget=token_budget,
-        config=config,
-    )
-
-    # load-on-startup
-    if not store.get_all_nodes():
-        try:
-            store.load()
-            for index in read_manager.get_all(PluginType.INDEX):
-                try:
-                    index.build(store)
-                except NotImplementedError:
-                    continue
-        except Exception:
-            pass
-
-    return MCS(
-        write_pipeline=write_pipeline,
-        query_engine=query_engine,
-        store=store,
-        write_manager=write_manager,
-        read_manager=read_manager,
-    )
-
-
 def test_real_builder_build_runs_full_assembly(mock_llm):
     """回归：真实 MCSBuilder.build() 必须跑通 _init_plugin_context。
 
     曾因 _init_plugin_context 内未导入 PluginContext 抛 NameError，但当时没有任何
-    测试调用真实 build()（conftest._MockLLMBuilder 与 _build_mcs_with_store 都各自
-    重写了组装流程），导致该回归未被发现。本测试直接走 MCSBuilder.build()。
+    测试调用真实 build()（历史上的测试构建器都各自重写了组装流程、未走
+    MCSBuilder.build()），导致该回归未被发现。本测试直接走 MCSBuilder.build()。
     """
     from mcs.core.builder import MCSBuilder
 
@@ -570,7 +454,7 @@ def test_load_on_startup_restores_graph(tmp_path, mock_llm):
         write_llm="mock_llm",
         read_llm="mock_llm",
     )
-    mcs = _build_mcs_with_store(config, new_store, mock_llm)
+    mcs = MockLLMBuilder(config, mock_llm, store=new_store).build()
 
     # 图应该包含从数据库加载的节点
     nodes = mcs.store.get_all_nodes()
@@ -593,7 +477,7 @@ def test_load_on_startup_skipped_when_graph_has_data(mock_llm):
         write_llm="mock_llm",
         read_llm="mock_llm",
     )
-    mcs = _build_mcs_with_store(config, store, mock_llm)
+    mcs = MockLLMBuilder(config, mock_llm, store=store).build()
 
     # 预先存在的节点应该保留
     nodes = mcs.store.get_all_nodes()
@@ -614,7 +498,7 @@ def test_load_on_startup_handles_exception(tmp_path, mock_llm):
         read_llm="mock_llm",
     )
     # build 应该正常完成，不抛异常
-    mcs = _build_mcs_with_store(config, store, mock_llm)
+    mcs = MockLLMBuilder(config, mock_llm, store=store).build()
     assert mcs is not None
     mcs.shutdown()
 
@@ -642,7 +526,7 @@ def test_load_on_startup_rebuilds_indexes(tmp_path, mock_llm):
         write_llm="mock_llm",
         read_llm="mock_llm",
     )
-    mcs = _build_mcs_with_store(config, new_store, mock_llm)
+    mcs = MockLLMBuilder(config, mock_llm, store=new_store).build()
 
     ai = mcs.get_plugin("alias_index")
     assert ai is not None
