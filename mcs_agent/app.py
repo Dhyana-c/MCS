@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any, Protocol
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -63,6 +63,22 @@ def create_app(agent: _AgentProto) -> FastAPI:
     def chat(req: ChatRequest) -> ChatResponse:
         reply = agent.chat(req.message)
         return ChatResponse(reply=reply)
+
+    @app.get("/graph/expand")
+    def graph_expand(node_id: str = "__seed_root__") -> dict:
+        """只读图谱可视化端点：转发到 ``agent.memory.graph_view``（缺省虚拟根）。
+
+        线程安全由 ``MemoryStore._submit`` 保证（路由线程不直接触碰 mcs / store）。
+        优雅降级：注入的 agent 无 ``memory`` 或 ``memory`` 无 ``graph_view`` 时
+        （如裸 fake agent）返回 503，不影响既有 ``/chat``。节点不存在 → 404。
+        """
+        graph_view = getattr(getattr(agent, "memory", None), "graph_view", None)
+        if not callable(graph_view):
+            raise HTTPException(status_code=503, detail="graph view unavailable")
+        result = graph_view(node_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="node not found")
+        return result
 
     # 静态前端兜底挂载（API 路由已先注册，优先匹配）
     static_dir = Path(__file__).parent / "static"

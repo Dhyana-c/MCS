@@ -16,7 +16,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable
 
-from mcs.entities.graph import Node
+from mcs.entities.graph import Edge, Node
 from mcs.mcp.server import _format_ingest_status, _render_query_result
 
 if TYPE_CHECKING:
@@ -46,6 +46,27 @@ def _render_nodes(nodes: list[Node], header: str) -> str:
         else:
             lines.append(f"{i}. [id:{n.id}] {name}")
     return "\n".join(lines)
+
+
+def _node_to_dict(node: Node) -> dict:
+    """把 Node 序列化为 JSON 友好纯 dict（graph_view 人面视图口径）。
+
+    与 ``_render_nodes``（面向 LLM 文本）不同：本函数面向可视化端点，输出纯值、
+    不含 dataclass 实例。**不**复用 LLM 渲染口径（铁律一仅约束 LLM 上下文 token）。
+    """
+    return {"id": node.id, "name": node.name, "content": node.content, "role": node.role}
+
+
+def _edge_to_dict(edge: Edge) -> dict:
+    """把 Edge 序列化为 JSON 友好纯 dict：source/target 由 source_id/target_id 映射，
+    id 取 edge.id 供前端按 id 去重并直接作 Cytoscape edge id。"""
+    return {
+        "id": edge.id,
+        "source": edge.source_id,
+        "target": edge.target_id,
+        "kind": edge.kind,
+        "label": edge.label,
+    }
 
 
 def _neighbor_ids(store: "StoreInterface", node_id: str) -> list[str]:
@@ -193,6 +214,83 @@ class MemoryStore:
     def recall(self, limit: int = 5) -> str:
         """回忆热点事件（未实现，空壳，不伪造）。"""
         return self._submit(self._do_recall, limit)
+
+    # === graph_view（只读可视化，人面视图） ===
+
+    def _do_graph_view(self, node_id: str) -> dict | None:
+        """worker 线程内取焦点节点的活跃邻域视图（纯只读，不进写/守门/裂变路径）。
+
+        返回 ``{node, nodes, edges, relation_model}``：
+          - nodes = 层级子节点 ∪ 关系边另一端节点，按 id 去重、不含焦点；
+          - edges = hierarchy 边（焦点→各层级子）∪ 关系边（按 relation_model 取
+            get_facts / get_assoc）。
+        关系边端点随响应返回（端点不在层级子节点中，必须单独收集才能连线）。
+        焦点节点不存在返回 None（不抛）；悬空关系边（另一端 get_node 返 None）跳过
+        端点节点、但该边仍保留进 edges。
+        """
+        mcs = self._mcs
+        store = mcs.store
+        relation_model = mcs.query_engine.relation_model
+
+        focus = store.get_node(node_id)
+        if focus is None:
+            return None
+
+        children = store.get_out_hierarchy(node_id) or []
+
+        # 关系边来源随 relation_model 切换（property_graph→facts，attribute_node→assoc）
+        if relation_model == "attribute_node":
+            rel_edges = store.get_assoc(node_id) or []
+        else:
+            rel_edges = store.get_facts(node_id) or []
+
+        # 邻居节点：层级子 ∪ 关系边另一端（按 id 去重、不含焦点）
+        nodes_by_id: dict[str, dict] = {}
+        for child in children:
+            if child.id != node_id and child.id not in nodes_by_id:
+                nodes_by_id[child.id] = _node_to_dict(child)
+        for edge in rel_edges:
+            other = edge.target_id if edge.source_id == node_id else edge.source_id
+            if other == node_id or other in nodes_by_id:
+                continue  # 自环或已收录
+            other_node = store.get_node(other)
+            if other_node is None:
+                continue  # 悬空边：跳过端点、边仍保留
+            nodes_by_id[other_node.id] = _node_to_dict(other_node)
+
+        # 边集：hierarchy 边（焦点→各子，确定性 id 供前端去重）∪ 关系边
+        edges: list[dict] = []
+        for child in children:
+            if child.id == node_id:
+                continue
+            edges.append(
+                _edge_to_dict(
+                    Edge(
+                        source_id=node_id,
+                        target_id=child.id,
+                        id=f"hierarchy::{node_id}::{child.id}",
+                        kind="hierarchy",
+                        label="",
+                    )
+                )
+            )
+        for edge in rel_edges:
+            edges.append(_edge_to_dict(edge))
+
+        return {
+            "node": _node_to_dict(focus),
+            "nodes": list(nodes_by_id.values()),
+            "edges": edges,
+            "relation_model": relation_model,
+        }
+
+    def graph_view(self, node_id: str) -> dict | None:
+        """只读可视化原语：焦点节点的活跃邻域视图（经 _submit 单 worker 线程）。
+
+        节点不存在返回 None。详见 ``_do_graph_view``。调用方线程 MUST NOT 直接读
+        store / mcs（线程安全铁律）。
+        """
+        return self._submit(self._do_graph_view, node_id)
 
     # === 生命周期 ===
 

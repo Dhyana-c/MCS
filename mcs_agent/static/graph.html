@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MCS 记忆图谱</title>
+<!-- Cytoscape.js 固定版本（CDN）。离线本地化为后续可选范围。 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #f0f2f5; color: #1a1a1a;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    padding: 12px 18px; background: #fff; border-bottom: 1px solid #e4e6eb;
+    display: flex; align-items: baseline; gap: 16px;
+  }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  header a { font-size: 13px; color: #2563eb; text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+  header .model { font-size: 12px; color: #888; margin-left: auto; }
+  #status {
+    font-size: 12px; color: #b00020; padding: 6px 18px;
+    background: #fff5f5; border-bottom: 1px solid #f3d4d4; display: none;
+  }
+  #main { flex: 1; display: flex; min-height: 0; }
+  #cy { flex: 1; background: #fff; }
+  #detail {
+    width: 280px; padding: 16px; background: #fff; overflow-y: auto;
+    border-left: 1px solid #e4e6eb;
+  }
+  #detail h2 { margin: 0 0 4px; font-size: 15px; word-break: break-word; }
+  #detail .role {
+    display: inline-block; font-size: 11px; color: #555;
+    background: #eef2ff; border-radius: 4px; padding: 1px 6px; margin-bottom: 10px;
+  }
+  #detail .content { font-size: 13px; line-height: 1.55; white-space: pre-wrap; color: #333; }
+  #detail .hint { font-size: 12px; color: #aaa; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧠 MCS 记忆图谱</h1>
+  <a href="/">← 返回聊天</a>
+  <span class="model" id="model">relation_model: …</span>
+</header>
+<div id="status"></div>
+<div id="main">
+  <div id="cy"></div>
+  <aside id="detail">
+    <div class="hint">点击节点查看详情并下钻。根 / hub / concept 可展开，attribute 仅作关系端点。</div>
+  </aside>
+</div>
+<script>
+"use strict";
+
+const cy = cytoscape({
+  container: document.getElementById("cy"),
+  elements: [],
+  style: [
+    { selector: "node", style: {
+      "label": "data(name)", "text-valign": "bottom", "text-halign": "center",
+      "font-size": 11, "color": "#333", "background-color": "#60a5fa",
+      "width": 28, "height": 28, "border-width": 0
+    }},
+    // 按 role 区分：hub 组织中心 / attribute 属性端点（菱形）/ 根（深色加大）
+    { selector: 'node[role = "hub"]', style: { "background-color": "#2563eb", "width": 34, "height": 34 } },
+    { selector: 'node[role = "attribute"]', style: { "background-color": "#9ca3af", "shape": "diamond", "width": 20, "height": 20 } },
+    { selector: 'node[id = "__seed_root__"]', style: { "background-color": "#111827", "width": 38, "height": 38 } },
+    { selector: "edge", style: {
+      "width": 1.5, "line-color": "#bbb", "curve-style": "bezier",
+      "font-size": 9, "color": "#555", "text-background-color": "#fff",
+      "text-background-padding": 2, "text-background-opacity": 0.9
+    }},
+    // 按 kind 区分：hierarchy 实线带箭头 / fact 带 label / assoc 虚线无 label
+    { selector: 'edge[kind = "hierarchy"]', style: {
+      "line-color": "#c4c4c4", "target-arrow-shape": "triangle", "target-arrow-color": "#c4c4c4"
+    }},
+    { selector: 'edge[kind = "fact"]', style: { "line-color": "#16a34a", "label": "data(label)" } },
+    { selector: 'edge[kind = "assoc"]', style: { "line-color": "#d97706", "line-style": "dashed" } },
+    // 叶子样式（点击后响应为空时打上）
+    { selector: ".leaf", style: { "border-width": 2, "border-color": "#6b7280", "border-style": "dashed" } }
+  ],
+  layout: { name: "empty" }
+});
+
+const expandedIds = new Set(); // 已下钻过的节点（非叶子），避免重复请求
+const leafIds = new Set();     // 叶子节点（响应空），后续不再请求
+
+function setStatus(msg) {
+  const el = document.getElementById("status");
+  el.textContent = msg || "";
+  el.style.display = msg ? "block" : "none";
+}
+
+function showDetail(d) {
+  const aside = document.getElementById("detail");
+  aside.innerHTML = "";
+  const h = document.createElement("h2");
+  h.textContent = d.name || d.id;
+  aside.appendChild(h);
+  const role = document.createElement("span");
+  role.className = "role";
+  role.textContent = "role: " + (d.role || "?");
+  aside.appendChild(role);
+  const c = document.createElement("div");
+  c.className = "content";
+  c.textContent = d.content || "（无 content）";
+  aside.appendChild(c);
+}
+
+function ensureNode(n, bag) {
+  if (cy.getElementById(n.id).nonempty()) return; // 按 id 去重
+  bag.push({ group: "nodes", data: { id: n.id, name: n.name, content: n.content, role: n.role } });
+}
+
+function applyView(view) {
+  const bag = [];
+  ensureNode(view.node, bag);          // 焦点节点（首拉根 / 下钻时已存在则跳过）
+  view.nodes.forEach((n) => ensureNode(n, bag));
+  if (bag.length) cy.add(bag);
+
+  // 加边：仅当两端都在图中（跳过悬空关系边，避免 Cytoscape 报错；前端不自造边）
+  const known = (id) => cy.getElementById(id).nonempty();
+  const ebag = [];
+  for (const e of view.edges) {
+    if (cy.getElementById(e.id).nonempty()) continue; // 按 id 去重
+    if (known(e.source) && known(e.target)) {
+      ebag.push({ group: "edges", data: { id: e.id, source: e.source, target: e.target, kind: e.kind, label: e.label } });
+    }
+  }
+  if (ebag.length) cy.add(ebag);
+
+  if (bag.length || ebag.length) runLayout();
+}
+
+let inited = false;
+function runLayout() {
+  cy.layout({
+    name: "cose",
+    animate: true,
+    padding: 30,
+    idealEdgeLength: 80,
+    nodeRepulsion: 8000,
+    randomize: !inited, // 首次随机布局；后续增量保留已有位置
+    fit: !inited
+  }).run();
+  inited = true;
+}
+
+async function expand(id) {
+  setStatus("");
+  let r;
+  try {
+    r = await fetch("/graph/expand?node_id=" + encodeURIComponent(id));
+  } catch (e) {
+    setStatus("请求失败：" + e);
+    return;
+  }
+  if (r.status === 503) { setStatus("图谱视图不可用（503：agent 无 memory / graph_view）。"); return; }
+  if (r.status === 404) { setStatus("节点不存在：" + id); return; }
+  if (!r.ok) { setStatus("出错：" + r.status); return; }
+  const view = await r.json();
+  document.getElementById("model").textContent = "relation_model: " + (view.relation_model || "?");
+  applyView(view);
+  expandedIds.add(id);
+  // 响应 nodes 与 edges 均空 → 标叶子并缓存，后续点击不重复请求
+  if (view.nodes.length === 0 && view.edges.length === 0) {
+    leafIds.add(id);
+    cy.getElementById(id).addClass("leaf");
+  }
+}
+
+cy.on("tap", "node", (evt) => {
+  const node = evt.target;
+  showDetail(node.data());
+  const id = node.data("id");
+  if (node.data("role") === "attribute") return;     // attribute 不可下钻（仅作关系端点）
+  if (leafIds.has(id) || expandedIds.has(id)) return; // 叶子或已展开 → 不重复请求
+  expand(id);
+});
+
+// 打开即默认拉根子图
+expand("__seed_root__");
+</script>
+</body>
+</html>

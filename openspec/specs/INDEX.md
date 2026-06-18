@@ -69,6 +69,7 @@
 | Capability | 关注 |
 |------------|------|
 | [memory-agent](memory-agent/spec.md) | 基于 MCS 的记忆 agent（独立 `mcs_agent` 包）：单线程 MCS 包装 + 5 导航工具（learn/search/associate/reason/recall）+ ReAct loop + FastAPI + 前端 |
+| [graph-visualization](graph-visualization/spec.md) | 记忆图谱只读可视化：`MemoryStore.graph_view` 只读原语（relation_model 感知）+ `GET /graph/expand` JSON 端点 + `graph.html` 默认渲染根子图 + 点击下钻 |
 
 ## 研究型
 
