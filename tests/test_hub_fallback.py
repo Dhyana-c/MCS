@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from mcs.core.plugin_manager import PluginContext, PluginManager
-from mcs.core.token_budget import TokenBudget
+from conftest import init_plugin_manager
+
 from mcs.entities.graph import Node
 from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
 from mcs.stores.in_memory import InMemoryStore
@@ -24,26 +24,11 @@ def _hub_graph() -> GraphStore:
     return g
 
 
-def _init(plugin: HubFallbackEntryPlugin, graph: GraphStore, *plugins) -> None:
-    pm = PluginManager()
-    for p in plugins:
-        pm.register(p)
-    pm.register(plugin)
-    ctx = PluginContext(
-        store=graph,
-        config=None,  # type: ignore[arg-type]
-        token_budget=TokenBudget(8000),
-        context_renderer=None,  # type: ignore[arg-type]
-        plugin_manager=pm,
-    )
-    pm.initialize_all(ctx)
-
-
 def test_navigate_hub_called_and_drills(mock_llm):
     """有 hub 且配置 LLM 时，必须发起 navigate_hub 调用并按返回下钻。"""
     g = _hub_graph()
     plugin = HubFallbackEntryPlugin()
-    _init(plugin, g, mock_llm)
+    init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
     routes = {"h": ["c1"], "c1": ["g1"]}
 
     def _route(nodes_in, _free_args):
@@ -64,7 +49,7 @@ def test_no_hubs_returns_empty(mock_llm):
     g = GraphStore()
     g.add_node(Node(id="x", name="普通", content="", role="concept"))
     plugin = HubFallbackEntryPlugin()
-    _init(plugin, g, mock_llm)
+    init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
     assert plugin.locate("q", None) == []
     assert mock_llm.call_log == []
 
@@ -73,7 +58,7 @@ def test_graceful_fallback_without_llm():
     """未配置 LLM 时优雅降级：直接返回 hub 集合作为种子。"""
     g = _hub_graph()
     plugin = HubFallbackEntryPlugin()
-    _init(plugin, g)  # 不注册任何 LLM
+    init_plugin_manager(g, plugin)  # 不注册任何 LLM
     seeds = plugin.locate("q", None)
     assert {n.id for n in seeds} == {"h"}
 
@@ -82,7 +67,7 @@ def test_disable_llm_navigation_returns_hubs(mock_llm):
     """use_llm_navigation=False 时即便有 LLM 也只返回 hub 集合。"""
     g = _hub_graph()
     plugin = HubFallbackEntryPlugin({"use_llm_navigation": False})
-    _init(plugin, g, mock_llm)
+    init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
     seeds = plugin.locate("q", None)
     assert {n.id for n in seeds} == {"h"}
     assert mock_llm.call_log == []
@@ -101,7 +86,7 @@ def test_navigates_from_persistent_root(mock_llm):
     g.add_edge(SEED_ROOT_ID, "t2")
     g.add_edge("t1", "leaf")
     plugin = HubFallbackEntryPlugin()
-    _init(plugin, g, mock_llm)
+    init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
     routes = {SEED_ROOT_ID: ["t1"], "t1": ["leaf"]}
 
     def _route(nodes_in, _free_args):
@@ -127,6 +112,6 @@ def test_root_present_no_llm_returns_children(mock_llm):
     g.add_edge(SEED_ROOT_ID, "t1")
     g.add_edge(SEED_ROOT_ID, "t2")
     plugin = HubFallbackEntryPlugin({"use_llm_navigation": False})
-    _init(plugin, g, mock_llm)
+    init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
     seeds = plugin.locate("q", None)
     assert {n.id for n in seeds} == {"t1", "t2"}

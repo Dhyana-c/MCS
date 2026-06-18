@@ -27,16 +27,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 def setup_env() -> None:
     """UTF-8 stdout + 载入 .env + 固定 deepseek-chat。"""
+    from bench._env import load_dotenv
+
     if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    envf = PROJECT_ROOT / ".env"
-    if envf.exists():
-        for line in envf.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+    load_dotenv(PROJECT_ROOT / ".env")
     os.environ["DEEPSEEK_MODEL"] = "deepseek-chat"
     os.environ.setdefault("MCS_NO_SUMMARY_REGEN", "1")
 

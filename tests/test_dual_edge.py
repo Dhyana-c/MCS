@@ -7,10 +7,9 @@ fanout 出边侧、root 孤儿、事实 BFS、极性问题。
 from __future__ import annotations
 
 import pytest
+from conftest import make_query_engine
 
 from mcs.core.context_renderer import ContextRenderer
-from mcs.core.plugin_manager import PluginContext, PluginManager
-from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.entities.graph import Edge, Node, Subgraph
 from mcs.interfaces.entry_plugin import EntryPluginInterface
@@ -21,36 +20,6 @@ from mcs.stores.in_memory import InMemoryStore
 
 def _make_store() -> InMemoryStore:
     return InMemoryStore()
-
-
-def _build_engine(
-    store: InMemoryStore,
-    mock_llm,
-    *extra_plugins,
-    max_rounds=3,
-    max_accumulated_nodes=1000,
-    token_budget=8000,
-) -> QueryEngine:
-    pm = PluginManager()
-    pm.register(mock_llm)
-    for p in extra_plugins:
-        pm.register(p)
-    ctx = PluginContext(
-        store=store,
-        config=None,  # type: ignore[arg-type]
-        token_budget=TokenBudget(token_budget),
-        context_renderer=None,  # type: ignore[arg-type]
-        plugin_manager=pm,
-    )
-    pm.initialize_all(ctx)
-    return QueryEngine(
-        store=store,
-        llm=mock_llm,  # type: ignore[arg-type]
-        plugin_manager=pm,
-        token_budget=TokenBudget(token_budget),
-        max_rounds=max_rounds,
-        max_accumulated_nodes=max_accumulated_nodes,
-    )
 
 
 class _StaticEntry(EntryPluginInterface):
@@ -340,7 +309,7 @@ class TestFactBFS:
         s.add_edge("a", "b", kind="fact", label="喜欢")
 
         mock = MockLLM()
-        engine = _build_engine(s, mock, _StaticEntry(["a"], s))
+        engine = make_query_engine(s, mock, _StaticEntry(["a"], s))
         mock.set_response(
             "select_nodes",
             lambda nodes_in, _: [n.id for n in (nodes_in or [])],
@@ -366,7 +335,7 @@ class TestFactBFS:
         s.add_edge("n0", "n3", kind="hierarchy")
 
         mock = MockLLM()
-        engine = _build_engine(s, mock, _StaticEntry(["n0"], s), max_rounds=3)
+        engine = make_query_engine(s, mock, _StaticEntry(["n0"], s), max_rounds=3)
         mock.set_response(
             "select_nodes",
             lambda nodes_in, _: [n.id for n in (nodes_in or [])],
@@ -391,7 +360,7 @@ class TestFactBFS:
         s.add_edge("a", "c", kind="fact", label="相关")
 
         mock = MockLLM()
-        engine = _build_engine(s, mock, _StaticEntry(["a"], s))
+        engine = make_query_engine(s, mock, _StaticEntry(["a"], s))
         mock.set_response(
             "select_nodes",
             lambda nodes_in, _: [n.id for n in (nodes_in or [])],
@@ -476,7 +445,7 @@ class TestWriteQueryIntegration:
         s.add_edge("a", "b", kind="fact", label="喜欢")
 
         mock = MockLLM()
-        engine = _build_engine(s, mock, _StaticEntry(["a"], s))
+        engine = make_query_engine(s, mock, _StaticEntry(["a"], s))
         mock.set_response(
             "select_nodes",
             lambda nodes_in, _: [n.id for n in (nodes_in or [])],
@@ -563,7 +532,7 @@ class TestSubgraphDownstreamCompat:
         s.add_node(b)
 
         mock = MockLLM()
-        engine = _build_engine(s, mock, _StaticEntry(["a"], s))
+        engine = make_query_engine(s, mock, _StaticEntry(["a"], s))
         mock.set_response("select_nodes", [])
         # 第一次查询
         result1 = engine.query("test")
@@ -674,7 +643,7 @@ class TestQueryReturnContract:
 
     def test_query_returns_subgraph_by_default(self, seeded_graph, mock_llm):
         """无后置插件时 query() 返回 Subgraph。"""
-        engine = _build_engine(
+        engine = make_query_engine(
             seeded_graph,
             mock_llm,
             _StaticEntry(["dl"], seeded_graph),
@@ -685,7 +654,7 @@ class TestQueryReturnContract:
 
     def test_query_subgraph_edges_all_fact(self, seeded_graph, mock_llm):
         """Subgraph.edges 中所有边必须是 fact 类型。"""
-        engine = _build_engine(
+        engine = make_query_engine(
             seeded_graph,
             mock_llm,
             _StaticEntry(["dl"], seeded_graph),
@@ -700,7 +669,7 @@ class TestQueryReturnContract:
 
     def test_query_empty_seeds_returns_empty_subgraph(self, seeded_graph, mock_llm):
         """空种子返回空 Subgraph（非空列表、非 None）。"""
-        engine = _build_engine(seeded_graph, mock_llm)
+        engine = make_query_engine(seeded_graph, mock_llm)
         result = engine.query("nothing")
         assert isinstance(result, Subgraph)
         assert result.nodes == []
@@ -708,7 +677,7 @@ class TestQueryReturnContract:
 
     def test_query_nodes_returns_list(self, seeded_graph, mock_llm):
         """query_nodes() 仍返回 list[Node]（不变）。"""
-        engine = _build_engine(
+        engine = make_query_engine(
             seeded_graph,
             mock_llm,
             _StaticEntry(["dl"], seeded_graph),
@@ -745,7 +714,7 @@ class TestBatchedTraverse:
         s = self._two_seed_store()
         mock = MockLLM()
         mock.set_response("select_facts", lambda nodes_in, free: [])
-        engine = _build_engine(
+        engine = make_query_engine(
             s, mock, _StaticEntry(["s1", "s2"], s), token_budget=8000
         )
         engine.query("test")
@@ -767,7 +736,7 @@ class TestBatchedTraverse:
         mock = MockLLM()
         mock.set_response("select_facts", lambda nodes_in, free: [])
         # 单种子视图 ≈ 15*50 ≫ pack_budget=480；两批 → 两次调用
-        engine = _build_engine(
+        engine = make_query_engine(
             s, mock, _StaticEntry(["s1", "s2"], s), token_budget=600
         )
         engine.query("test")
@@ -789,7 +758,7 @@ class TestBatchedTraverse:
 
         mock = MockLLM()
         mock.set_response("select_facts", sf)
-        engine = _build_engine(
+        engine = make_query_engine(
             s, mock, _StaticEntry(["s1", "s2"], s), token_budget=8000
         )
         result = engine.query("test")

@@ -5,31 +5,14 @@
 
 from __future__ import annotations
 
-from mcs.core.plugin_manager import PluginContext, PluginManager
-from mcs.core.token_budget import TokenBudget
-from mcs.entities.config import MCSConfig
+from conftest import init_plugin_manager
+
 from mcs.entities.graph import Node
 from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
 from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore
-
-
-def _init_plugin(plugin, graph, *extra_plugins):
-    pm = PluginManager()
-    for p in extra_plugins:
-        pm.register(p)
-    pm.register(plugin)
-    ctx = PluginContext(
-        store=graph,
-        config=MCSConfig(),
-        token_budget=TokenBudget(8000),
-        context_renderer=None,  # type: ignore[arg-type]
-        plugin_manager=pm,
-    )
-    pm.initialize_all(ctx)
-    return plugin
 
 
 def test_navigate_follows_all_out_edges(mock_llm):
@@ -51,7 +34,7 @@ def test_navigate_follows_all_out_edges(mock_llm):
     g.add_edge("semantic_c", "hub_a")
 
     plugin = HubFallbackEntryPlugin()
-    _init_plugin(plugin, g, mock_llm)
+    init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
 
     # 记录所有候选节点
     all_candidates = []
@@ -87,7 +70,7 @@ def test_navigate_does_not_come_back_via_uplink(mock_llm):
     g.add_edge("a", "b")
 
     plugin = HubFallbackEntryPlugin()
-    _init_plugin(plugin, g, mock_llm)
+    init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
 
     # 记录所有 LLM 调用中的候选节点
     all_candidates = []
@@ -131,7 +114,7 @@ def test_navigate_from_root_does_not_revisit_ancestors(mock_llm):
     g.add_edge("hub2", "leaf2")
 
     plugin = HubFallbackEntryPlugin()
-    _init_plugin(plugin, g, mock_llm)
+    init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
 
     # 选择 hub1 下钻，然后选择 leaf1
     routes = {
@@ -168,7 +151,7 @@ def test_whole_circle_marked_visited(mock_llm):
     g.add_edge(SEED_ROOT_ID, "c3")
 
     plugin = HubFallbackEntryPlugin()
-    _init_plugin(plugin, g, mock_llm)
+    init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
 
     # 记录所有 LLM 调用
     all_calls = []

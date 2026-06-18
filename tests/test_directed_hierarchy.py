@@ -8,9 +8,7 @@ from __future__ import annotations
 import os
 import tempfile
 
-from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.token_budget import TokenBudget
-from mcs.entities.config import MCSConfig
 from mcs.entities.decisions import Community, MultiHubDecision
 from mcs.entities.graph import Node
 from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID, FanoutReducerPlugin
@@ -26,23 +24,6 @@ def _group_response(nodes_in, free_args):
     return MultiHubDecision(communities=[
         Community(theme="Group", member_ids=ids, strategy="summarize", summary="Group")
     ])
-
-
-def _fanout_with_root(graph, token_budget, mock_llm):
-    pm = PluginManager()
-    pm.register(mock_llm)
-    fr = FanoutReducerPlugin({"floor": 16})
-    pm.register(fr)
-    pm.initialize_all(
-        PluginContext(
-            store=graph,
-            config=MCSConfig(),
-            token_budget=token_budget,
-            context_renderer=None,  # type: ignore[arg-type]
-            plugin_manager=pm,
-        )
-    )
-    return fr
 
 
 def test_reorganize_produces_pure_downstream_topology():
@@ -117,7 +98,7 @@ def test_reorganize_out_neighbors():
     assert {n.id for n in g.get_neighbors("c")} == set()
 
 
-def test_maintain_seed_root_uses_unidirectional_edges(mock_llm):
+def test_maintain_seed_root_uses_unidirectional_edges(mock_llm, fanout_reducer):
     """root→concept 边是单向的：get_neighbors(root) 含概念，get_neighbors(concept) 不含 root。"""
     g = GraphStore()
     concepts = []
@@ -126,7 +107,7 @@ def test_maintain_seed_root_uses_unidirectional_edges(mock_llm):
         g.add_node(n)
         concepts.append(n)
     mock_llm.set_response("decide_hub", _group_response)
-    fr = _fanout_with_root(g, TokenBudget(500), mock_llm)
+    fr = fanout_reducer(g, mock_llm, TokenBudget(500))
 
     changed = list(concepts)
     fr.run(changed, g, mock_llm.call)
@@ -153,7 +134,7 @@ def test_maintain_seed_root_uses_unidirectional_edges(mock_llm):
             assert not hasattr(edge, "direction") or getattr(edge, "direction", None) is None
 
 
-def test_hierarchy_persisted_via_save_full(mock_llm):
+def test_hierarchy_persisted_via_save_full(mock_llm, fanout_reducer):
     """单向层级产物经 save_full 落库后边保真（source_id / target_id 正确）。"""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
@@ -166,7 +147,7 @@ def test_hierarchy_persisted_via_save_full(mock_llm):
         storage.add_node(n)
         concepts.append(n)
     mock_llm.set_response("decide_hub", _group_response)
-    fr = _fanout_with_root(storage, TokenBudget(500), mock_llm)
+    fr = fanout_reducer(storage, mock_llm, TokenBudget(500))
     changed = list(concepts)
     fr.run(changed, storage, mock_llm.call)
 

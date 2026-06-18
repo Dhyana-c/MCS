@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from conftest import make_query_engine
+
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
@@ -37,34 +39,9 @@ class _StaticEntry(EntryPluginInterface):
         ]
 
 
-def _build_engine(
-    graph: GraphStore, mock_llm, *extra_plugins, max_rounds=3, max_accumulated_nodes=1000
-) -> QueryEngine:
-    pm = PluginManager()
-    pm.register(mock_llm)
-    for p in extra_plugins:
-        pm.register(p)
-    ctx = PluginContext(
-        store=graph,
-        config=None,  # type: ignore[arg-type]
-        token_budget=TokenBudget(8000),
-        context_renderer=None,  # type: ignore[arg-type]
-        plugin_manager=pm,
-    )
-    pm.initialize_all(ctx)
-    return QueryEngine(
-        store=graph,
-        llm=mock_llm,  # type: ignore[arg-type]
-        plugin_manager=pm,
-        token_budget=TokenBudget(8000),
-        max_rounds=max_rounds,
-        max_accumulated_nodes=max_accumulated_nodes,
-    )
-
-
 def test_default_returns_subgraph(seeded_graph, mock_llm):
     """无 postprocess 插件 → 查询返回 Subgraph。"""
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
@@ -79,7 +56,7 @@ def test_default_returns_subgraph(seeded_graph, mock_llm):
 
 def test_empty_seeds_returns_empty_subgraph(seeded_graph, mock_llm):
     """当没有 entry 插件产出任何内容时，查询返回空 Subgraph。"""
-    engine = _build_engine(seeded_graph, mock_llm)  # no entry plugins
+    engine = make_query_engine(seeded_graph, mock_llm)  # no entry plugins
     result = engine.query("nothing matches")
     assert isinstance(result, Subgraph)
     assert result.nodes == []
@@ -101,7 +78,7 @@ def test_bfs_visits_each_node_once_in_cycle():
     from tests.conftest import MockLLM
 
     mock = MockLLM()
-    engine = _build_engine(g, mock, _StaticEntry(["a"], g))
+    engine = make_query_engine(g, mock, _StaticEntry(["a"], g))
     # select_facts 选中所有候选（经 MockLLM 回退到 select_nodes mock）
     mock.set_response(
         "select_nodes",
@@ -119,7 +96,7 @@ def test_max_rounds_caps_bfs_depth(seeded_graph, mock_llm):
         "select_nodes",
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
@@ -140,7 +117,7 @@ def test_max_accumulated_nodes_caps_node_count(seeded_graph, mock_llm):
         "select_nodes",
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
@@ -194,7 +171,7 @@ def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
         def locate(self, query, ctx):
             raise AssertionError("entry 插件在有 existing_context 时不能运行")
 
-    engine = _build_engine(seeded_graph, mock_llm, _RaisingEntry())
+    engine = make_query_engine(seeded_graph, mock_llm, _RaisingEntry())
     # select_facts 不扩展
     mock_llm.set_response("select_nodes", [])
     seed = seeded_graph.get_node("nn")
@@ -215,7 +192,7 @@ def test_postprocess_chain_transforms_output(seeded_graph, mock_llm):
                 return ", ".join(n.name for n in input.nodes)
             return str(input)
 
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
@@ -242,7 +219,7 @@ def test_query_context_lifecycle_fields_populated(seeded_graph, mock_llm):
             captured["user_input"] = ctx.user_input
             return input
 
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
@@ -265,7 +242,7 @@ def test_preprocess_chain_transforms_query_text(seeded_graph, mock_llm):
         def preprocess(self, text: str, ctx) -> str:
             return text.upper()
 
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
@@ -296,7 +273,7 @@ def test_query_engine_preprocess_and_postprocess_independent(seeded_graph, mock_
         def process(self, input, ctx):
             return input
 
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
@@ -325,7 +302,7 @@ def test_trim_plugin_chain(seeded_graph, mock_llm):
             trim_calls.append([n.id for n in nodes])
             return nodes[:1]  # 只保留第一个
 
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl", "nn"], seeded_graph),
@@ -342,7 +319,7 @@ def test_trim_plugin_chain(seeded_graph, mock_llm):
 
 def test_trim_chain_empty_skips(seeded_graph, mock_llm):
     """未注册 TrimPlugin 时仍正常执行（TrimPlugin 链为空则跳过裁剪）。"""
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
@@ -362,7 +339,7 @@ def test_fact_bfs_expands_hierarchy_children(seeded_graph, mock_llm):
         "select_nodes",
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
     )
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
@@ -389,7 +366,7 @@ def test_fact_bfs_collects_fact_edges():
     from tests.conftest import MockLLM
 
     mock = MockLLM()
-    engine = _build_engine(g, mock, _StaticEntry(["a"], g))
+    engine = make_query_engine(g, mock, _StaticEntry(["a"], g))
     # select_facts 选中所有（经 MockLLM 回退转换）
     mock.set_response(
         "select_nodes",
@@ -415,7 +392,7 @@ def test_fact_bfs_endpoints_added_to_accumulated():
     from tests.conftest import MockLLM
 
     mock = MockLLM()
-    engine = _build_engine(g, mock, _StaticEntry(["a"], g))
+    engine = make_query_engine(g, mock, _StaticEntry(["a"], g))
     mock.set_response(
         "select_nodes",
         lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
@@ -441,7 +418,7 @@ def test_fact_bfs_parse_error_skips_node(seeded_graph, mock_llm):
         return [n.id for n in (nodes_in or []) if n.id != "dl"]
 
     mock_llm.set_response("select_nodes", fail_once)
-    engine = _build_engine(seeded_graph, mock_llm, _StaticEntry(["dl"], seeded_graph))
+    engine = make_query_engine(seeded_graph, mock_llm, _StaticEntry(["dl"], seeded_graph))
     result = engine.query("test")
 
     # 即使首次失败，种子 dl 仍应在结果中
@@ -452,7 +429,7 @@ def test_fact_bfs_parse_error_skips_node(seeded_graph, mock_llm):
 def test_traverse_with_no_neighbors_or_facts(seeded_graph, mock_llm):
     """叶子节点（无子节点无事实）不会触发 LLM 调用。"""
     # cnn 是叶子节点
-    engine = _build_engine(
+    engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["cnn"], seeded_graph),

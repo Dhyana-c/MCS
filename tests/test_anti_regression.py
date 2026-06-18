@@ -18,24 +18,6 @@ from mcs.stores.in_memory import InMemoryStore
 GraphStore = InMemoryStore
 
 
-def _fanout_with_root(graph, token_budget, mock_llm, **extra_cfg):
-    pm = PluginManager()
-    pm.register(mock_llm)
-    cfg = {"floor": 16, **extra_cfg}
-    fr = FanoutReducerPlugin(cfg)
-    pm.register(fr)
-    pm.initialize_all(
-        PluginContext(
-            store=graph,
-            config=MCSConfig(),
-            token_budget=token_budget,
-            context_renderer=None,  # type: ignore[arg-type]
-            plugin_manager=pm,
-        )
-    )
-    return fr
-
-
 def test_decide_hub_returns_none_on_empty_response():
     """decide_hub 空响应（LLM 返回无 communities）时返回 None。"""
     fr = FanoutReducerPlugin()
