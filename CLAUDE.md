@@ -1,63 +1,70 @@
 # MCS — 最大上下文子图（Maximum Context Subgraph）
 
 > 项目宪法。下列不变量与铁律**不得违背**；变更若冲突，先改本宪法（经评审）再改代码。
-> 规范细节见 `openspec/specs/`（`subgraph-bounding`、`architecture`）。
+> 规范细节见 `openspec/specs/`（`subgraph-bounding`、`architecture`）；**完整、权威的图模型设计见 [`docs/graph-model-design.md`](docs/graph-model-design.md)**。
+>
+> ⚠️ **过渡说明**：本宪法已按 OpenSpec change `unified-graph-schema` 重写为**统一图模型**（4 类节点 / 谓词落点 / 边仅 `关联`·`互斥` / 核心·事件双层 / 守门=改图即把关）。**现有代码仍是旧模型**（`relation_model` 双模式 + `kind`/`label` 边）；按"先改宪法再改代码"，代码迁移由该 change 跟踪，过渡期代码与本宪法的差异是预期的。
 
-MCS 把知识组织成概念图，并维持一条硬不变量，使任意节点的**活跃双向视图**（关系边 + 层级邻居）永远放得进一个 LLM 上下文窗口。导航、归纳、查询都建立在此之上。
+MCS 把知识组织成图，并维持一条硬不变量，使任意节点的**活跃双向视图**（关系边 + 层级邻居）永远放得进一个 LLM 上下文窗口。导航、归纳、查询都建立在此之上。
 
 ## 核心不变量（不得违背）
 
-**任意节点的活跃双向视图（top-priority 的 {关系边 + 层级邻居}，截断后）渲染 token ≤ T。** 关系边组成随 `relation_model`：`property_graph`（默认）= 出事实 + 入事实；`attribute_node` = 无类型关联边 + 关联端点（含属性节点）。
+**任意节点的活跃双向视图（top-priority 的 {关系边 + 层级邻居}，截断后）渲染 token ≤ T。** 单一模型下，关系边即该节点的 **`关联` / `互斥` 边**（两端可达，端点含命题节点）；层级邻居为聚类涌现的下钻成员。
 
-**关系表示可插拔**（`relation_model`，默认 `property_graph`，**建图时选定、写入与查询须同模式；混库为未定义行为**）：
-- `property_graph`（默认，基线）：关系为带 label 事实边（`主 —谓→ 宾`）。本宪法对 label 事实边的全部硬约束**仅适用此模式**；默认行为逐字不变。
-- `attribute_node`：关系具体化为**属性节点**（`role="attribute"`，content 持单一简短说法）+ **无类型关联边**（`kind="assoc"`，无 label）。详见 `attribute-node-model`。
+**节点 4 类**（按结构行为分，不引入领域 type）：**概念 / 事实（命题）/ 事件 / source**。`hub` 仅为**标记**（反查 / 可观测，无算法含义、非节点类）。**谓词落点**：关系语义落**事实节点 `content`**，不做 label 边——事实为一等节点才能被事件背书、被互斥连接（边连不了边）。
 
-下列铁律在**每种模式内**逐字成立，仅"关系边是什么 / 怎么算 token"随模式切换。
+**边仅 2 类**：`关联`（结构基础边，两端可达）+ `互斥`（事实 ↔ 事实，当前唯一语义类型）；**无 `kind`、无开放 `label`、无独立"层级"边**（层级由聚类涌现 + hub 标记表达）。新增语义类型走登记制、谨慎增加。
 
-**"有界"指活跃 / 渲染视图，不指存储**——存储可保留低 priority 长尾，靠优先级沉底 / 遗忘降权。溢出靠归纳（出边侧 fanout） / 优先级截断（入边侧） / 遗忘降权（Phase 2）。含虚拟根 `__seed_root__`。出边侧超 T 时必须立即聚类裂变收敛；入边侧仅按 priority 截断（不聚类，会坏归属语义）。
+**双层**：**核心图**（概念 + 事实，有界）/ **事件层**（事件，**事件 → 核心方向**绑入、**核心不反查**、不聚类、时间倒排截断、帧相对）。**载重命根**：核心任何节点不反查事件（尤其"用户 / 我"——否则最热节点把全部事件漏回核心、撑爆活跃视图）；**核心侧 `get_relations` 过滤事件边**落实此规则（见「边方向」）。**产生方式**：概念 / 事实靠 LLM 语义抽取；事件 / source 由**规则**入库、不经 LLM。
+
+**"有界"指活跃 / 渲染视图，不指存储**——存储可保留低 priority 长尾，靠优先级沉底 / 遗忘降权。溢出靠归纳（聚类）/ 优先级截断（关系侧）/ 遗忘降权（Phase 2）。含虚拟根 `__seed_root__`。**守门挂在改图操作上**（写入 / 连边 / 合并 / 读修复）：邻域即将超 T 必立即聚类裂变收敛；关系侧仅按 priority 截断（不聚类，会坏归属语义）。
 > 反例（曾发生）：`__seed_root__` 扁平直挂 1284 个概念——不变量被破坏，根因见铁律一。
 
 ## 两条铁律
 
-1. **估算口径 == 渲染口径（随 `relation_model`）**：判断"活跃视图是否超 T"的估算，必须与 `context_renderer` 实际渲染逐字一致（同字段、同 name==content 去重，**含该模式关系边渲染 token**）。`property_graph` 模式计事实边（`主 —label→ 宾`）token；`attribute_node` 模式计关联边（`主 — 宾`，无 label）+ 属性节点 token。禁止用更少字段（如只算 `content`、漏 `name`、漏关系边 token）低估——低估漏判、直接破坏不变量（1284 即此坑）。
+1. **估算口径 == 渲染口径**：判断"活跃视图是否超 T"的估算，必须与 `context_renderer` 实际渲染逐字一致（同字段、同 name==content 去重，**含关系边渲染 token**）。关系边渲染为 `主 — 宾`（`关联` / `互斥`，**无 label**），计其 token；边的 `type` 是结构标记、**不计 token**。禁止用更少字段（如只算 `content`、漏 `name`、漏关系边 token）低估——低估漏判、直接破坏不变量（1284 即此坑）。
 2. **归纳必须 LLM 语义**：中间 hub 由 `decide_hub` 语义归纳，禁止用连通分量 / Louvain 等纯图聚类替代（语义边稀疏时聚不出有意义的类）。图结构仅作辅助信号。
 
 ## 算法原理
 
 > **优化判据**：一切重组（裂变 / 重叠 / 复用）以**降低总 token / 节点 / 边数**为准；总量不降的重组无效，不做。
 
-- **渲染**：节点 = `name` + `content`，name==content 只写一份；`property_graph` 模式关系边 = `主 —label→ 宾`（事实边），`attribute_node` 模式关系边 = `主 — 宾`（无类型关联边，属性节点按节点渲染）；估算与渲染共用此函数（铁律一，口径随模式）。
-- **守门**：每次写入后检查受影响节点（尤其 root）**出边侧层级视图**（中心 content + 层级子节点，**不含事实 token**——`decide_hub` 只看节点、聚不了事实边）——≤ T 放行；**即将超 T 即主动触发裂变**（不分批，取中心 + 全部层级子节点一次性喂 `decide_hub`），对**任意**超预算节点适用。事实 token 的有界由查询渲染期 Phase 2 按 priority 截断兜；入边侧不聚类，仅查询渲染期按 priority 截断。
-- **聚类裂变（一进多出）= 对知识重组**：取中心点 + **出边侧全部成员**（不变量保证 ≤ T，一次装下）→ `decide_hub` 分成**多个语义内聚的社区** → 每个社区按下述方式重组 → 中心点出边侧**一步**收敛。重组后**允许一个节点属于多个父**（重叠），无法归类者留中心点下（不丢）、幻觉 id 过滤。**关系边（`property_graph` 的 fact / `attribute_node` 的 assoc）不被此手术波及**——fanout 只动 hierarchy。
-- **重组三方式**（聚类的本质是知识重组，非机械分组）：① **合并同义**——旧的同义概念合并为一；② **找到关键概念（重点）**——识别社区里的**关键概念**，让其余概念关联它、以它为组织中心；③ **概括成新概念**——无现成关键概念时，把这组概念**概括**成一个新概念并与旧概念关联。**禁止空洞聚合标签**（如"信息碎片集合""综合信息枢纽"）。
-- **hub 对 LLM 同构**：`role="hub"` 仅供系统识别层级 / 可观测；渲染给 LLM 时与普通概念无异（name+content，无特殊标记）。"hub" 不过是**恰好成为组织中心的普通概念**（关键概念 / 概括概念），不是特殊节点类型。
-- **hub 复用（边吸收）**：hub H 生成后，若某节点 X 的一跳子节点 ⊇ H 的全部成员，把 X 改为直连 H（删 X→各成员、加 X→H），减边、减 X 扇出、复用已有 hub。
+- **渲染**：节点 = `name` + `content`，name==content 只写一份；关系边 = `主 — 宾`（`关联` / `互斥`，无 label），命题作普通节点渲染（谓词在其 content）；估算与渲染共用此函数（铁律一）。
+- **守门**：**任何改图操作后**（写 / 连边 / 合并 / 读修复）检查受影响节点（尤其 root）**出边侧层级视图**（中心 content + 下钻成员，**不含关系边 token**——`decide_hub` 只看节点、聚不了关系边）——≤ T 放行；**即将超 T 即主动触发裂变**（不分批，中心 + 全部下钻成员一次喂 `decide_hub`），对**任意**超预算节点适用。关系边 token 的有界由查询渲染期 Phase 2 按 priority 截断兜；关系侧不聚类。
+- **聚类裂变（一进多出）= 对知识重组**：取中心点 + **下钻侧全部成员**（不变量保证 ≤ T，一次装下）→ `decide_hub` 分成**多个语义内聚的社区** → 每个社区按下述方式重组 → 中心点**一步**收敛。允许**一个节点属于多个父**（重叠），无法归类者留中心点下（不丢）、幻觉 id 过滤。**关系边（`关联` / `互斥`）不被此手术波及**——fanout 只动组织层级；对**事实**节点**只重组不合并**（合并会断背书 / 互斥）。
+- **重组三方式**（聚类的本质是知识重组，非机械分组）：① **合并同义**——旧的同义概念合并为一（仅概念）；② **找到关键概念（重点）**——识别社区里的**关键概念**，以它为组织中心；③ **概括成新概念**——无现成关键概念时，把这组概念**概括**成一个新概念。**禁止空洞聚合标签**（如"信息碎片集合""综合信息枢纽"）。
+- **hub 对 LLM 同构**：`hub` **标记**仅供系统识别层级 / 可观测；渲染给 LLM 时与普通节点无异（name+content，无特殊标记）。hub 是**恰好成为组织中心的普通节点**（关键概念 / 概括概念），非特殊类型、**非 role**。
+- **hub 复用（边吸收）**：新组织中心 H 生成后，若某节点 X 的下钻子节点 ⊇ H 的全部成员，把 X 改为直连 H（删 X→各成员、加 X→H），减边、减扇出、复用已有 hub。
+- **read-repair（读时收敛）**：查询工作集里撞见重名 / 同义节点——同名字面当场识别、同义搭选择那次 LLM 顺带判——合并；**合并产生的节点同样过守门**（超 T / 需消歧的挂起交写 / 维护，不在读路径同步聚类）。**同名 ≠ 同义**需消歧。
 - **递归**：新 hub 若仍超 T，重复裂变，直到图中**处处**一跳邻域 ≤ T。
 
 ## 总体流程
 
-- **写入 `ingest`**：`extract_concepts`（抽概念）→ `judge_relations`（判关系 / 合并，**按 `relation_model` 分支**：`property_graph` 关系落带 label 事实边、`attribute_node` 关系落属性节点 + `kind="assoc"` 边；一条事实/关联只存一份、两端可达）→ `decide_directions`（扩展）→ 挂 `__seed_root__`（**仅孤儿**——零关系关联的概念才挂 root：`get_facts ∪ get_assoc` 皆空；有关联者经关联可达。**`attribute_node` 模式 MUST 用 `get_assoc` 判孤儿**，否则 `get_facts` 恒空 → 全概念挂 root → 根扁平化破坏不变量）→ **主动守门 + 整窗单次裂变**（不分批、全局任意节点）→ `persist`（`save_full`，逐条保真）。
-- **查询 `query`**：种子定位（**jieba 切词 + 字面匹配概念名 / 别名**为主力，embedding 兜底，root 仅最后退路；**反查 + 多种子**让入口只需一个 foothold）→ 子图扩展（**事实 BFS**，每节点渲染活跃双向视图，**关系边来源按 `relation_model` 切换**：`property_graph` 取 `get_facts`、`attribute_node` 取 `get_assoc`；LLM 选关系边、端点补入）→ 后处理（重排 / 裁剪）→ `Subgraph`（nodes + 选中关系边：`property_graph` 为 fact、`attribute_node` 为 assoc）。
+- **写入 `ingest`**：① **规则入库**（事件按既定结构直存、source 按类型切分分类，**不经 LLM**）→ ② **关联节点提取**（复用 read 检索图中已有相关节点）→ ③ `extract_concepts` + `judge_relations`（**带已有节点对齐**：抽概念 / 命题，合并同义、判互斥；关系落**命题节点 + 关联边**，谓词在 content，**不产 label**；一条关系 / 互斥只存一份、两端可达）→ ④ 连边（命题 —关联— 端点；事件 —单向→ 命题 / 概念 背书；事实 —互斥— 事实；**仅孤儿**挂 `__seed_root__`——零关联才挂，`get_relations` 空者为孤儿）→ ⑤ **主动守门 + 整窗单次裂变 + 边吸收**（全局任意节点）→ ⑥ `persist`（`save_full`，逐条保真）。
+- **查询 `query`**：种子定位（**jieba 切词 + 字面匹配名 / 别名**为主力，embedding 兜底，root 仅最后退路；**反查 + 多种子**让入口只需一个 foothold）→ **核心 BFS**（沿 `关联` 边，每节点渲染活跃双向视图，LLM 选相关命题 / 邻居、端点补入；**事件默认不进**，需出处时按需 `命题 → 事件` 定向查）→ read-repair → 后处理（重排 / 裁剪）→ `Subgraph`（nodes + 选中 `关联` / `互斥` 边）。
 
 ## 边方向
 
-**关系表示随 `relation_model` 可插拔**；全图边均为单向 `source → target`：
+全图边均为单向 `source → target`：
 
-- **层级边** `父→子`：`kind="hierarchy"`，单向、无 label，结构骨架，驱动导航下钻。hub 由 `role="hub"` 识别。（两模式共有。）
-- **事实边** `主 —谓→ 宾`：`kind="fact"`，带 `label`（粗粒度谓词）、带 `priority`（为遗忘预留）。**仅 `property_graph` 模式**承载关系语义。**一条事实只存一份**（保留方向语义），但**两端邻接都索引到它**（支持反查）。**禁止自动镜像反向**——反向若是不同语义则为独立事实。
-- **无类型关联边** `主 — 宾`：`kind="assoc"`，**无 label**、表"两概念相关 / 共现"，**仅 `attribute_node` 模式**承载关系连接（关系语义由属性节点 content 承载，不在此边）。一条只存一份、两端邻接都索引到它、按 `(source, target)` 去重。
-- 层级关系为**纯下行单向边** `父→子`（无成员上行边）。
-- `get_out_hierarchy` 返回层级出边目标（驱动下钻）；`get_facts` 返回该节点作**源或宾**的事实边（反查，双向可达）；`get_assoc` 返回该节点作**任一端**的 `kind="assoc"` 关联边（`property_graph` 模式无此边、返回空）。属性节点（`role="attribute"`）经 assoc 连接、**不在层级骨架、不参与 fanout 收敛**，其 token 属关系侧、Phase 2 截断兜。
-- **边 / 点扩展对称**：`Edge.extensions` 与 `Node.extensions` 对称——插件经 `EdgeExtensionInterface`（`PluginType.EDGE_EXTENSION`）向边挂字段，逐条随边保真存取 / 反查 / 重组（`edges.extensions_json` 列，与节点同构）；`render(edge, purpose)` 返回 `None` 即该 purpose 下隐藏（字段级可见性，与节点扩展同判定规则）。边渲染函数 `render_fact_edge` / `render_assoc_edge` 带 `purpose` 参以支持按 purpose 切换可见性。
-- **`priority` 为派生值**：目标态由 `PriorityScorer` 从边扩展字段算、非写入方权威原语；Phase 1 默认 `0.0`（seam 已引入、未接写路径），`edges.priority` 列作 Phase 2 派生值缓存。**铁律一 / 守门口径不变**——守门只估节点层级视图、不渲染 / 不估算关系边；边渲染 == 估算属**查询侧** token 计数正确性（`estimate_*_edge` 委托 `render_*_edge`），与守门铁律一无关。
+- **关联边** `主 — 宾`：`type="关联"`，结构基础边，**无 label**；连接命题与端点、概念间关联、聚类形成的"组织中心 ↔ 成员"。**一条只存一份**，但**两端邻接都索引到它**（反查、双向可达）；同 `(source, target)` 去重。
+- **互斥边** `事实 ↔ 事实`：`type="互斥"`，当前唯一语义类型，表两条事实相互排斥。
+- **无独立"层级"边**：组织层级是**聚类的产物**，用 `关联` 边 + 中心节点 `hub` 标记表达，不是独立边类型；层级关系为**纯下行**（无成员上行边）。
+- `get_out_hierarchy` 返回下钻成员（驱动下钻）；`get_relations` 返回该节点作**任一端**的 `关联` / `互斥` 边（反查，双向可达）。**事件层（载重规则）**：`事件 → 命题 / 概念` 用 `关联` 边、两端都索引，但**核心节点**（概念 / 事实）侧 `get_relations` **MUST 过滤事件边**（事件侧 `get_relations` 仍可达核心）——核心不反查事件（否则最热节点把全部事件漏回核心、撑爆活跃视图，且污染 priority 截断样本）。
+- **边 / 点扩展对称**：`Edge.extensions` 与 `Node.extensions` 对称——插件经 `EdgeExtensionInterface`（`PluginType.EDGE_EXTENSION`）向边挂字段，逐条随边保真存取 / 反查 / 重组（`edges.extensions_json` 列）；`render(edge, purpose)` 返回 `None` 即该 purpose 下隐藏（字段级可见性）。
+- **`priority` 为派生值**：目标态由 `PriorityScorer` 从边扩展字段算、非写入方权威原语；Phase 1 默认 `0.0`，`edges.priority` 列作 Phase 2 派生值缓存。**守门只估节点层级视图、不渲染 / 不估算关系边**；边渲染 == 估算属**查询侧** token 计数正确性（`estimate_*_edge` 委托 `render_*_edge`），与守门铁律一无关。
+
+## 上下文预算
+
+- 上下文窗口 **`W = S + T + R`**（系统 / 查询 / 结果窗口，`R = T` 默认、可配置）。`T`（查询窗口）即不变量阈值——任意节点活跃视图 ≤ T；`token_budget` 为一次查询累积答案的上限。
+- 一次查询的工作状态分四区：**积累区 / 活跃区**（进 LLM、吃 T 预算）+ **visited / frontier**（只存 id、不进 LLM、不计 token）。
 
 ## 开关 / 工程
 
-- 分层种子图由 `seed_graph_bounding` 驱动，**默认开**（保证核心不变量）；`token_budget.T ≈ W/2`。
-- 关系表示模式 `relation_model`（`property_graph` 默认 | `attribute_node`），建图时选定、写入与查询须同模式；混库为未定义行为。`property_graph` 为基线、行为逐字不变；`attribute_node` 为用户可选项（属性节点 + 无类型关联边）。
-- 运行用根目录 `.venv`；测试 `.venv\Scripts\python.exe -m pytest -q`，须保持默认基线行为不变。
-- 规范在 `openspec/specs/`，变更走 `openspec/changes/`。
+- 分层种子图由 `seed_graph_bounding` 驱动，**默认开**（保证核心不变量）。
+- **单一图模型**——`relation_model` 开关已删除（不再有 `property_graph` / `attribute_node` 双模式）；节点 4 类、边 2 类见上。
+- 运行用根目录 `.venv`；测试 `.venv\Scripts\python.exe -m pytest -q`。
+- 规范在 `openspec/specs/`，变更走 `openspec/changes/`；权威图模型设计见 `docs/graph-model-design.md`。
 - 插件体系：统一基类 `core/plugin.py`（`Plugin` + `PluginType`），各接口继承它、`PluginManager` 按 `PluginType` 索引（多接口插件经 `get_types()` 登记到每个类型）；详见 `openspec/specs/plugin-protocol`。插件类型包括：`ENTRY`、`TRIM`、`ARBITRATION`、`WRITE_PREPROCESS`（写入管线阶段 ①）、`QUERY_PREPROCESS`（查询管线阶段 ①）、`POSTPROCESS`、`COMPACTION`、`INDEX`、`LLM`、`NODE_EXTENSION`、`EDGE_EXTENSION`、`STORAGE_SCHEMA_EXT`、`MAINTENANCE`、`SEED_SELECTOR`。`PREPROCESS` 已废弃，指向 `WRITE_PREPROCESS`。
 - 评测框架：启动脚本和库代码均在顶层 `bench/` 目录（按评测类型分类）。详见 `bench/README.md`。
 
