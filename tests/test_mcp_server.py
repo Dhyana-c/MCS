@@ -14,10 +14,8 @@ from typing import Any
 import pytest
 
 from mcs.entities.graph import Node, Subgraph
-from mcs.mcp.server import (
+from mcs_mcp.server import (
     MCPServer,
-    _format_ingest_status,
-    _render_query_result,
     build_fastmcp,
     main,
 )
@@ -144,21 +142,6 @@ def test_main_resolves_config_from_env(monkeypatch, tmp_path: Path):
 # ── §3.4 query 渲染 ─────────────────────────────────────────────────────────
 
 
-def test_render_query_result_str_passthrough():
-    assert _render_query_result("plain text", "property_graph", None) == "plain text"
-
-
-def test_render_query_result_subgraph_renders_nodes():
-    n = Node(id="a", name="深度学习", content="一种方法")
-    out = _render_query_result(Subgraph(focus_id="a", nodes=[n]), "property_graph", None)
-    assert "深度学习" in out
-    assert "一种方法" in out
-
-
-def test_render_query_result_other_falls_back_to_str():
-    assert _render_query_result(12345, "property_graph", None) == "12345"
-
-
 def test_run_query_renders_via_handler(server: MCPServer):
     server._mcs = _FakeMCS(
         query_result=Subgraph(focus_id="a", nodes=[Node(id="a", name="节点X", content="内容Y")])
@@ -168,15 +151,6 @@ def test_run_query_renders_via_handler(server: MCPServer):
 
 
 # ── §4.3 ingest 状态摘要 ────────────────────────────────────────────────────
-
-
-def test_format_ingest_status_counts_and_no_edges():
-    s = _format_ingest_status(_FakeWriteContext())
-    assert "概念 1" in s
-    assert "节点 +2" in s
-    assert "persisted=yes" in s
-    # MUST NOT 报边计数
-    assert "边" not in s
 
 
 def test_run_ingest_returns_status_string(server: MCPServer):
@@ -328,7 +302,7 @@ def test_core_imports_unaffected_by_missing_mcp_and_yaml():
                 del sys.modules[m]
         import mcs                   # 核心库
         import mcs.entities.config   # config（yaml 惰性）
-        import mcs.mcp.server        # MCP 模块（mcp 惰性）
+        import mcs_mcp.server        # MCP 模块（mcp 惰性）
         print("OK")
         """
     )

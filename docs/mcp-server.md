@@ -38,7 +38,7 @@ mcs-mcp
 
 # 方式二：CLI 参数
 mcs-mcp --config /path/to/mcs.yaml
-# 等价：python -m mcs.mcp
+# 等价：python -m mcs_mcp
 ```
 
 缺配置 / 文件不存在 / build 失败 → 清晰报错并以非零码退出。
@@ -71,7 +71,7 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`）中加：
 
 若 `mcs-mcp` 不在 PATH，用解释器的完整路径，例如
 `/path/to/.venv/Scripts/mcs-mcp.exe`（Windows）或 `/path/to/.venv/bin/mcs-mcp`（macOS / Linux）。
-也可以用 `python -m mcs.mcp`：`"command": "python"`、`"args": ["-m", "mcs.mcp", "--config", "..."]`。
+也可以用 `python -m mcs_mcp`：`"command": "python"`、`"args": ["-m", "mcs_mcp", "--config", "..."]`。
 
 ## 须知
 

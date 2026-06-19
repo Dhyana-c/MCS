@@ -48,7 +48,7 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
         IdempotencyCheckPlugin,
         SourceTrackingPlugin,
     )
-    from mcs.plugins.seed_selector.llm_seed_selector import SemanticTrimPlugin
+    from mcs.plugins.trim.llm_seed_selector import SemanticTrimPlugin
     from mcs.plugins.trim.priority_trim import PriorityTrimPlugin
 
     return {

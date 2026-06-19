@@ -55,6 +55,7 @@ ALL_MODULES = [
     "mcs.plugins.entry.hub_fallback",
     "mcs.plugins.trim",
     "mcs.plugins.trim.priority_trim",
+    "mcs.plugins.trim.llm_seed_selector",
     "mcs.plugins.postprocess",
     "mcs.plugins.postprocess.rerank",
     "mcs.plugins.postprocess.summary",
@@ -70,8 +71,6 @@ ALL_MODULES = [
     "mcs.plugins.llm.claude_llm",
     "mcs.plugins.llm.deepseek_llm",
     "mcs.plugins.llm.ollama_llm",
-    "mcs.plugins.seed_selector",
-    "mcs.plugins.seed_selector.llm_seed_selector",
     # presets
     "mcs.presets",
     "mcs.presets.phase1",

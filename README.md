@@ -151,7 +151,7 @@ MCS 可作为 **MCP（stdio）server** 暴露 `query` / `ingest` 工具，供 Cl
 ```bash
 pip install -e ".[mcp]"          # 可选依赖 mcp + pyyaml
 export MCS_CONFIG=/path/to/mcs.yaml   # YAML 配置（见「配置文件」）
-mcs-mcp                          # 或 python -m mcs.mcp
+mcs-mcp                          # 或 python -m mcs_mcp
 ```
 
 ```json

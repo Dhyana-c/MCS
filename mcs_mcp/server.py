@@ -9,11 +9,12 @@
   不靠锁（锁只互斥、不保证同线程）。异步工具处理器把每次调用 ``await`` 丢给该 worker，
   不阻塞 stdio 事件循环。
 - **mcp 惰性导入**：``mcp`` 包仅在 ``build_fastmcp`` / ``main`` 内按需 import，缺失时报
-  ``pip install mcs[mcp]``。这样 ``import mcs.mcp.server``（工具处理函数所在）在 mcp 未装时
+  ``pip install mcs[mcp]``。这样 ``import mcs_mcp.server``（工具处理函数所在）在 mcp 未装时
   仍可导入，核心库不受影响。
 
-工具处理函数（``MCPServer.run_query`` / ``run_ingest`` 及纯函数 ``_render_query_result`` /
-``_format_ingest_status``）**不依赖 mcp SDK**，可独立单测（不依赖真实 MCP 传输）。
+工具处理函数（``MCPServer.run_query`` / ``run_ingest``）**不依赖 mcp SDK**，可独立单测
+（不依赖真实 MCP 传输）；结果渲染委托核心库 ``mcs.rendering`` 的公开纯函数
+（``render_query_result`` / ``format_ingest_status``）。
 """
 
 from __future__ import annotations
@@ -27,12 +28,11 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from mcs.entities.config import MCSConfig
-from mcs.entities.graph import Subgraph
 from mcs.presets import Phase1Builder
+from mcs.rendering import format_ingest_status, render_query_result
 
 if TYPE_CHECKING:
     from mcs.core.mcs import MCS
-    from mcs.core.plugin_manager import PluginManager
 
 logger = logging.getLogger(__name__)
 
@@ -52,44 +52,6 @@ def _resolve_config_path(argv: list[str] | None) -> str | None:
     )
     args, _ = parser.parse_known_args(argv)
     return args.config or os.environ.get("MCS_CONFIG")
-
-
-def _render_query_result(
-    result: Any, relation_model: str, plugin_manager: PluginManager | None
-) -> str:
-    """把 ``mcs.query`` 的结果渲染为 LLM 可读文本。
-
-    - 结果为 ``str``（postprocess 已转换）→ 原样透传；
-    - 结果为 ``Subgraph``（nodes + edges）→ ``ContextRenderer.render_facts`` 渲染
-      （``mode=relation_model``，与 store 同模式）；
-    - 其余 → ``str(result)`` 兜底（不返回原始对象 / 内部结构）。
-    """
-    if isinstance(result, str):
-        return result
-    if isinstance(result, Subgraph):
-        from mcs.core.context_renderer import ContextRenderer
-
-        renderer = ContextRenderer(plugin_manager)
-        return renderer.render_facts(
-            list(result.nodes), list(result.edges), mode=relation_model
-        )
-    return str(result)
-
-
-def _format_ingest_status(wctx: Any) -> str:
-    """从 ``WriteContext`` 提取简明状态摘要。
-
-    数据源为 ``WriteContext`` 真有的字段：``len(changed)``（新增/合并节点）、
-    ``len(concepts)``（抽取概念）、``persisted``。**不报边计数**（``WriteContext`` 无该字段，
-    ``decisions[].edges_to`` 是请求边、非实际落地）。**不回原始 ``WriteContext``**。
-    """
-    changed = len(getattr(wctx, "changed", None) or [])
-    concepts = len(getattr(wctx, "concepts", None) or [])
-    persisted = bool(getattr(wctx, "persisted", False))
-    return (
-        f"已写入：抽取概念 {concepts}、新增/合并节点 +{changed}、"
-        f"persisted={'yes' if persisted else 'no'}"
-    )
 
 
 class MCPServer:
@@ -125,14 +87,14 @@ class MCPServer:
     def _do_query(self, query: str) -> str:
         assert self._mcs is not None  # build 成功后 _mcs 必非 None
         result = self._mcs.query(query)
-        return _render_query_result(
+        return render_query_result(
             result, self._relation_model, self._mcs.read_manager
         )
 
     def _do_ingest(self, text: str) -> str:
         assert self._mcs is not None
         wctx = self._mcs.ingest(text)
-        return _format_ingest_status(wctx)
+        return format_ingest_status(wctx)
 
     # === 公共：工具处理（串行、线程亲和） ===
 

@@ -21,7 +21,7 @@ class SeedSelectorPluginInterface(Plugin):
     """已废弃：语义筛选已合并为 TrimPlugin 实现。
 
     请改用 ``mcs.interfaces.trim_plugin.TrimPluginInterface``，
-    并参考 ``mcs.plugins.seed_selector.SemanticTrimPlugin`` 实现。
+    并参考 ``mcs.plugins.trim.llm_seed_selector.SemanticTrimPlugin`` 实现。
     """
 
     def get_type(self) -> PluginType:

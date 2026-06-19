@@ -1,11 +1,11 @@
 """记忆 agent 的记忆底座 —— MCS 的单线程包装，暴露 5 个细粒度导航原语。
 
 MCS 非线程安全、SQLite 连接绑创建线程，故 MCS 的构造与全部调用都经同一个
-单 worker 线程（同 ``mcs.mcp.server``）。工具（learn / search / associate /
+单 worker 线程（同 ``mcs_mcp.server``）。工具（learn / search / associate /
 reason / recall）是对 MCS 能力的薄封装，**导航决策权交给 agent 的 LLM**：
 LLM 决定用哪个工具、哪个种子、哪种模式、哪两个节点找路径。
 
-复用 mcp-server 的渲染纯函数（``_render_query_result`` / ``_format_ingest_status``）；
+复用核心库 ``mcs.rendering`` 的渲染纯函数（``render_query_result`` / ``format_ingest_status``）；
 节点 id 渲染 helper 让 LLM 能在多步工具间引用具体节点（search→associate→reason）。
 未实现的能力（vector / hot / random / recall）以空壳诚实返回，不伪造。
 """
@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable
 
 from mcs.entities.graph import Edge, Node
-from mcs.mcp.server import _format_ingest_status, _render_query_result
+from mcs.rendering import format_ingest_status, render_query_result
 
 if TYPE_CHECKING:
     from mcs.core.mcs import MCS
@@ -145,7 +145,7 @@ class MemoryStore:
 
     def _do_learn(self, text: str) -> str:
         wctx = self._mcs.ingest(text)
-        return _format_ingest_status(wctx)
+        return format_ingest_status(wctx)
 
     def learn(self, text: str) -> str:
         """写记忆：跑 mcs.ingest（worker 线程）→ 状态摘要文本。"""
@@ -180,7 +180,7 @@ class MemoryStore:
             return f"[error] 种子节点不存在：{seed_id}"
         # existing_context 跳过种子定位，直接对给定种子做事实 BFS（MCS 公共 API）
         result = mcs.query("", existing_context=[node])
-        return _render_query_result(
+        return render_query_result(
             result, mcs.query_engine.relation_model, mcs.read_manager
         )
 
