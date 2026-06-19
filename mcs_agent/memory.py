@@ -215,6 +215,20 @@ class MemoryStore:
         """回忆热点事件（未实现，空壳，不伪造）。"""
         return self._submit(self._do_recall, limit)
 
+    # === graph_summary（图级主题摘要，供 agent 注入 system prompt） ===
+
+    def _do_graph_summary(self) -> str:
+        return self._mcs.store.get_graph_meta("graph_summary") or ""
+
+    def graph_summary(self) -> str:
+        """读图级主题摘要（worker 线程）；无摘要返回空串。
+
+        摘要由 ``GraphSummaryPlugin`` 在每次 learn 后归纳、写入图级 meta。供 agent
+        每轮注入 system prompt 作为背景，使「是否进图探索」的路由判断有据。调用方
+        线程 MUST NOT 直接读 store（线程安全铁律，同其他原语）。
+        """
+        return self._submit(self._do_graph_summary)
+
     # === graph_view（只读可视化，人面视图） ===
 
     def _do_graph_view(self, node_id: str) -> dict | None:

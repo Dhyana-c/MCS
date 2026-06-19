@@ -651,3 +651,30 @@ def test_create_same_batch_dup_merges(empty_graph, mock_llm):
         Decision(action="create", concept=ConceptDraft(name="Tesla", content="b")),
     ])
     assert len([n for n in s.get_all_nodes() if n.name == "Tesla"]) == 1
+
+
+def test_ingest_writes_graph_summary_meta(mock_llm):
+    """端到端：ingest concept → 阶段⑥调度 GraphSummaryPlugin → 图摘要写入 meta。
+
+    覆盖 graph-summary change task 6.1：WritePipeline 调度链路对已注册的
+    GraphSummaryPlugin 生效（should_run 命中 concept → run 读顶层 hub → 写 meta）。
+    fanout 未注册，故手动预建 root + hub 层级作为归纳对象。
+    """
+    from mcs.plugins.maintenance.graph_summary import GraphSummaryPlugin
+
+    store = InMemoryStore()
+    store.add_node(Node(id="__seed_root__", name="__seed_root__", content="", role="hub"))
+    store.add_node(Node(id="h1", name="机器学习", content="ML 基础", role="hub"))
+    store.add_edge("__seed_root__", "h1", kind="hierarchy")
+
+    concept = ConceptDraft(name="梯度下降", content="优化算法")
+    mock_llm.set_response("extract_concepts", [concept])
+    mock_llm.set_response(
+        "judge_relations", [Decision(action="create", concept=concept)]
+    )
+    mock_llm.set_response("gen_graph_summary", "这张图关于机器学习")
+
+    wp, _, _ = _build_pipelines(store, mock_llm, GraphSummaryPlugin())
+    wp.ingest("梯度下降是优化算法")
+
+    assert store.get_graph_meta("graph_summary") == "这张图关于机器学习"

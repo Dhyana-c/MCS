@@ -28,6 +28,7 @@ class FakeStore:
         self.hierarchy: list[Edge] = []
         self.facts: list[Edge] = []
         self.assocs: list[Edge] = []
+        self.graph_meta: dict[str, str] = {}
 
     def add_node(self, n: Node) -> None:
         self.nodes[n.id] = n
@@ -49,6 +50,9 @@ class FakeStore:
     def get_assoc(self, nid: str, limit: int | None = None) -> list[Edge]:
         es = [e for e in self.assocs if e.source_id == nid or e.target_id == nid]
         return es[:limit] if limit else es
+
+    def get_graph_meta(self, key: str) -> str | None:
+        return self.graph_meta.get(key)
 
 
 class FakeQueryEngine:
@@ -255,6 +259,27 @@ def test_recall_unimplemented():
     ms, _ = _make(FakeStore(), FakeQueryEngine())
     try:
         assert "未实现" in ms.recall(5)
+    finally:
+        ms.shutdown()
+
+
+# === graph_summary ===
+
+
+def test_graph_summary_returns_meta():
+    store = FakeStore()
+    store.graph_meta["graph_summary"] = "这张图关于机器学习"
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        assert ms.graph_summary() == "这张图关于机器学习"
+    finally:
+        ms.shutdown()
+
+
+def test_graph_summary_empty_when_missing():
+    ms, _ = _make(FakeStore(), FakeQueryEngine())
+    try:
+        assert ms.graph_summary() == ""  # 无摘要返回空串
     finally:
         ms.shutdown()
 

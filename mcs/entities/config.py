@@ -22,6 +22,7 @@ PHASE1_WRITE_PLUGINS: list[str] = [
     "idempotency_check",   # Postprocess (write_preprocess)
     "fanout_reducer",      # Compaction
     "summary_regen",       # Compaction
+    "graph_summary",       # Compaction（图级主题摘要，learn 后归纳顶层 hub；须在 fanout 后跑）
 ]
 
 PHASE1_READ_PLUGINS: list[str] = [

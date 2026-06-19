@@ -181,6 +181,23 @@ class StoreInterface(ABC):
         """返回全部边。"""
         ...
 
+    # === 图级元数据（非节点字段，不进活跃视图 token 口径）===
+
+    @abstractmethod
+    def get_graph_meta(self, key: str) -> str | None:
+        """取图级元数据；key 不存在返回 None。
+
+        图级 meta 为 key-value、**非节点字段**，MUST NOT 作为节点 content / summary /
+        extension，MUST NOT 进入节点活跃视图 token 估算口径（铁律一不受影响）。
+        典型用途：图摘要（key="graph_summary"）。
+        """
+        ...
+
+    @abstractmethod
+    def set_graph_meta(self, key: str, value: str) -> None:
+        """写 / 覆盖图级元数据。"""
+        ...
+
     # === 持久化钩子 ===
 
     def save(self) -> None:

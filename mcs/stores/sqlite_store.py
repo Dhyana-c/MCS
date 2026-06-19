@@ -488,6 +488,29 @@ class SQLiteStore(StoreInterface):
         if self.conn is not None:
             self.conn.commit()
 
+    # === 图级元数据（复用 meta 表，非节点字段，不进活跃视图 token 口径）===
+
+    def get_graph_meta(self, key: str) -> str | None:
+        """取图级 meta（直接查 ``meta`` 表；key 不存在 / 表异常返回 None）。"""
+        if self.conn is None:
+            return None
+        try:
+            row = self.conn.execute(
+                "SELECT value FROM meta WHERE key=?", (key,)
+            ).fetchone()
+            return row[0] if row is not None else None
+        except sqlite3.Error:
+            return None
+
+    def set_graph_meta(self, key: str, value: str) -> None:
+        """写 / 覆盖图级 meta（``INSERT OR REPLACE``，即时提交，与 provenance 同表）。"""
+        if self.conn is None:
+            return
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
+        )
+        self.conn.commit()
+
     def mark_node_dirty(self, node_id: str) -> None:
         """显式标记节点为脏，使其在下次 ``flush_changes`` 时被 upsert。"""
         if node_id in self._nodes:

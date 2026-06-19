@@ -220,3 +220,59 @@ def test_result_passed_back_to_llm():
 
     agent = MemoryAgent(memory, llm, max_turns=4)
     assert agent.chat("猫？") == "答完了"
+
+
+# === 图级摘要注入 + 路由 prompt（graph-summary change，task 4.4）===
+
+
+class _SummaryMemory(FakeMemory):
+    """FakeMemory + 可控 graph_summary（测试摘要注入 / 截断 / 占位）。"""
+
+    def __init__(self, summary: str = "") -> None:
+        super().__init__()
+        self._summary = summary
+
+    def graph_summary(self) -> str:
+        return self._summary
+
+
+def _capture_system(memory, summary_budget: int = 1000) -> str:
+    """跑一轮 chat，捕获传给 LLM 的 system content。"""
+    captured: dict[str, str] = {}
+
+    def llm(msgs, tools):
+        captured["system"] = msgs[0]["content"]
+        return _assistant(content="ok")
+
+    MemoryAgent(memory, llm, summary_budget=summary_budget).chat("你好")
+    return captured["system"]
+
+
+def test_summary_injected_into_system():
+    sys = _capture_system(_SummaryMemory("这张图关于机器学习"))
+    assert "# 当前记忆图主题" in sys
+    assert "这张图关于机器学习" in sys
+
+
+def test_empty_summary_uses_placeholder():
+    assert "(尚未生成)" in _capture_system(_SummaryMemory(""))
+
+
+def test_memory_without_graph_summary_degrades():
+    """裸 FakeMemory（无 graph_summary）→ _fetch_summary 返回空、不抛、占位降级。"""
+    assert "(尚未生成)" in _capture_system(FakeMemory())
+
+
+def test_summary_truncated_to_budget():
+    long = "字" * 50
+    sys = _capture_system(_SummaryMemory(long), summary_budget=10)
+    assert "字" * 10 in sys  # 截断到预算
+    assert "字" * 11 not in sys
+
+
+def test_system_prompt_has_routing_sections():
+    """路由 prompt 含「何时直接答 / 何时探索 / 不假装记得上文」段（spec MODIFIED）。"""
+    sys = _capture_system(_SummaryMemory(""))
+    assert "何时直接回答" in sys
+    assert "何时探索记忆图" in sys
+    assert "假装记得本轮之前" in sys  # 过渡态诚实约束（不要假装记得上文）

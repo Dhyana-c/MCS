@@ -14,6 +14,7 @@ from mcs.prompts import (
     decide_hub,
     extract_concepts,
     gen_aliases,
+    gen_graph_summary,
     gen_summary,
     judge_relations,
     navigate_hub,
@@ -67,6 +68,11 @@ DEFAULT_PROMPTS: dict[str, PromptBundle] = {
         system=gen_summary.SYSTEM_PROMPT,
         template=gen_summary.USER_TEMPLATE,
         parse=gen_summary.parse,
+    ),
+    "gen_graph_summary": PromptBundle(
+        system=gen_graph_summary.SYSTEM_PROMPT,
+        template=gen_graph_summary.USER_TEMPLATE,
+        parse=gen_graph_summary.parse,
     ),
     "select_nodes": PromptBundle(
         system=select_nodes.SYSTEM_PROMPT,

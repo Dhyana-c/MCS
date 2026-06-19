@@ -35,6 +35,7 @@ class InMemoryStore(StoreInterface):
         self._hierarchy_out: dict[str, set[str]] = {}  # source_id -> {target_id}
         self._fact_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}
         self._assoc_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}
+        self._graph_meta: dict[str, str] = {}  # 图级元数据 kv（非节点字段）
         # 派生优先级打分器（seam，Phase 1 持有但不在 chokepoint 调用，留 Phase 2 接线）
         self._priority_scorer = DefaultPriorityScorer()
 
@@ -279,6 +280,14 @@ class InMemoryStore(StoreInterface):
 
     def get_all_edges(self) -> list[Edge]:
         return list(self._edges.values())
+
+    # === 图级元数据（非节点字段，不进活跃视图 token 口径）===
+
+    def get_graph_meta(self, key: str) -> str | None:
+        return self._graph_meta.get(key)
+
+    def set_graph_meta(self, key: str, value: str) -> None:
+        self._graph_meta[key] = value
 
     # === 快照 / 回滚 ===
 

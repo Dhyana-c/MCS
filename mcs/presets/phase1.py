@@ -21,7 +21,7 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
 
     包含：
       - `source_tracking`, `summary`（shared）
-      - `idempotency_check`, `fanout_reducer`, `summary_regen`（write）
+      - `idempotency_check`, `fanout_reducer`, `summary_regen`, `graph_summary`（write）
       - `alias_index`, `alias_entry`, `hub_fallback`, `priority_trim`（read）
       - `deepseek_llm`, `claude_llm`, `ollama_llm`（LLM）
       - `rerank`, `community_merger`（opt-in，不入默认链）
@@ -40,6 +40,7 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
     from mcs.plugins.llm.deepseek_llm import DeepSeekLLMPlugin
     from mcs.plugins.llm.ollama_llm import OllamaLLMPlugin
     from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
+    from mcs.plugins.maintenance.graph_summary import GraphSummaryPlugin
     from mcs.plugins.maintenance.summary_regen import SummaryRegenPlugin
     from mcs.plugins.postprocess.rerank import RerankPlugin
     from mcs.plugins.postprocess.summary import SummaryPlugin
@@ -58,6 +59,7 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
         "idempotency_check": IdempotencyCheckPlugin,
         "fanout_reducer": FanoutReducerPlugin,
         "summary_regen": SummaryRegenPlugin,
+        "graph_summary": GraphSummaryPlugin,
         # read
         "alias_index": AliasIndexPlugin,
         "alias_entry": AliasEntryPlugin,
