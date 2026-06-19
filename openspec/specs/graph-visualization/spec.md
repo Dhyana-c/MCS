@@ -43,12 +43,13 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 
 ### Requirement: graph_view 返回结构为 JSON 友好纯 dict
 
-`graph_view` 返回的 `node` 与 `nodes[*]` MUST 为 `{id, name, content, role}`；`edges[*]` MUST 为 `{id, source, target, kind, label}`（`id` 取 `edge.id`，供前端按 id 去重）；顶层 MUST 含 `relation_model`。所有字段 MUST 为 JSON 可序列化的纯值，MUST NOT 携带 dataclass 实例或内部对象引用。`nodes` MUST 按 id 去重（既为层级子节点又为关系端点的节点只出现一次）。`edges` 中 hierarchy 边 MUST 为 `{source: 焦点.id, target: 层级子.id, kind: "hierarchy", label: ""}`。
+`graph_view` 返回的 `node` 与 `nodes[*]` MUST 为 `{id, name, content, role, degree}`（`degree` = 该节点层级子数 + 关系边度数：`property_graph` 计 fact、`attribute_node` 计 assoc，供热力图热度，int 类型）；`edges[*]` MUST 为 `{id, source, target, kind, label}`（`id` 取 `edge.id`，供前端按 id 去重）；顶层 MUST 含 `relation_model`。所有字段 MUST 为 JSON 可序列化的纯值，MUST NOT 携带 dataclass 实例或内部对象引用。`nodes` MUST 按 id 去重（既为层级子节点又为关系端点的节点只出现一次）。`edges` 中 hierarchy 边 MUST 为 `{source: 焦点.id, target: 层级子.id, kind: "hierarchy", label: ""}`。
 
 #### Scenario: 节点序列化字段
 
 - **WHEN** `graph_view` 返回任一节点（`node` 或 `nodes[*]`）
-- **THEN** MUST 含且仅含 `id` / `name` / `content` / `role` 四个键，且值为 JSON 可序列化纯值
+- **THEN** MUST 含且仅含 `id` / `name` / `content` / `role` / `degree` 五个键，且值为 JSON 可序列化纯值
+- **AND** `degree` MUST = 该节点层级子数 + 关系边度数（`property_graph` 计 fact、`attribute_node` 计 assoc）
 
 #### Scenario: 边序列化字段与 kind 取值
 

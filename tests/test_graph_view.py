@@ -39,12 +39,14 @@ class FakeStore:
         self.facts: list[Edge] = []
         self.assocs: list[Edge] = []
         self.read_threads: set[int] = set()
+        self.get_node_counts: dict[str, int] = {}  # 按 id 计 get_node 调用次数（E1 去重断言）
 
     def add_node(self, n: Node) -> None:
         self.nodes[n.id] = n
 
     def get_node(self, nid: str) -> Node | None:
         self.read_threads.add(threading.get_ident())
+        self.get_node_counts[nid] = self.get_node_counts.get(nid, 0) + 1
         return self.nodes.get(nid)
 
     def get_out_hierarchy(self, nid: str) -> list[Node]:
@@ -236,10 +238,14 @@ def test_dict_fields_kinds_dedup_and_hierarchy_contract():
     ms = _make(store, FakeQueryEngine("property_graph"))
     try:
         out = ms.graph_view("__seed_root__")
-        # node / nodes[*] 恰四键
-        assert set(out["node"].keys()) == {"id", "name", "content", "role"}
+        # node / nodes[*] 含五键（含 degree 热力度数）
+        assert set(out["node"].keys()) == {"id", "name", "content", "role", "degree"}
         for n in out["nodes"]:
-            assert set(n.keys()) == {"id", "name", "content", "role"}
+            assert set(n.keys()) == {"id", "name", "content", "role", "degree"}
+        # degree = 层级子数 + 关系边度数：root = 1 子 + 1 fact = 2；c1 = 0 子 + 1 fact = 1
+        assert out["node"]["degree"] == 2
+        c1 = next(n for n in out["nodes"] if n["id"] == "c1")
+        assert c1["degree"] == 1
         # edges[*] 恰五键、kind 合法
         for e in out["edges"]:
             assert set(e.keys()) == {"id", "source", "target", "kind", "label"}
@@ -259,6 +265,23 @@ def test_dict_fields_kinds_dedup_and_hierarchy_contract():
         ms.shutdown()
 
 
+def test_degree_attribute_node_counts_assoc():
+    """attribute_node 模式：degree 计层级子 + assoc 边度数（不计 fact）。"""
+    store = FakeStore()
+    store.add_node(_n("c", role="concept"))
+    store.add_node(_n("attr1", role="attribute"))
+    store.add_node(_n("attr2", role="attribute"))
+    store.assocs.append(Edge(source_id="c", target_id="attr1", kind="assoc"))
+    store.assocs.append(Edge(source_id="c", target_id="attr2", kind="assoc"))
+    ms = _make(store, FakeQueryEngine("attribute_node"))
+    try:
+        out = ms.graph_view("c")
+        # c = 0 子 + 2 assoc = 2
+        assert out["node"]["degree"] == 2
+    finally:
+        ms.shutdown()
+
+
 # === 边界：悬空关系边（task 1.3） ===
 
 
@@ -274,6 +297,27 @@ def test_dangling_relation_edge_kept_without_endpoint():
         assert facts[0]["target"] == "ghost"
         assert "ghost" not in {n["id"] for n in out["nodes"]}  # 悬空端点不崩、不入 nodes
         assert out["nodes"] == []
+    finally:
+        ms.shutdown()
+
+
+def test_dangling_endpoint_queried_once_across_edges():
+    """多条关系边指向同一悬空端点：get_node 对该端点只查一次（E1 去重），边仍全保留。"""
+    store = FakeStore()
+    store.add_node(_n("a"))
+    # 三条 fact 边都指向不存在的 ghost（悬空）
+    store.facts.append(Edge(source_id="a", target_id="ghost", kind="fact", label="r1"))
+    store.facts.append(Edge(source_id="a", target_id="ghost", kind="fact", label="r2"))
+    store.facts.append(Edge(source_id="a", target_id="ghost", kind="fact", label="r3"))
+    ms = _make(store, FakeQueryEngine("property_graph"))
+    try:
+        out = ms.graph_view("a")
+        # 三条悬空边都保留进 edges
+        facts = [e for e in out["edges"] if e["kind"] == "fact"]
+        assert len(facts) == 3
+        # 但 ghost 端点只 get_node 一次（去重），不入 nodes
+        assert store.get_node_counts.get("ghost", 0) == 1
+        assert "ghost" not in {n["id"] for n in out["nodes"]}
     finally:
         ms.shutdown()
 

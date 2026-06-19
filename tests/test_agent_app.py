@@ -64,6 +64,15 @@ def test_root_serves_index_html():
     assert "记忆助手" in r.text  # 前端页面标题
 
 
+def test_vendor_cytoscape_served_locally():
+    """C4：cytoscape.min.js 经本地 vendor 提供（不依赖外部 cdnjs CDN），离线 / 墙内可用。"""
+    client = TestClient(create_app(FakeAgent()))
+    r = client.get("/vendor/cytoscape.min.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers.get("content-type", "")
+    assert "cytoscape" in r.text.lower()  # 真实库内容（版权头 / 全局名含 cytoscape）
+
+
 # === /graph/expand 只读可视化端点（task 4.1 / 4.2） ===
 
 

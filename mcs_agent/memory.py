@@ -244,19 +244,40 @@ class MemoryStore:
         else:
             rel_edges = store.get_facts(node_id) or []
 
+        def _degree(nid: str) -> int:
+            """节点的"关系丰富度"= 层级子数 + 关系边度数（热力图热度）。
+
+            property_graph 计 fact 边、attribute_node 计 assoc 边（随 relation_model）。
+            """
+            deg = len(store.get_out_hierarchy(nid) or [])
+            if relation_model == "attribute_node":
+                deg += len(store.get_assoc(nid) or [])
+            else:
+                deg += len(store.get_facts(nid) or [])
+            return deg
+
+        def _node_with_degree(n: Node) -> dict:
+            d = _node_to_dict(n)
+            d["degree"] = _degree(n.id)
+            return d
+
         # 邻居节点：层级子 ∪ 关系边另一端（按 id 去重、不含焦点）
         nodes_by_id: dict[str, dict] = {}
+        seen_missing: set[str] = set()  # 已确认悬空的端点，避免重复 get_node（E1）
         for child in children:
             if child.id != node_id and child.id not in nodes_by_id:
-                nodes_by_id[child.id] = _node_to_dict(child)
+                nodes_by_id[child.id] = _node_with_degree(child)
         for edge in rel_edges:
             other = edge.target_id if edge.source_id == node_id else edge.source_id
             if other == node_id or other in nodes_by_id:
                 continue  # 自环或已收录
+            if other in seen_missing:
+                continue  # 之前已确认悬空，边仍保留、不再重复 get_node
             other_node = store.get_node(other)
             if other_node is None:
+                seen_missing.add(other)
                 continue  # 悬空边：跳过端点、边仍保留
-            nodes_by_id[other_node.id] = _node_to_dict(other_node)
+            nodes_by_id[other_node.id] = _node_with_degree(other_node)
 
         # 边集：hierarchy 边（焦点→各子，确定性 id 供前端去重）∪ 关系边
         edges: list[dict] = []
@@ -278,7 +299,7 @@ class MemoryStore:
             edges.append(_edge_to_dict(edge))
 
         return {
-            "node": _node_to_dict(focus),
+            "node": _node_with_degree(focus),
             "nodes": list(nodes_by_id.values()),
             "edges": edges,
             "relation_model": relation_model,
