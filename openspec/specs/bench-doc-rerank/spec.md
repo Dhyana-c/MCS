@@ -1,7 +1,7 @@
 ## Purpose
 提供文档级重排能力，将节点按来源文档聚合后按查询相关性重排，并集成到多跳评测作为 opt-in 开关。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 文档级重排候选文档
 

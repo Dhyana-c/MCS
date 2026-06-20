@@ -1,8 +1,9 @@
-# project-skeleton Specification
+# Spec Delta: project-skeleton（迁移后内容刷新）
 
-## Purpose
-定义项目目录结构与接口层完整性，包括 mcs 包（core/interfaces/plugins/presets/prompts/utils）、tests 和 examples 目录布局，以及所有架构接口的 ABC 类。
-## Requirements
+> 对齐 project-skeleton 主 spec 到统一图模型迁移后的现码：docs 文件清单、mcs 子目录（plugins 按类型）、接口层、MCS 瘦门面方法；移除已不存在的 phase1 / phase2 占位约定。
+
+## MODIFIED Requirements
+
 ### Requirement: 项目目录结构
 
 The system SHALL maintain the directory structure defined in `architecture.md` §8, including the `docs/` directory for conceptual / reference documents, plugins organized by PluginType, and root-level open source files.
@@ -98,90 +99,6 @@ The system SHALL provide skeleton implementations of all core engine modules lis
 - **THEN** `MCSConfig` dataclass 包含字段 `shared_plugins`、`write_plugins`、`read_plugins`、`write_llm`、`read_llm`
 - **AND** **不**包含旧 `plugins` 字段
 
-### Requirement: Python 包配置
-
-The system SHALL be a valid PEP 517/518 Python package configured via `pyproject.toml`.
-
-#### Scenario: pyproject.toml 元数据完整
-
-- **WHEN** 解析 `pyproject.toml`
-- **THEN** `[project]` 表包含 `name = "mcs"`, `version`, `requires-python = ">=3.10"`, `dependencies` 列表, `description`
-
-#### Scenario: 可被 pip 安装
-
-- **WHEN** 在干净 venv 中执行 `pip install -e .`
-- **THEN** 命令以成功状态码退出，且 `python -c "import mcs"` 在该 venv 中可用
-
-#### Scenario: 运行时依赖声明完整
-
-- **WHEN** 检查 `pyproject.toml` 的 `dependencies` 字段
-- **THEN** 至少包含 `openai`（DeepSeek 兼容客户端）和 `jieba`（中文分词），版本约束宽松（如 `>=1.0,<2.0`）
-
-#### Scenario: 包发现配置正确
-
-- **WHEN** 解析 `pyproject.toml`
-- **THEN** `[tool.setuptools.packages.find]`（或等价配置）的 `include` 字段限定为 `["mcs*"]`，避免把根目录 markdown 文件误打包
-
----
-
-### Requirement: 测试框架集成
-
-The system SHALL include pytest configuration ready for test additions.
-
-#### Scenario: pytest 配置位于 pyproject.toml
-
-- **WHEN** 解析 `pyproject.toml`
-- **THEN** 存在 `[tool.pytest.ini_options]` 表，至少配置 `testpaths = ["tests"]`
-
-#### Scenario: tests 目录可执行
-
-- **WHEN** 在项目根目录运行 `pytest`
-- **THEN** 命令以成功状态码退出（即使没有任何测试用例），**不**报配置错误或导入错误
-
-#### Scenario: conftest.py 占位存在
-
-- **WHEN** 检查 `tests/` 目录
-- **THEN** 存在 `conftest.py` 文件（可为空），为 Phase 1 fixtures 提供挂载点
-
----
-
-### Requirement: 代码风格工具配置
-
-The system SHALL include ruff configuration in `pyproject.toml`.
-
-#### Scenario: ruff 配置存在
-
-- **WHEN** 解析 `pyproject.toml`
-- **THEN** 存在 `[tool.ruff]` 表，至少配置 `line-length` 和 `target-version`
-
-#### Scenario: ruff 在骨架代码上零错误
-
-- **WHEN** 在项目根目录运行 `ruff check .`
-- **THEN** 命令以成功状态码退出，零 lint 错误
-
----
-
-### Requirement: 业务逻辑零实现
-
-The system SHALL contain no business logic in the skeleton; all logic implementation is deferred to subsequent changes.
-
-#### Scenario: 具体类方法体仅为占位
-
-- **WHEN** 检查任一具体类（非 ABC、非 dataclass）的方法体
-- **THEN** 方法体为 `pass`、`raise NotImplementedError("Phase 1 implementation pending")`，或仅为字段赋值，**不**包含业务算法实现
-
-#### Scenario: 干净环境下导入无副作用
-
-- **WHEN** 在干净环境（无 API key、无网络）下执行 `python -c "import mcs"`
-- **THEN** 导入成功，**不**触发任何 LLM API 调用、网络请求或外部 I/O
-
-#### Scenario: 不存在隐式实现
-
-- **WHEN** grep 代码中是否有数据库连接、HTTP 客户端、文件读写的实际调用
-- **THEN** 仅在 `__init__` / `initialize` 等明显占位位置出现，未出现在 ingest / query 等业务方法中
-
----
-
 ### Requirement: Git 与 README 集成
 
 The system SHALL include `.gitignore` and updated `README.md`.
@@ -196,6 +113,22 @@ The system SHALL include `.gitignore` and updated `README.md`.
 - **WHEN** 打开 `README.md`
 - **THEN** 包含项目简介（一段话）、对 `docs/architecture.md`（及文档索引 `docs/INDEX.md`）的引用、`pip install -e .` 安装步骤、`pytest` 执行命令
 - **AND** **不**引用已删除的 `docs/technical-design.md` 或 `docs/core-flows.md`
+
+## REMOVED Requirements
+
+### Requirement: Phase 1 插件占位
+
+**Reason**: `plugins/phase1/` 目录约定已与现码不符——插件现按 PluginType 组织到 `plugins/<type>/`（见 ADDED「插件按 PluginType 组织」），不再有 phase1 占位目录。
+
+**Migration**: 插件位置见 ADDED 需求与 `architecture.md`。
+
+### Requirement: Phase 2 插件预留
+
+**Reason**: 同上，`plugins/phase2/` 占位目录已不存在；Phase 2 能力（maintenance 等）以真实实现存在于 `plugins/maintenance/` 等类型目录。
+
+**Migration**: 见 ADDED「插件按 PluginType 组织」。
+
+## ADDED Requirements
 
 ### Requirement: 插件按 PluginType 组织
 
@@ -212,4 +145,3 @@ The system SHALL organize built-in plugins into subdirectories under `mcs/plugin
 
 - **WHEN** 检查 `mcs/plugins/`
 - **THEN** **不**存在 `phase1/` 或 `phase2/` 目录
-

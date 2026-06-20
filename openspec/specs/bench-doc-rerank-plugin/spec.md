@@ -1,7 +1,7 @@
 ## Purpose
 将文档级重排实现为 bench-only 的 PostprocessPlugin，不入核心 query 插件链，同时保留纯函数供评测直接调用。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: bench-only 文档级重排作为 PostprocessPlugin
 

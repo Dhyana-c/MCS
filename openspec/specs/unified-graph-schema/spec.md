@@ -3,7 +3,7 @@
 ## Purpose
 定义 MCS 图模型的统一数据结构与核心机制：4 类节点（概念 / 事实 / 事件 / source）、有向边（仅 关联 / 互斥）、谓词落点、核心 / 事件双层与有界、守门挂在改图操作上。完整、权威设计见 [`docs/graph-model-design.md`](../../docs/graph-model-design.md)；本 spec 固定**机制契约**（SHALL / MUST）。语义关系类型的扩充（因果 / 背书等）为 TBD，按场景演进。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 节点分 4 类，不引入领域 type
 

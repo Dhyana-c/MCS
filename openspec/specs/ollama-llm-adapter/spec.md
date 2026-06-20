@@ -1,7 +1,7 @@
 ## Purpose
 定义 Ollama 本地 LLM 适配器插件，实现统一 LLMInterface，仅负责 `_raw_call` 厂商调用，零 prompt 模板，支持本地部署默认配置。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: OllamaLLMPlugin 实现统一 LLMInterface
 

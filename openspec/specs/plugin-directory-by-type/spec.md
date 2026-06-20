@@ -1,7 +1,7 @@
 ## Purpose
 规定插件目录按 PluginType 枚举值分组（entry/trim/postprocess/llm/ 等），import 路径反映类型，消除 phase1/phase2 分期目录。
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 插件目录按 PluginType 分组
 
