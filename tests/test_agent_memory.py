@@ -43,12 +43,9 @@ class FakeStore:
             if e.source_id == nid and e.target_id in self.nodes
         ]
 
-    def get_facts(self, nid: str, limit: int | None = None) -> list[Edge]:
-        es = [e for e in self.facts if e.source_id == nid or e.target_id == nid]
-        return es[:limit] if limit else es
-
-    def get_assoc(self, nid: str, limit: int | None = None) -> list[Edge]:
-        es = [e for e in self.assocs if e.source_id == nid or e.target_id == nid]
+    def get_relations(self, nid: str, limit: int | None = None) -> list[Edge]:
+        es = [e for e in (self.facts + self.assocs)
+              if e.source_id == nid or e.target_id == nid]
         return es[:limit] if limit else es
 
     def get_graph_meta(self, key: str) -> str | None:
@@ -56,7 +53,7 @@ class FakeStore:
 
 
 class FakeQueryEngine:
-    relation_model = "property_graph"
+    pass
 
     def __init__(self) -> None:
         self.locate_calls: list[str] = []
@@ -105,7 +102,7 @@ def _line(store: FakeStore, ids: list[str]) -> None:
     for nid in ids:
         store.add_node(_n(nid))
     for a, b in zip(ids, ids[1:]):
-        store.hierarchy.append(Edge(source_id=a, target_id=b, kind="hierarchy"))
+        store.hierarchy.append(Edge(source_id=a, target_id=b, type="关联"))
 
 
 # === search ===
@@ -128,7 +125,7 @@ def test_search_direct_returns_root_children():
     for nid, nm in [("h1", "科学"), ("h2", "艺术")]:
         store.add_node(_n(nid, nm))
         store.hierarchy.append(
-            Edge(source_id="__seed_root__", target_id=nid, kind="hierarchy")
+            Edge(source_id="__seed_root__", target_id=nid, type="关联")
         )
     qe = FakeQueryEngine()
     ms, _ = _make(store, qe)
@@ -244,7 +241,7 @@ def test_find_path_via_fact_edge():
     store = FakeStore()
     store.add_node(_n("a"))
     store.add_node(_n("b"))
-    store.facts.append(Edge(source_id="a", target_id="b", kind="fact", label="related"))
+    store.facts.append(Edge(source_id="a", target_id="b"))
     ms, _ = _make(store, FakeQueryEngine())
     try:
         assert "找到路径" in ms.find_path("a", "b")

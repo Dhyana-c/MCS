@@ -1,8 +1,18 @@
-"""统一存储接口。
+"""统一存储接口（统一图模型）。
 
 ``StoreInterface`` 合并了原 ``GraphStoreInterface``（图操作 CRUD + 查询）
 和 ``StorageInterface``（持久化 save/load）的全部方法。
 具体实现在 ``mcs.stores`` 包中。
+
+统一图模型下边仅 ``关联`` / ``互斥`` 两类（见 ``mcs.entities.graph``）：
+
+  - ``关联``（结构基础边）：连接事实与端点、概念间关联、聚类形成的"组织中心 ↔ 成员"；
+    一条只存一份，但两端邻接都索引到它（反查、双向可达）。
+  - ``互斥``：事实 ↔ 事实。
+
+**载重规则在存储原语级落实**：``get_relations`` 对核心节点（概念 / 事实）过滤对端为
+事件的关联边（事件侧 ``get_relations`` 仍可达核心）——否则"用户 / 我"这类连着海量事件
+的节点会把全部事件漏回核心、撑爆活跃视图，且污染 priority 截断样本。
 """
 
 from __future__ import annotations
@@ -23,11 +33,6 @@ class StoreInterface(ABC):
     使一个存储后端只需实现一个接口。
 
     消费者（QueryEngine、WritePipeline、插件等）依赖此接口而非具体实现。
-
-    边模型随 ``relation_model`` 可插拔：层级边 (kind="hierarchy") 两模式共有；
-    ``property_graph`` 模式另有事实边 (kind="fact"，带 label)；
-    ``attribute_node`` 模式另有关联边 (kind="assoc"，无 label)。
-    事实边 / 关联边一条只存一份，但两端邻接都索引到它（支持反查）。
     """
 
     # === 节点 CRUD ===
@@ -59,16 +64,16 @@ class StoreInterface(ABC):
         self,
         source_id: str,
         target_id: str,
-        kind: str = "hierarchy",
-        label: str = "",
+        type: str = "关联",
         priority: float = 0.0,
         extensions: dict | None = None,
     ) -> str:
         """添加有向边 ``source → target``，返回边 id。
 
-        kind MUST 为 "hierarchy"、"fact" 或 "assoc"。
-        事实边 label MUST 非空；层级边 / 关联边 label MUST 为空串。
-        ``extensions`` 为边扩展槽（与 ``Node.extensions`` 对称），落到 ``Edge.extensions``。
+        ``type`` MUST 为已登记类型（当前 ``关联`` / ``互斥``，见
+        ``mcs.entities.graph.ALLOWED_EDGE_TYPES``）。一条 (source, target, type)
+        只存一份，但两端邻接都索引到它（反查、双向可达）。``extensions`` 落到
+        ``Edge.extensions``（与 ``Node.extensions`` 对称）。
         """
         ...
 
@@ -78,7 +83,7 @@ class StoreInterface(ABC):
         ...
 
     def update_edge(self, edge_id: str, **fields) -> None:
-        """更新边属性（kind / label / priority）。
+        """更新边属性（type / priority）。
 
         默认实现：find → replace；子类可覆写以优化。
         """
@@ -88,44 +93,31 @@ class StoreInterface(ABC):
 
     @abstractmethod
     def get_out_hierarchy(self, node_id: str) -> list[Node]:
-        """该节点的层级出边目标（kind="hierarchy" 的 source=node_id 边），驱动导航下钻。"""
-        ...
+        """该节点的**下钻成员**（驱动导航下钻 / 守门 fanout）。
 
-    # === 事实（双向可达）查询 ===
-
-    @abstractmethod
-    def get_facts(self, node_id: str, limit: int | None = None) -> list[Edge]:
-        """返回该节点作**源或宾**的事实边（反查，双向可达）。
-
-        Phase 2 按 priority 降序、limit 截断 top-K。
-        Phase 1 priority 未用，返回全部（limit 仅作可选上限）。
+        统一模型下无独立"层级"边：组织层级由聚类涌现，用 ``关联`` 边 + 中心节点
+        ``hub`` 标记表达。故此处返回的是该节点作 source 的 ``关联`` 出边目标
+        （即下钻可达的成员）。关系边 token 的有界由查询渲染期按 priority 截断兜。
         """
         ...
 
-    def get_out_facts(
-        self, node_id: str, limit: int | None = None
-    ) -> list[Edge]:
-        """该节点为**源**的事实出边。用于 Phase 2 查询视图（fanout 不用，见 spec）。
-
-        Phase 2 用 ``limit`` 截断；Phase 1 不用。默认实现过滤 ``get_facts``；
-        子类可覆写以优化。
-        """
-        out = [e for e in self.get_facts(node_id) if e.source_id == node_id]
-        return out[:limit] if limit is not None else out
+    # === 关系（双向可达）查询 ===
 
     @abstractmethod
-    def get_assoc(self, node_id: str, limit: int | None = None) -> list[Edge]:
-        """返回该节点作**任一端**的 ``kind="assoc"`` 无类型关联边（反查，双向可达）。
+    def get_relations(self, node_id: str, limit: int | None = None) -> list[Edge]:
+        """返回该节点作**任一端**的 ``关联`` / ``互斥`` 边（反查，双向可达）。
 
-        ``property_graph`` 模式通常无 assoc 边、返回空。``limit`` 仅作可选上限。
+        **载重规则（存储原语级落实）**：对核心节点（``node_class ∈ {概念, 事实}``），
+        MUST 过滤对端为 ``事件`` 的关联边（核心不反查事件）；事件侧 ``get_relations``
+        仍可达核心。互斥边恒为事实 ↔ 事实，不受此过滤影响。
+
+        Phase 2 按 priority 降序、limit 截断 top-K；Phase 1 priority 未用，
+        返回全部（limit 仅作可选上限）。
         """
         ...
 
     def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:
-        """获取两个节点之间的所有边（不限 kind）。
-
-        替代旧 get_edge(source, target)——新模型下同一对节点可有多条不同 label 的事实边。
-        """
+        """获取两个节点之间的所有边（不限 type）。"""
         return [
             e
             for e in self.get_all_edges()
@@ -135,18 +127,9 @@ class StoreInterface(ABC):
     # === 旧 API（deprecated，迁移完成后删除） ===
 
     def get_neighbors(self, node_id: str) -> list[Node]:
-        """Deprecated: 迁移到 get_out_hierarchy / get_facts。"""
+        """Deprecated: 迁移到 get_out_hierarchy / get_relations。"""
         warnings.warn(
-            "get_neighbors is deprecated; use get_out_hierarchy / get_facts",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.get_out_hierarchy(node_id)
-
-    def get_out_neighbors(self, node_id: str) -> list[Node]:
-        """Deprecated: 迁移到 get_out_hierarchy。"""
-        warnings.warn(
-            "get_out_neighbors is deprecated; use get_out_hierarchy",
+            "get_neighbors is deprecated; use get_out_hierarchy / get_relations",
             DeprecationWarning,
             stacklevel=2,
         )

@@ -67,7 +67,6 @@ class QueryEngine:
             max_accumulated_nodes: int = 1000,
             system_prompt: str = "",
             summary_max_nodes: int = 50,
-            relation_model: str = "property_graph",
     ):
         self.store = store
         self.llm = llm
@@ -79,8 +78,6 @@ class QueryEngine:
         # 每次 select_facts 调用带的「已累积上下文」最多列多少个节点（仅 name）。
         # 旧实现带全量 name+content → 输入平方级膨胀（占查询输入 ~73%）。0 = 关闭。
         self.summary_max_nodes = summary_max_nodes
-        # 关系表示模式（单一真相：builder 从 config 透传）
-        self.relation_model = relation_model
 
     # === 公共 API ===
 
@@ -296,10 +293,7 @@ class QueryEngine:
         def _node_view(node: Node):
             """单节点活跃双向视图 (view_nodes, relation_edges)；无可扩展内容返回 (None, None)。"""
             children = self.store.get_out_hierarchy(node.id) or []
-            if self.relation_model == "attribute_node":
-                facts = self.store.get_assoc(node.id) or []
-            else:
-                facts = self.store.get_facts(node.id) or []
+            facts = self.store.get_relations(node.id) or []
             if not children and not facts:
                 return None, None
             seen: set[str] = {node.id}
@@ -319,7 +313,7 @@ class QueryEngine:
 
         def _call_select(view_nodes, facts):
             """渲染 + 调 select_facts；解析失败返回 None。"""
-            material = renderer.render_facts(view_nodes, facts, mode=self.relation_model)
+            material = renderer.render_facts(view_nodes, facts)
             try:
                 return self.llm.call(
                     purpose="select_facts",
@@ -400,7 +394,7 @@ class QueryEngine:
                 if view_nodes is None:
                     continue
                 est = self.token_budget.estimate(
-                    renderer.render_facts(view_nodes, facts, mode=self.relation_model)
+                    renderer.render_facts(view_nodes, facts)
                 )
                 prepared.append((node, view_nodes, facts, est))
 

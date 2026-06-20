@@ -66,7 +66,7 @@ def test_fanout_maintains_persistent_root(mock_llm, fanout_reducer):
     g = GraphStore()
     concepts = []
     for i in range(20):  # 20 个 ~100 token 概念，floor=16 + 小窗口 → 根会被分层
-        n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400, role="concept")
+        n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400, node_class="概念")
         g.add_node(n)
         concepts.append(n)
     mock_llm.set_response("decide_hub", _group_response)
@@ -79,9 +79,9 @@ def test_fanout_maintains_persistent_root(mock_llm, fanout_reducer):
     assert root is not None                              # 持久根已建
     assert root in changed                               # 根入 changed_nodes（落库）
     # 递归分层出中间 hub
-    assert any(n.role == "hub" and n.id != SEED_ROOT_ID for n in g.get_all_nodes())
+    assert any(n.hub is True and n.id != SEED_ROOT_ID for n in g.get_all_nodes())
     # 根的直接扇出已收敛（< 原始 20）
-    assert len(g.get_neighbors(SEED_ROOT_ID)) < 20
+    assert len(g.get_out_hierarchy(SEED_ROOT_ID)) < 20
     # 每个概念仍可从根（递归）到达：所有概念都进了某个 hub 或直接挂根
     assert g.get_node("c0") is not None
 
@@ -95,7 +95,7 @@ def test_seed_root_maintained_without_budget_pressure(mock_llm, fanout_reducer):
     """
     g = GraphStore()
     concepts = [
-        Node(id=f"c{i}", name=f"c{i}", content="x", role="concept") for i in range(3)
+        Node(id=f"c{i}", name=f"c{i}", content="x", node_class="概念") for i in range(3)
     ]
     for n in concepts:
         g.add_node(n)
@@ -108,9 +108,9 @@ def test_seed_root_maintained_without_budget_pressure(mock_llm, fanout_reducer):
     root = g.get_node(SEED_ROOT_ID)
     assert root is not None                      # 无预算压力也建了持久根
     for c in concepts:                           # 每个概念都以 out 边挂在根下
-        assert g.get_edge(SEED_ROOT_ID, c.id) is not None
+        assert g.get_edges_between(SEED_ROOT_ID, c.id) != []
     # 未超预算 → 不应触发 decide_hub 裂变（无新 hub）
-    assert all(n.role != "hub" for n in g.get_all_nodes() if n.id != SEED_ROOT_ID)
+    assert all(n.hub is False for n in g.get_all_nodes() if n.id != SEED_ROOT_ID)
 
 
 def test_root_attaches_only_orphans(mock_llm, fanout_reducer):
@@ -120,8 +120,8 @@ def test_root_attaches_only_orphans(mock_llm, fanout_reducer):
     """
     g = GraphStore()
     for nid in ("a", "b", "c"):
-        g.add_node(Node(id=nid, name=nid, content="x", role="concept"))
-    g.add_edge("a", "b", kind="fact", label="涉及")  # a、b 有事实关联（b 为宾也算关联）
+        g.add_node(Node(id=nid, name=nid, content="x", node_class="概念"))
+    g.add_edge("a", "b")  # a、b 有事实关联（b 为宾也算关联）
 
     fr = fanout_reducer(g, mock_llm, TokenBudget(8000))
     fr.run([g.get_node(n) for n in ("a", "b", "c")], g, mock_llm.call)
@@ -131,32 +131,35 @@ def test_root_attaches_only_orphans(mock_llm, fanout_reducer):
     assert g.get_edges_between(SEED_ROOT_ID, "c")      # 孤儿 → 挂根
 
 
-def test_absorb_skips_fact_only_node(mock_llm, fanout_reducer):
-    """边吸收 bug 回归：仅经**事实边**连到 hub 全部成员的节点，不应被层级吸收。
+def test_absorb_absorbs_node_whose_children_superset_of_hub_members(mock_llm, fanout_reducer):
+    """边吸收：某节点 X 的下钻成员 ⊇ hub H 的全部成员时，X→各成员替换为 X→H（减边）。
 
-    旧实现 out_children 含 fact 目标 → X（仅事实边连 m1/m2）被误判为 hub 成员的父，
-    凭空加 X→hub 层级边。修复后 out_children 只看层级边。
+    统一模型下无 fact/hierarchy 之分——X→m1/m2 即 X 的下钻成员（关联出边）；
+    H 的成员也是 {m1,m2}。故 X 应被吸收：删 X→m1/X→m2、加单条 X→H。
     """
     g = GraphStore()
-    g.add_node(Node(id="H", name="H", content="h", role="hub"))
+    g.add_node(Node(id="H", name="H", content="h", extensions={"hub": True}))
     for nid in ("m1", "m2", "X"):
-        g.add_node(Node(id=nid, name=nid, content="x", role="concept"))
-    g.add_edge("H", "m1", kind="hierarchy")            # hub 的层级成员
-    g.add_edge("H", "m2", kind="hierarchy")
-    g.add_edge("X", "m1", kind="fact", label="涉及")    # X 仅经事实边连成员
-    g.add_edge("X", "m2", kind="fact", label="涉及")
+        g.add_node(Node(id=nid, name=nid, content="x", node_class="概念"))
+    g.add_edge("H", "m1", type="关联")            # hub 的成员
+    g.add_edge("H", "m2", type="关联")
+    g.add_edge("X", "m1", type="关联")            # X 的下钻成员 ⊇ {m1,m2}
+    g.add_edge("X", "m2", type="关联")
 
     fr = fanout_reducer(g, mock_llm, TokenBudget(8000))
     fr._absorb_hub_edges(g)
 
-    # X 不应被吸收：不该新增 X→H 层级边
-    assert not [e for e in g.get_edges_between("X", "H") if e.kind == "hierarchy"]
+    # X 被吸收：新增单条 X→H，且 X→m1/X→m2 被删（减边）
+    assert any(e for e in g.get_edges_between("X", "H") if e.type == "关联")
+    assert g.get_edges_between("X", "m1") == []
+    assert g.get_edges_between("X", "m2") == []
+
 
 
 def test_no_persistent_root_when_disabled(mock_llm):
     """maintain_root=False时不建持久根。"""
     g = GraphStore()
-    n = Node(id="c0", name="c0", content="x", role="concept")
+    n = Node(id="c0", name="c0", content="x", node_class="概念")
     g.add_node(n)
     pm = PluginManager()
     pm.register(mock_llm)

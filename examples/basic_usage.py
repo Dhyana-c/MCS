@@ -216,7 +216,7 @@ def main() -> None:
         for n in result.nodes:
             print(f"  - {n.name} (id={n.id}): {n.content[:60]}…")
         for e in result.edges:
-            print(f"  - fact: {e.source_id} —{e.label}→ {e.target_id}")
+            print(f"  - relation: {e.source_id} — {e.target_id} (type={e.type})")
     elif isinstance(result, list):
         print(f"Returned {len(result)} memory nodes:")
         for n in result:

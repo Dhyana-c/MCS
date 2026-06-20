@@ -72,8 +72,8 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
             landed = [n for n in self._navigate(query, [root]) if n.id != root.id]
             # 导航失败（只剩根）则回退为根的直接子节点；绝不把合成根当种子
             return (landed or children)[: self.max_seeds]
-        # 回退：无持久根时用 role==hub 的旧行为
-        hubs = [n for n in self.store.get_all_nodes() if n.role == "hub"]
+        # 回退：无持久根时用 hub 标记节点的旧行为
+        hubs = [n for n in self.store.get_all_nodes() if n.hub]
         if not hubs:
             return []
         if self.llm is None or not self.use_llm_navigation:

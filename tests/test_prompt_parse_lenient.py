@@ -36,7 +36,7 @@ def test_judge_relations_accepts_single_object():
 
 
 def test_judge_relations_parses_edges_to_names():
-    # 新格式：list[dict] with target_name + label
+    # list[dict] with target_name（统一模型无 label，parse 剥离 LLM 残留的 label）
     raw = (
         '[{"action": "create", "concept_name": "苹果公司", '
         '"edges_to_names": [{"target_name": "iPhone", "label": "生产"}, '
@@ -44,21 +44,21 @@ def test_judge_relations_parses_edges_to_names():
     )
     result = parse_relations(raw)
     assert result[0].edges_to_names == [
-        {"target_name": "iPhone", "label": "生产"},
-        {"target_name": "乔布斯", "label": "创立"},
+        {"target_name": "iPhone"},
+        {"target_name": "乔布斯"},
     ]
 
 
 def test_judge_relations_edges_to_names_backward_compat():
-    # 旧格式：list[str] 自动转换为 dict（label 默认为空串）
+    # 旧格式：list[str] 自动转换为 dict（无 label）
     raw = (
         '[{"action": "create", "concept_name": "苹果公司", '
         '"edges_to_names": ["iPhone", "乔布斯"]}]'
     )
     result = parse_relations(raw)
     assert result[0].edges_to_names == [
-        {"target_name": "iPhone", "label": ""},
-        {"target_name": "乔布斯", "label": ""},
+        {"target_name": "iPhone"},
+        {"target_name": "乔布斯"},
     ]
 
 
@@ -72,7 +72,7 @@ def test_judge_relations_edges_to_names_accepts_aliases():
     # 容忍 related_concepts / edges_to_concepts 别名（旧格式 str 自动转 dict）
     raw = '{"action": "create", "concept_name": "X", "related_concepts": ["Y"]}'
     result = parse_relations(raw)
-    assert result[0].edges_to_names == [{"target_name": "Y", "label": ""}]
+    assert result[0].edges_to_names == [{"target_name": "Y"}]
 
 
 def test_navigate_hub_salvages_truncated_array():

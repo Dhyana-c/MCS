@@ -99,7 +99,6 @@ class MCSBuilder(ABC):
                 schema_extensions=schema_exts,
                 node_extensions=node_exts,
                 edge_extensions=edge_exts,
-                relation_model=self.config.relation_model,
                 priority_scorer=DefaultPriorityScorer(),
             )
 
@@ -122,7 +121,6 @@ class MCSBuilder(ABC):
             token_budget=token_budget,
             max_rounds=self.config.max_rounds,
             max_accumulated_nodes=self.config.max_accumulated_nodes,
-            relation_model=self.config.relation_model,
         )
 
         # 10. 构建 WritePipeline（write_manager + write_llm + query_engine）

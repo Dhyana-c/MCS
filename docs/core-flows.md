@@ -37,21 +37,18 @@ OUTPUT: 图状态更新 + 已持久化
 - 关系判定：概念间的邻接关系
 - 合并判定：是否应与已有节点合并
 
-关系以**两条对向单向边**（`a→b` 与 `b→a`）表达。
-
-> **`relation_model` 分支**：`property_graph`（默认）产带 label 事实边决策；`attribute_node`
-> 产"建属性节点 + 无类型关联边"决策（`create_attribute`，无 label）。
+关系以**关联边**（`source → target`，两端邻接都索引、双向可达）表达——统一模型
+无 `label`、无 `kind`，开放谓词落事实节点 `content`。一条关系一条边、不自动镜像反向。
 
 ### ⑤ 图更新（无 LLM）
 
 根据 `DecisionList` 更新图结构：
-- 新建节点 + 挂到 `__seed_root__`（单条下行 `root→concept`）
-- 建立语义边（双向）
-- 合并同义节点
+- 新建概念节点 + 连到锚点的关联边（`edges_to`）
+- 同批新概念之间按名互连关联边（`edges_to_names`）
+- 合并同义节点（别名并入 + content 追加）
 
-> **按 `relation_model` 分支**：`property_graph` 建事实边；`attribute_node` 建属性节点 +
-> `kind="assoc"` 边。孤儿挂根判定为 `get_facts ∪ get_assoc` 皆空（否则 `attribute_node` 模式
-> `get_facts` 恒空 → 全概念挂 root → 根扁平化破坏不变量）。
+孤儿挂 `__seed_root__`（单条下行 `root→concept`）的判定为 `get_relations` 为空
+（零关联/互斥边才挂），避免根扁平化破坏不变量。
 
 ### ⑥ 压缩判定插件链（Compaction）
 

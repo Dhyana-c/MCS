@@ -87,10 +87,12 @@ class _FakeMemory:
         if node_id == "ghost":
             return None
         return {
-            "node": {"id": node_id, "name": node_id, "content": "", "role": "concept"},
+            "node": {
+                "id": node_id, "name": node_id, "content": "",
+                "node_class": "概念", "hub": False, "degree": 0,
+            },
             "nodes": [],
             "edges": [],
-            "relation_model": "property_graph",
         }
 
 

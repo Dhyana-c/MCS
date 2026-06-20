@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from mcs.entities.graph import Edge, Node, Subgraph
+from mcs.entities.graph import EDGE_ASSOC, Edge, Node, Subgraph
 from mcs.rendering import format_ingest_status, render_query_result
 
 
@@ -30,29 +30,29 @@ class _FakeWriteContext:
 
 
 def test_render_str_passthrough():
-    assert render_query_result("plain text", "property_graph", None) == "plain text"
+    assert render_query_result("plain text", None) == "plain text"
 
 
 def test_render_subgraph_renders_nodes_and_content():
     n = Node(id="a", name="深度学习", content="一种方法")
-    out = render_query_result(Subgraph(focus_id="a", nodes=[n]), "property_graph", None)
+    out = render_query_result(Subgraph(focus_id="a", nodes=[n]), None)
     assert "深度学习" in out
     assert "一种方法" in out
 
 
 def test_render_subgraph_with_relation_edges():
-    """Subgraph 含关系边（property_graph fact 边）时端点出现在渲染文本中。"""
+    """Subgraph 含关系边（关联边）时端点出现在渲染文本中。"""
     a = Node(id="a", name="小明", content="")
     b = Node(id="b", name="苹果", content="")
-    e = Edge(id="e1", source_id="a", target_id="b", kind="fact", label="喜欢")
+    e = Edge(id="e1", source_id="a", target_id="b", type=EDGE_ASSOC)
     out = render_query_result(
-        Subgraph(focus_id="a", nodes=[a, b], edges=[e]), "property_graph", None
+        Subgraph(focus_id="a", nodes=[a, b], edges=[e]), None
     )
     assert "小明" in out and "苹果" in out
 
 
 def test_render_other_falls_back_to_str():
-    assert render_query_result(12345, "property_graph", None) == "12345"
+    assert render_query_result(12345, None) == "12345"
 
 
 # === format_ingest_status ===

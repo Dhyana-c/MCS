@@ -45,9 +45,9 @@ plugin_configs:
     )
     config = MCSConfig.from_file(path)
 
-    # preset 参数键不二次叠加：仍是 deepseek_llm、relation_model=property_graph
+    # preset 参数键不二次叠加：仍是 deepseek_llm（统一模型已无 relation_model）
     assert config.write_llm == "deepseek_llm"
-    assert config.relation_model == "property_graph"
+    assert not hasattr(config, "relation_model")
 
     mcs = Phase1Builder(config).build()
     try:
@@ -108,36 +108,22 @@ token_budget: 8000
 # ── 7.2 ────────────────────────────────────────────────────────────────────
 
 
-def test_provenance_relation_model_mismatch_rejected(tmp_path):
-    """YAML 指定 relation_model 与已建库不符 → 开库走 provenance 拒绝（不回归）。"""
+def test_provenance_reopen_same_db_no_hard_reject(tmp_path):
+    """统一模型已删 relation_model 硬拒：同库重新 build 不抛 StoreProvenanceError。"""
     db = tmp_path / "prov.db"
     yaml_a = _write(
         tmp_path,
-        "attr.yaml",
+        "a.yaml",
         f"""
 preset: knowledge_graph
-relation_model: attribute_node
 plugin_configs:
   sqlite_storage:
     path: {db.as_posix()}
 """,
     )
-    yaml_b = _write(
-        tmp_path,
-        "pg.yaml",
-        f"""
-preset: knowledge_graph
-relation_model: property_graph
-plugin_configs:
-  sqlite_storage:
-    path: {db.as_posix()}
-""",
-    )
-
-    # 用 attribute_node 建库（写入 attribute_node 出处）
     mcs_a = Phase1Builder(MCSConfig.from_file(yaml_a)).build()
     mcs_a.shutdown()
 
-    # 同一库、relation_model=property_graph → 开库 provenance 校验硬拒
-    with pytest.raises(StoreProvenanceError):
-        Phase1Builder(MCSConfig.from_file(yaml_b)).build()
+    # 同一库重新 build → 不抛（出处校验放行）
+    mcs_b = Phase1Builder(MCSConfig.from_file(yaml_a)).build()
+    mcs_b.shutdown()

@@ -145,15 +145,15 @@ def health_check(mcs, token_budget: int) -> None:
     store = mcs.store
     nodes = store.get_all_nodes()
     edges = store.get_all_edges()
-    facts = [e for e in edges if e.kind == "fact"]
-    hier = [e for e in edges if e.kind == "hierarchy"]
-    roles: dict[str, int] = {}
+    assoc = [e for e in edges if e.type == "关联"]
+    mutex = [e for e in edges if e.type == "互斥"]
+    classes: dict[str, int] = {}
     for n in nodes:
-        roles[n.role] = roles.get(n.role, 0) + 1
-    print("\n" + "=" * 60 + "\nDUAL-EDGE 体检\n" + "=" * 60)
+        classes[n.node_class] = classes.get(n.node_class, 0) + 1
+    print("\n" + "=" * 60 + "\n统一图模型 体检\n" + "=" * 60)
     print(
-        f"节点 {len(nodes)} {roles}  边 {len(edges)}"
-        f"（层级 {len(hier)} / 事实 {len(facts)}）"
+        f"节点 {len(nodes)} {classes}  边 {len(edges)}"
+        f"（关联 {len(assoc)} / 互斥 {len(mutex)}）"
     )
     tb = TokenBudget(token_budget)
     viol = sum(
@@ -166,12 +166,10 @@ def health_check(mcs, token_budget: int) -> None:
     print(f"fanout 口径不变量 ≤ T={token_budget}: {'✓ 全过' if not viol else f'⚠ {viol} 违反'}")
     dup = sum(
         v - 1
-        for v in Counter(
-            (e.source_id, e.target_id, e.label) for e in facts
-        ).values()
+        for v in Counter((e.source_id, e.target_id) for e in assoc).values()
         if v > 1
     )
-    print(f"重复事实边: {dup}")
+    print(f"重复关联边: {dup}")
 
 
 # === 查询评测 ===

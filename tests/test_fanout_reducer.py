@@ -83,7 +83,7 @@ def test_gate_estimate_matches_actual_render():
         g.add_edge("hub", f"n{i}")
 
     renderer = ContextRenderer(None)  # 无插件扩展
-    nbrs = g.get_neighbors("hub")
+    nbrs = g.get_out_hierarchy("hub")
     expected = TokenBudget(10_000).estimate(
         renderer.render([node, *nbrs], "decide_hub")
     )
@@ -107,16 +107,16 @@ def test_run_synthetic_creates_hub_and_reorganizes():
     g, node = _graph_with_fanout(20, "a" * 400)  # node.id="hub"，20 邻居
     p = _plugin(TokenBudget(500), floor=16)  # 小窗口 → 触发
 
-    before = len(g.get_neighbors("hub"))
+    before = len(g.get_out_hierarchy("hub"))
     p.run([node], g, _summary_community("Cluster A"))
 
-    new_hubs = [n for n in g.get_all_nodes() if n.role == "hub" and n.id != "hub"]
+    new_hubs = [n for n in g.get_all_nodes() if n.hub is True and n.id != "hub"]
     assert len(new_hubs) == 1  # 同 summary 去重 → 恰好一个合成中间节点
     nh = new_hubs[0]
     assert nh.content == "Cluster A"
-    assert nh.id in {n.id for n in g.get_neighbors("hub")}  # node 连到新 hub
-    assert len(g.get_neighbors(nh.id)) >= 2  # 成员改挂到新 hub
-    assert len(g.get_neighbors("hub")) < before  # node 度下降（fanout 被收敛）
+    assert nh.id in {n.id for n in g.get_out_hierarchy("hub")}  # node 连到新 hub
+    assert len(g.get_out_hierarchy(nh.id)) >= 2  # 成员改挂到新 hub
+    assert len(g.get_out_hierarchy("hub")) < before  # node 度下降（fanout 被收敛）
 
 
 def test_run_skips_when_under_budget():
@@ -124,7 +124,7 @@ def test_run_skips_when_under_budget():
     g, node = _graph_with_fanout(20, "a" * 400)
     p = _plugin(TokenBudget(16000), floor=16)
     p.run([node], g, _summary_community("X"))
-    assert [n for n in g.get_all_nodes() if n.role == "hub"] == []
+    assert [n for n in g.get_all_nodes() if n.hub is True] == []
 
 
 # ─── 3.4 一进多出测试 ────────────────────────────────────────────────────────
@@ -146,12 +146,12 @@ def test_multi_hub_creates_multiple_hubs():
             unassigned_ids=batch_ids[4:] if len(batch_ids) > 4 else [],
         )
 
-    before = len(g.get_neighbors("hub"))
+    before = len(g.get_out_hierarchy("hub"))
     p.run([node], g, llm)
 
-    new_hubs = [n for n in g.get_all_nodes() if n.role == "hub" and n.id != "hub"]
+    new_hubs = [n for n in g.get_all_nodes() if n.hub is True and n.id != "hub"]
     assert len(new_hubs) >= 1  # 至少产出一个 hub
-    assert len(g.get_neighbors("hub")) < before  # node 度下降
+    assert len(g.get_out_hierarchy("hub")) < before  # node 度下降
 
 
 def test_key_concept_strategy_promotes_existing_node():
@@ -170,7 +170,7 @@ def test_key_concept_strategy_promotes_existing_node():
         )
 
     p.run([node], g, llm)
-    hubs = [n for n in g.get_all_nodes() if n.role == "hub" and n.id != "hub"]
+    hubs = [n for n in g.get_all_nodes() if n.hub is True and n.id != "hub"]
     assert len(hubs) >= 1
 
 
@@ -189,7 +189,7 @@ def test_unassigned_members_stay_with_parent():
         )
 
     p.run([node], g, llm)
-    neighbors = g.get_neighbors("hub")
+    neighbors = g.get_out_hierarchy("hub")
     assert "n2" in {n.id for n in neighbors} or "n3" in {n.id for n in neighbors}
 
 
@@ -212,7 +212,7 @@ def test_overlapping_clustering():
         )
 
     p.run([node], g, llm)
-    new_hubs = [n for n in g.get_all_nodes() if n.role == "hub" and n.id != "hub"]
+    new_hubs = [n for n in g.get_all_nodes() if n.hub is True and n.id != "hub"]
     assert len(new_hubs) >= 1
 
 
@@ -222,7 +222,7 @@ def test_hub_reuse_edge_absorption():
     g = GraphStore()
     root = Node(id="root", name="root", content="r" * 400)
     g.add_node(root)
-    hub = Node(id="hub1", name="Hub1", content="Hub about tech", role="hub")
+    hub = Node(id="hub1", name="Hub1", content="Hub about tech", extensions={"hub": True})
     g.add_node(hub)
     for i in range(6):
         n = Node(id=f"n{i}", name=f"n{i}", content=f"concept {i}")
@@ -234,7 +234,7 @@ def test_hub_reuse_edge_absorption():
     p = _plugin(TokenBudget(500), floor=2)
     p._absorb_hub_edges(g)
 
-    root_neighbors = g.get_neighbors(root.id)
+    root_neighbors = g.get_out_hierarchy(root.id)
     root_ids = {n.id for n in root_neighbors}
     assert "hub1" in root_ids
     for i in range(6):
@@ -247,7 +247,7 @@ def test_partial_contain_no_absorption():
     g = GraphStore()
     root = Node(id="root", name="root", content="r" * 400)
     g.add_node(root)
-    hub = Node(id="hub1", name="Hub1", content="Hub about tech", role="hub")
+    hub = Node(id="hub1", name="Hub1", content="Hub about tech", extensions={"hub": True})
     g.add_node(hub)
     for i in range(3):
         n = Node(id=f"n{i}", name=f"n{i}", content=f"concept {i}")
@@ -264,7 +264,7 @@ def test_partial_contain_no_absorption():
     p = _plugin(TokenBudget(500), floor=2)
     p._absorb_hub_edges(g)
 
-    root_ids = {n.id for n in g.get_neighbors(root.id)}
+    root_ids = {n.id for n in g.get_out_hierarchy(root.id)}
     assert "n3" in root_ids
     assert "n4" in root_ids
     assert "n5" in root_ids
@@ -274,7 +274,7 @@ def test_absorb_skips_single_member_hub_no_net_reduction():
     """hub 只有 1 个成员时不吸收（删 1 加 1 无净减边，重组以降总量为判据）。"""
     g = GraphStore()
     g.add_node(Node(id="root", name="root", content="r"))
-    g.add_node(Node(id="hub1", name="Hub1", content="hub", role="hub"))
+    g.add_node(Node(id="hub1", name="Hub1", content="hub", extensions={"hub": True}))
     g.add_node(Node(id="m0", name="m0", content="m0"))
     g.add_edge("hub1", "m0")
     g.add_edge("root", "m0")
@@ -283,24 +283,25 @@ def test_absorb_skips_single_member_hub_no_net_reduction():
     p = _plugin(TokenBudget(500), floor=2)
     p._absorb_hub_edges(g)
 
-    assert "m0" in {n.id for n in g.get_neighbors("root")}
+    assert "m0" in {n.id for n in g.get_out_hierarchy("root")}
 
 
 def test_rollback_restores_inplace_field_mutations():
-    """回滚真正还原节点的原地字段改动（content/role），而非只还原结构。"""
+    """回滚真正还原节点的原地字段改动（content/hub），而非只还原结构。"""
     g = GraphStore()
-    g.add_node(Node(id="a", name="A", content="original A", role="concept"))
-    g.add_node(Node(id="b", name="B", content="original B", role="concept"))
+    g.add_node(Node(id="a", name="A", content="original A", node_class="概念"))
+    g.add_node(Node(id="b", name="B", content="original B", node_class="概念"))
     g.add_edge("a", "b")
 
     p = _plugin(TokenBudget(500), floor=2)
     state = g.snapshot()
-    g.update_node("a", {"role": "hub", "content": "MUTATED"})
+    g.update_node("a", {"hub": True, "content": "MUTATED"})
     g.delete_node("b")
 
     p._rollback_reorg(g, state)
 
-    assert g.get_node("a").role == "concept"
+    assert g.get_node("a").node_class == "概念"
+    assert g.get_node("a").hub is False  # hub 标记（extensions）也被回滚
     assert g.get_node("a").content == "original A"
     assert g.get_node("b") is not None
     assert g.get_node("b").content == "original B"
@@ -311,35 +312,34 @@ def test_rollback_preserves_edge_ids():
     g = GraphStore()
     g.add_node(Node(id="a", name="A", content="A"))
     g.add_node(Node(id="b", name="B", content="B"))
-    fact_id = g.add_edge("a", "b", kind="fact", label="喜欢")
+    fact_id = g.add_edge("a", "b")
 
     p = _plugin(TokenBudget(500), floor=2)
     state = g.snapshot()
     # 模拟 reorg：删原边、加不同 label 的新边
     g.delete_edge(fact_id)
-    g.add_edge("a", "b", kind="fact", label="讨厌")
+    g.add_edge("a", "b")
 
     p._rollback_reorg(g, state)
 
-    facts = g.get_facts("a")
+    facts = g.get_relations("a")
     assert len(facts) == 1
     assert facts[0].id == fact_id  # 同一个 id，未被 churn
-    assert facts[0].label == "喜欢"
 
 
-def test_migrate_edges_preserves_distinct_label_facts():
-    """合并同义时，迁移边按 (kind,label) 去重——保留同一对端点间不同 label 的事实。
+def test_migrate_edges_dedup_same_type_between_pair():
+    """合并同义时迁移边按 type 去重：同一对端点间同 type（关联）的边只保留一份。
 
-    旧实现只按 (src,tgt,kind) 去重，会把 m→x「创立」并入时丢掉（rep→x 已有「属于」）。
+    统一模型无 label；同一 (rep, x, 关联) 迁移并入既有边、不重复。
     """
     g = GraphStore()
     for nid in ["m", "rep", "x"]:
         g.add_node(Node(id=nid, name=nid, content=nid))
-    g.add_edge("rep", "x", kind="fact", label="属于")
-    g.add_edge("m", "x", kind="fact", label="创立")
+    g.add_edge("rep", "x")  # rep→x（关联）
+    g.add_edge("m", "x")    # m→x（关联），迁移到 rep→x
 
     p = _plugin(TokenBudget(500), floor=2)
     p._migrate_edges("m", "rep", g)
 
-    rep_facts = [e for e in g.get_facts("rep") if e.target_id == "x"]
-    assert {e.label for e in rep_facts} == {"属于", "创立"}
+    rep_facts = [e for e in g.get_relations("rep") if e.target_id == "x"]
+    assert len(rep_facts) == 1  # 同 type 去重，只一份

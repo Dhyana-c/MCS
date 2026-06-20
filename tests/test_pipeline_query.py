@@ -360,8 +360,8 @@ def test_fact_bfs_collects_fact_edges():
     for n in [a, b, c]:
         g.add_node(n)
     # fact 边
-    g.add_edge("a", "b", kind="fact", label="喜欢")
-    g.add_edge("b", "c", kind="fact", label="包含")
+    g.add_edge("a", "b")
+    g.add_edge("b", "c")
 
     from tests.conftest import MockLLM
 
@@ -376,7 +376,7 @@ def test_fact_bfs_collects_fact_edges():
     # fact 边应被收集
     assert isinstance(result, Subgraph)
     assert len(result.edges) >= 1
-    assert all(e.kind == "fact" for e in result.edges)
+    assert all(e.type == "关联" for e in result.edges)
 
 
 def test_fact_bfs_endpoints_added_to_accumulated():
@@ -387,7 +387,7 @@ def test_fact_bfs_endpoints_added_to_accumulated():
     c = Node(id="c", name="C", content="C")
     for n in [a, b, c]:
         g.add_node(n)
-    g.add_edge("a", "b", kind="fact", label="喜欢")
+    g.add_edge("a", "b")
 
     from tests.conftest import MockLLM
 

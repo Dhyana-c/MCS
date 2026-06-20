@@ -63,25 +63,11 @@ class MCSConfig:
     plugin_configs: dict = field(default_factory=dict)
     prompt_overrides: dict[str, dict] = field(default_factory=dict)
 
-    # 关系表示模式（property_graph 默认 / attribute_node）；建图时选定，写读须同模式
-    relation_model: str = "property_graph"
-    # attribute_node 模式：属性节点 content 上限（超此阈值触发 LLM 压缩，量级同 lean 基线）
-    attribute_content_max: int = 200
-
-    def __post_init__(self) -> None:
-        """校验枚举型字段。"""
-        if self.relation_model not in {"property_graph", "attribute_node"}:
-            raise ValueError(
-                f"unknown relation_model={self.relation_model!r}; "
-                "expected 'property_graph' or 'attribute_node'"
-            )
-
     @classmethod
     def knowledge_graph(
         cls,
         write_llm: str = "deepseek",
         read_llm: str | None = None,
-        relation_model: str = "property_graph",
     ) -> MCSConfig:
         """第一阶段默认配置：shared+write+read 插件分离，T=8000，max_rounds=5，max_accumulated_nodes=1000。
 
@@ -121,24 +107,6 @@ class MCSConfig:
         if read_llm_name != write_llm_name:
             _add_llm_config(plugin_configs, read_llm, read_llm_name)
 
-        # attribute_node 模式：注入专属 judge_relations prompt（不产 label、产 create_attribute）
-        prompt_overrides: dict[str, dict] = {}
-        if relation_model == "attribute_node":
-            from mcs.prompts.judge_relations_attr import (
-                SYSTEM_PROMPT as _attr_system,
-            )
-            from mcs.prompts.judge_relations_attr import (
-                USER_TEMPLATE as _attr_template,
-            )
-            from mcs.prompts.judge_relations_attr import (
-                parse as _attr_parse,
-            )
-            prompt_overrides["judge_relations"] = {
-                "system": _attr_system,
-                "template": _attr_template,
-                "parser": _attr_parse,
-            }
-
         return cls(
             mode="knowledge_graph",
             token_budget=8000,
@@ -150,8 +118,6 @@ class MCSConfig:
             write_llm=write_llm_name,
             read_llm=read_llm_name,
             plugin_configs=plugin_configs,
-            relation_model=relation_model,
-            prompt_overrides=prompt_overrides,
         )
 
     @classmethod
@@ -185,7 +151,7 @@ class MCSConfig:
             否则保留底；
           - ``plugin_configs`` 按插件名**两层深合并**（底的 ``model`` 与文件的 ``api_key`` 共存）；
           - ``prompt_overrides`` 按 purpose 合并；``parser`` 为 import-path 串时解析为 Callable；
-          - 有 ``preset`` 时 ``write_llm`` / ``read_llm`` / ``relation_model`` **仅作工厂参数
+          - 有 ``preset`` 时 ``write_llm`` / ``read_llm`` **仅作工厂参数
             消费、不再二次叠加**（否则把工厂产出的 ``deepseek_llm`` 覆盖回短名 ``deepseek``）。
 
         Args:
@@ -199,7 +165,7 @@ class MCSConfig:
             FileNotFoundError: 配置文件不存在。
             yaml.YAMLError: YAML 解析失败。
             EnvExpansionError: ``${VAR}`` 引用的环境变量未设置。
-            ValueError: 未知 preset / 非法 relation_model / 根非 mapping。
+            ValueError: 未知 preset / 根非 mapping。
         """
         data = cls._load_yaml(path)
         data = expand_env(data)
@@ -235,18 +201,16 @@ class MCSConfig:
 
     @classmethod
     def _build_preset_base(cls, preset: str, data: dict) -> MCSConfig:
-        """调 preset 工厂铺底；消费 write_llm / read_llm / relation_model（不二次叠加）。"""
+        """调 preset 工厂铺底；消费 write_llm / read_llm（不二次叠加）。"""
         if preset == "knowledge_graph":
             return cls.knowledge_graph(
                 write_llm=data.pop("write_llm", "deepseek"),
                 read_llm=data.pop("read_llm", None),
-                relation_model=data.pop("relation_model", "property_graph"),
             )
         if preset == "memory_system":
-            # memory_system() 不接受 LLM 参数；消费这三个键以免被当字段二次叠加。
+            # memory_system() 不接受 LLM 参数；消费这两个键以免被当字段二次叠加。
             data.pop("write_llm", None)
             data.pop("read_llm", None)
-            data.pop("relation_model", None)
             return cls.memory_system()
         raise ValueError(
             f"unknown preset {preset!r}; expected 'knowledge_graph' or 'memory_system'"
@@ -260,8 +224,8 @@ class MCSConfig:
 
         Args:
             base: preset 工厂产出或 MCSConfig() 默认底。
-            data: 经 expand_env 处理、已弹出 preset（及 preset 分支消费的 LLM 三键）后的字段。
-            preset_consumed: 是否已用 preset（True 时 write_llm/read_llm/relation_model 已消费、
+            data: 经 expand_env 处理、已弹出 preset（及 preset 分支消费的 LLM 两键）后的字段。
+            preset_consumed: 是否已用 preset（True 时 write_llm/read_llm 已消费、
                 不再当字段叠加）。
         """
         scalar_fields = (
@@ -270,21 +234,10 @@ class MCSConfig:
             "max_rounds",
             "max_accumulated_nodes",
             "auto_persist",
-            "attribute_content_max",
         )
         for field_name in scalar_fields:
             if field_name in data:
                 setattr(base, field_name, data[field_name])
-
-        # relation_model：无 preset 时是原始字段（有 preset 时已消费、跳过）。
-        if not preset_consumed and "relation_model" in data:
-            rm = data["relation_model"]
-            if rm not in {"property_graph", "attribute_node"}:
-                raise ValueError(
-                    f"unknown relation_model={rm!r}; "
-                    "expected 'property_graph' or 'attribute_node'"
-                )
-            base.relation_model = rm
 
         # LLM 原始字段：仅无 preset 时叠加。
         if not preset_consumed:

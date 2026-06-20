@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import TextIO
 
 from mcs.core.store import StoreInterface
-from mcs.entities.graph import Edge, Node
+from mcs.entities.graph import CLASS_CONCEPT, EDGE_ASSOC, Edge, Node
 
 
 @dataclass
@@ -24,7 +24,7 @@ class GraphQualityReport:
         largest_component_ratio: Fraction of nodes in the largest component
         cross_doc_edge_count: Number of edges connecting nodes from different documents
         cross_doc_edge_rate: Fraction of edges that are cross-document
-        node_role_distribution: Count of nodes by role (concept, hub, attribute)
+        node_role_distribution: Count of nodes by node_class（概念/事实/事件/source）
     """
     node_count: int
     edge_count: int
@@ -105,11 +105,11 @@ def _compute_connected_components(store: StoreInterface) -> list[set[str]]:
             visited.add(current_id)
             component.add(current_id)
 
-            # Add all reachable neighbors (hierarchy + fact endpoints) to queue
+            # Add all reachable neighbors (下钻成员 + 关系边端点) to queue
             neighbor_ids: set[str] = set()
             for n in store.get_out_hierarchy(current_id):
                 neighbor_ids.add(n.id)
-            for e in store.get_facts(current_id):
+            for e in store.get_relations(current_id):
                 neighbor_ids.add(e.source_id)
                 neighbor_ids.add(e.target_id)
             neighbor_ids.discard(current_id)
@@ -171,10 +171,11 @@ def diagnose_graph(store: StoreInterface) -> GraphQualityReport:
 
     cross_doc_edge_rate = cross_doc_edge_count / edge_count if edge_count > 0 else 0.0
 
-    # Node role distribution
+    # Node class distribution（统一模型：node_class ∈ {概念,事实,事件,source}；
+    # 字段名保留 node_role_distribution 以兼容报告 API）
     node_role_distribution = defaultdict(int)
     for node in nodes:
-        node_role_distribution[node.role] += 1
+        node_role_distribution[node.node_class] += 1
 
     return GraphQualityReport(
         node_count=node_count,
@@ -213,7 +214,7 @@ def diagnose_from_db(db_path: str) -> GraphQualityReport:
 
     # Load nodes
     for row in conn.execute(
-        "SELECT id, name, content, role, extensions_json FROM nodes"
+        "SELECT id, name, content, node_class, extensions_json FROM nodes"
     ):
         ext_raw = json.loads(row[4]) if row[4] else {}
         # Keep extensions as-is (they're already deserialized from JSON)
@@ -222,19 +223,19 @@ def diagnose_from_db(db_path: str) -> GraphQualityReport:
                 id=row[0],
                 name=row[1],
                 content=row[2] or "",
-                role=row[3] or "concept",
+                node_class=row[3] or CLASS_CONCEPT,
                 extensions=ext_raw,
             )
         )
 
-    # Load edges (含 kind/label/priority，否则事实边退化为 hierarchy、连通分析失真)
+    # Load edges（统一模型：type/priority，无 kind/label）。选全列含 id 与
+    # cross_doc_linker.load_graph_from_db 对齐；诊断不依赖边 id 保真，故走 add_edge。
     for row in conn.execute(
-        "SELECT source_id, target_id, kind, label, priority FROM edges"
+        "SELECT id, source_id, target_id, type, priority FROM edges"
     ):
         graph.add_edge(
-            row[0], row[1],
-            kind=row[2] or "hierarchy",
-            label=row[3] or "",
+            row[1], row[2],
+            type=row[3] or EDGE_ASSOC,
             priority=row[4] if row[4] is not None else 0.0,
         )
 

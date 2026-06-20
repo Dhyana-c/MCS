@@ -43,9 +43,9 @@
 ## ③ 实现阶段任务骨架
 
 ### 数据结构（entities）
-- [ ] `Node` 加 `node_class ∈ {概念,事实,事件,source}`；`hub` 降为标记字段
-- [ ] `Edge`：`kind`/`label` → `type`（仅 `关联`/`互斥`）；登记制校验
-- [ ] 序列化 / store 层适配（`extensions_json` 等）
+- [x] `Node` 加 `node_class ∈ {概念,事实,事件,source}`；`hub` 降为标记字段
+- [x] `Edge`：`kind`/`label` → `type`（仅 `关联`/`互斥`）；登记制校验
+- [x] 序列化 / store 层适配（`extensions_json` 等）
 
 ### 核心算法
 - [ ] 守门：挂在写 / 连边 / 合并 / 读修复后；活跃视图估算（口径 == 渲染、`type` 不计）

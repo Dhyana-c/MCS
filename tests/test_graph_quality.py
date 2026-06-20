@@ -38,22 +38,22 @@ def create_test_graph() -> GraphStore:
 
     # Create nodes with source tracking
     nodes = [
-        Node(id="a", name="A", content="Node A", role="concept",
+        Node(id="a", name="A", content="Node A", node_class="概念",
              extensions={"source_tracking": {"sources": [{"doc_id": "doc1"}]}}),
-        Node(id="b", name="B", content="Node B", role="concept",
+        Node(id="b", name="B", content="Node B", node_class="概念",
              extensions={"source_tracking": {"sources": [{"doc_id": "doc2"}]}}),
-        Node(id="c", name="C", content="Node C", role="hub",
-             extensions={"source_tracking": {"sources": [{"doc_id": "doc2"}]}}),
-        Node(id="d", name="D", content="Node D", role="attribute",
+        Node(id="c", name="C", content="Node C",
+             extensions={"hub": True, "source_tracking": {"sources": [{"doc_id": "doc2"}]}}),
+        Node(id="d", name="D", content="Node D", node_class="事实",
              extensions={"source_tracking": {"sources": [{"doc_id": "doc1"}]}}),
-        Node(id="e", name="E", content="Node E", role="concept",
+        Node(id="e", name="E", content="Node E", node_class="概念",
              extensions={"source_tracking": {"sources": [{"doc_id": "doc3"}]}}),
-        Node(id="f", name="F", content="Node F", role="concept",
+        Node(id="f", name="F", content="Node F", node_class="概念",
              extensions={"source_tracking": {"sources": [{"doc_id": "doc3"}]}}),
-        Node(id="g", name="G", content="Node G", role="hub",
-             extensions={"source_tracking": {"sources": [{"doc_id": "doc2"}]}}),
-        Node(id="h", name="H", content="Node H", role="hub",
-             extensions={"source_tracking": {"sources": [{"doc_id": "doc3"}]}}),
+        Node(id="g", name="G", content="Node G",
+             extensions={"hub": True, "source_tracking": {"sources": [{"doc_id": "doc2"}]}}),
+        Node(id="h", name="H", content="Node H",
+             extensions={"hub": True, "source_tracking": {"sources": [{"doc_id": "doc3"}]}}),
     ]
 
     for node in nodes:
@@ -118,13 +118,14 @@ def test_diagnose_cross_doc_edges():
 
 
 def test_diagnose_node_roles():
-    """Test node role distribution."""
+    """Test node class distribution（统一模型：node_class ∈ {概念,事实,事件,source}；
+    hub 是 extensions 标记、非 node_class）。"""
     graph = create_test_graph()
     report = diagnose_graph(graph)
 
-    assert report.node_role_distribution["concept"] == 4
-    assert report.node_role_distribution["hub"] == 3
-    assert report.node_role_distribution["attribute"] == 1
+    # a,b,c,e,f,g,h = 概念(7)；d = 事实(1)
+    assert report.node_role_distribution["概念"] == 7
+    assert report.node_role_distribution["事实"] == 1
 
 
 def test_diagnose_empty_graph():
@@ -172,8 +173,8 @@ def test_node_without_source_tracking():
     graph = GraphStore()
 
     # Node without source_tracking extension
-    graph.add_node(Node(id="a", name="A", content="Node A", role="concept", extensions={}))
-    graph.add_node(Node(id="b", name="B", content="Node B", role="concept",
+    graph.add_node(Node(id="a", name="A", content="Node A", node_class="概念", extensions={}))
+    graph.add_node(Node(id="b", name="B", content="Node B", node_class="概念",
                         extensions={"source_tracking": {"sources": [{"doc_id": "doc1"}]}}))
     graph.add_edge("a", "b")
 

@@ -66,7 +66,6 @@ ALL_MODULES = [
     "mcs.plugins.maintenance.summary_regen",
     "mcs.plugins.index",
     "mcs.plugins.index.alias_index",
-    "mcs.plugins.index.community_merger",
     "mcs.plugins.llm",
     "mcs.plugins.llm.claude_llm",
     "mcs.plugins.llm.deepseek_llm",
@@ -200,10 +199,12 @@ def test_node_has_only_minimal_core_fields() -> None:
     from mcs.entities.graph import Node
 
     field_names = {f.name for f in fields(Node)}
-    expected = {"id", "name", "content", "role", "extensions"}
+    expected = {"id", "name", "content", "node_class", "extensions"}
     assert field_names == expected, (
         f"Node has unexpected fields: {field_names ^ expected}"
     )
+    # hub 不再是字段，而是 extensions["hub"] 的 property（design §3.1）
+    assert "hub" not in field_names
 
 
 def test_query_context_has_4_lifecycle_fields() -> None:
@@ -245,13 +246,12 @@ def test_write_context_has_7_lifecycle_fields() -> None:
 
 
 def test_decision_action_types() -> None:
-    """Decision 数据类必须接受四种文档化的 action 类型。"""
+    """Decision 数据类必须接受三种文档化的 action 类型。"""
     from mcs.entities.decisions import ConceptDraft, Decision
 
     c = ConceptDraft(name="X", content="...")
     Decision(action="merge", concept=c, target_id="n1")
     Decision(action="create", concept=c, edges_to=["n2"])
-    Decision(action="attach_statement", target_id="n1", statement="...")
     Decision(action="no_op", concept=c, reason="not relevant")
 
 
@@ -300,14 +300,13 @@ def test_context_renderer_get_summary_fallback() -> None:
     from mcs.core.context_renderer import ContextRenderer
     from mcs.entities.graph import Node
 
-    node = Node(id="n1", name="X", content="hello world", role="concept")
+    node = Node(id="n1", name="X", content="hello world")
     assert ContextRenderer.get_summary(node) == "hello world"
 
     node_with_summary = Node(
         id="n2",
         name="Y",
         content="long content",
-        role="concept",
         extensions={"summary": {"text": "short summary"}},
     )
     assert ContextRenderer.get_summary(node_with_summary) == "short summary"

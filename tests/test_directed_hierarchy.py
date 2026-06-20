@@ -35,7 +35,7 @@ def test_reorganize_produces_pure_downstream_topology():
     a = Node(id="a", name="A", content="x" * 400)
     b = Node(id="b", name="B", content="x" * 400)
     c = Node(id="c", name="C", content="x" * 400)
-    d = Node(id="d", name="Hub D", content="cluster", role="hub")
+    d = Node(id="d", name="Hub D", content="cluster", extensions={"hub": True})
     for n in [a, b, c, d]:
         g.add_node(n)
     g.add_edge("a", "b")
@@ -46,30 +46,33 @@ def test_reorganize_produces_pure_downstream_topology():
     fr._reorganize(a, d, [b, c], g)
 
     # 下行边 a→d
-    edge_ad = g.get_edge("a", "d")
-    assert edge_ad is not None
+    edges_ad = g.get_edges_between("a", "d")
+    assert len(edges_ad) == 1
+    edge_ad = edges_ad[0]
     assert edge_ad.source_id == "a"
     assert edge_ad.target_id == "d"
 
     # 下行边 d→b
-    edge_db = g.get_edge("d", "b")
-    assert edge_db is not None
+    edges_db = g.get_edges_between("d", "b")
+    assert len(edges_db) == 1
+    edge_db = edges_db[0]
     assert edge_db.source_id == "d"
     assert edge_db.target_id == "b"
 
     # 下行边 d→c
-    edge_dc = g.get_edge("d", "c")
-    assert edge_dc is not None
+    edges_dc = g.get_edges_between("d", "c")
+    assert len(edges_dc) == 1
+    edge_dc = edges_dc[0]
     assert edge_dc.source_id == "d"
     assert edge_dc.target_id == "c"
 
     # 原始直连边 a→b, a→c 已删除
-    assert g.get_edge("a", "b") is None
-    assert g.get_edge("a", "c") is None
+    assert g.get_edges_between("a", "b") == []
+    assert g.get_edges_between("a", "c") == []
 
     # 无上行边 b→a, c→a
-    assert g.get_edge("b", "a") is None
-    assert g.get_edge("c", "a") is None
+    assert g.get_edges_between("b", "a") == []
+    assert g.get_edges_between("c", "a") == []
 
 
 def test_reorganize_out_neighbors():
@@ -78,7 +81,7 @@ def test_reorganize_out_neighbors():
     a = Node(id="a", name="A", content="x" * 400)
     b = Node(id="b", name="B", content="x" * 400)
     c = Node(id="c", name="C", content="x" * 400)
-    d = Node(id="d", name="Hub D", content="cluster", role="hub")
+    d = Node(id="d", name="Hub D", content="cluster", extensions={"hub": True})
     for n in [a, b, c, d]:
         g.add_node(n)
     g.add_edge("a", "b")
@@ -89,13 +92,13 @@ def test_reorganize_out_neighbors():
     fr._reorganize(a, d, [b, c], g)
 
     # a 的邻居：只有 d
-    assert {n.id for n in g.get_neighbors("a")} == {"d"}
+    assert {n.id for n in g.get_out_hierarchy("a")} == {"d"}
     # d 的邻居：b 和 c
-    assert {n.id for n in g.get_neighbors("d")} == {"b", "c"}
+    assert {n.id for n in g.get_out_hierarchy("d")} == {"b", "c"}
     # b 的邻居：空（无上行回指）
-    assert {n.id for n in g.get_neighbors("b")} == set()
+    assert {n.id for n in g.get_out_hierarchy("b")} == set()
     # c 的邻居：空（无上行回指）
-    assert {n.id for n in g.get_neighbors("c")} == set()
+    assert {n.id for n in g.get_out_hierarchy("c")} == set()
 
 
 def test_maintain_seed_root_uses_unidirectional_edges(mock_llm, fanout_reducer):
@@ -103,7 +106,7 @@ def test_maintain_seed_root_uses_unidirectional_edges(mock_llm, fanout_reducer):
     g = GraphStore()
     concepts = []
     for i in range(20):
-        n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400, role="concept")
+        n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400, node_class="概念")
         g.add_node(n)
         concepts.append(n)
     mock_llm.set_response("decide_hub", _group_response)
@@ -116,12 +119,12 @@ def test_maintain_seed_root_uses_unidirectional_edges(mock_llm, fanout_reducer):
     assert root is not None
 
     # get_neighbors(root) 应包含概念节点
-    root_neighbors = {n.id for n in g.get_neighbors(SEED_ROOT_ID)}
+    root_neighbors = {n.id for n in g.get_out_hierarchy(SEED_ROOT_ID)}
     assert len(root_neighbors) > 0
 
     # 反方向：get_neighbors(任意概念) 不含 root（单向 root→concept）
     for concept in concepts:
-        concept_neighbors = {n.id for n in g.get_neighbors(concept.id)}
+        concept_neighbors = {n.id for n in g.get_out_hierarchy(concept.id)}
         assert SEED_ROOT_ID not in concept_neighbors, (
             f"概念 {concept.id} 的邻居不应包含 root，但发现 {concept_neighbors}"
         )
@@ -143,7 +146,7 @@ def test_hierarchy_persisted_via_save_full(mock_llm, fanout_reducer):
     storage.initialize()
     concepts = []
     for i in range(20):
-        n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400, role="concept")
+        n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400, node_class="概念")
         storage.add_node(n)
         concepts.append(n)
     mock_llm.set_response("decide_hub", _group_response)
@@ -170,12 +173,12 @@ def test_hierarchy_persisted_via_save_full(mock_llm, fanout_reducer):
             assert edge.target_id is not None
 
     # 验证 get_neighbors 加载后仍正确（单向：root→concept 成立，concept→root 不成立）
-    root_neighbors = {n.id for n in loaded.get_neighbors(SEED_ROOT_ID)}
+    root_neighbors = {n.id for n in loaded.get_out_hierarchy(SEED_ROOT_ID)}
     assert len(root_neighbors) > 0
     for cid in [f"c{i}" for i in range(20)]:
         node = loaded.get_node(cid)
         if node is not None:
-            concept_neighbors = {n.id for n in loaded.get_neighbors(cid)}
+            concept_neighbors = {n.id for n in loaded.get_out_hierarchy(cid)}
             assert SEED_ROOT_ID not in concept_neighbors
 
     storage.shutdown()
@@ -190,7 +193,7 @@ def test_semantic_edges_unaffected_by_reorganize():
     b = Node(id="b", name="B", content="x" * 400)
     c = Node(id="c", name="C", content="x" * 400)
     x = Node(id="x", name="X", content="semantic peer")
-    d = Node(id="d", name="Hub D", content="cluster", role="hub")
+    d = Node(id="d", name="Hub D", content="cluster", extensions={"hub": True})
     for n in [a, b, c, x, d]:
         g.add_node(n)
     g.add_edge("a", "b")
@@ -202,14 +205,15 @@ def test_semantic_edges_unaffected_by_reorganize():
     fr._reorganize(a, d, [b, c], g)
 
     # a→x 边原样保留
-    edge_ax = g.get_edge("a", "x")
-    assert edge_ax is not None
+    edges_ax = g.get_edges_between("a", "x")
+    assert len(edges_ax) == 1
+    edge_ax = edges_ax[0]
     assert edge_ax.source_id == "a"
     assert edge_ax.target_id == "x"
 
     # 确认被重组的边已正确变更
-    assert g.get_edge("a", "d") is not None
-    assert g.get_edge("d", "b") is not None
-    assert g.get_edge("d", "c") is not None
-    assert g.get_edge("a", "b") is None
-    assert g.get_edge("a", "c") is None
+    assert g.get_edges_between("a", "d") != []
+    assert g.get_edges_between("d", "b") != []
+    assert g.get_edges_between("d", "c") != []
+    assert g.get_edges_between("a", "b") == []
+    assert g.get_edges_between("a", "c") == []

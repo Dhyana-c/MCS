@@ -1,7 +1,7 @@
 """写入管道 ④⑤ 和提示共享的 DecisionList 数据结构。
 
-参见 openspec/specs/write-pipeline/spec.md "DecisionList 至少支持四种 action"
-和 openspec/specs/phase1-defaults/spec.md "DecisionList 派发四种 action"。
+参见 openspec/specs/write-pipeline/spec.md "DecisionList 至少支持三种 action"
+和 openspec/specs/phase1-defaults/spec.md "DecisionList 派发三种 action"。
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-ActionType = Literal["merge", "create", "create_attribute", "attach_statement", "no_op"]
+ActionType = Literal["merge", "create", "no_op"]
 
 
 @dataclass
@@ -18,7 +18,6 @@ class ConceptDraft:
 
     ``relation_hints`` 是 LLM 在提取过程中识别的自然语言关系短语列表
     （例如"属于机器学习"、"由小明发明"），用于阶段 ④ 判断概念间的边连接。
-    不再转化为 statements——所有关系信息直接包含在 content 中。
     """
 
     name: str
@@ -31,35 +30,22 @@ class Decision:
     """DecisionList 中的一个动作（写入阶段 ④ 输出，⑤ 输入）。
 
     字段有效性取决于 ``action``：
-      - merge:             concept, target_id
-      - create:            concept, [edges_to], [edges_to_names]
-      - create_attribute:  attr_name/attr_content + [assoc_to]/[assoc_to_names]
-                           （attribute_node 模式：建属性节点 + 无类型关联边，**无 label**）
-      - attach_statement:  [DEPRECATED] 现为 no-op
-      - no_op:             concept, reason
+      - merge:  concept, target_id
+      - create: concept, [edges_to], [edges_to_names]
+      - no_op:  concept, reason
 
-    ``edges_to`` 是到**已存在节点**的锚点列表（每项含 target_id + label）；
-    ``edges_to_names`` 是到**同一批新概念**的概念名列表（每项含 target_name + label）——
+    ``edges_to`` 是到**已存在节点**的锚点列表（每项含 target_id）；
+    ``edges_to_names`` 是到**同一批新概念**的概念名列表（每项含 target_name）——
     写入阶段 ⑤ 在新节点全部建好后按名解析成边，弥补"同次摄入的兄弟概念之间无法用
-    id 互连"的缺口。一条关系 = 一个方向 + 一个 label，不自动镜像反向。
-
-    ``assoc_to`` / ``assoc_to_names`` 是 ``create_attribute`` 的端点（**无 label**）：
-    前者到已存在节点（含 ``target_id``），后者到同批新概念（含 ``target_name``）。
-    纯字面值（不值得建节点的值）内联进 ``attr_content``、不另列端点。
+    id 互连"的缺口。统一模型下这些边为 ``关联`` 边（无 label、无 kind；开放谓词
+    落事实节点 content）。一条关系 = 一个方向，不自动镜像反向。
     """
 
     action: ActionType
     concept: ConceptDraft | None = None
     target_id: str | None = None
-    edges_to: list[dict] = field(default_factory=list)  # [{"target_id": str, "label": str}, ...]
-    edges_to_names: list[dict] = field(default_factory=list)  # [{"target_name": str, "label": str}, ...]
-    # attribute_node 模式：关系具体化为属性节点 + 无类型关联边（无 label）
-    attr_name: str | None = None  # 属性节点短名（如"小明的爱好"）
-    attr_content: str | None = None  # 关系说法（单一当前值；超上限由 ⑤ LLM 压缩）
-    assoc_to: list[dict] = field(default_factory=list)  # [{"target_id": str}, ...] 已存在节点端点
-    assoc_to_names: list[dict] = field(default_factory=list)  # [{"target_name": str}, ...] 同批新概念端点
-    initial_statements: list[str] = field(default_factory=list)  # DEPRECATED: 不再使用
-    statement: str | None = None  # DEPRECATED: 不再使用
+    edges_to: list[dict] = field(default_factory=list)  # [{"target_id": str}, ...]
+    edges_to_names: list[dict] = field(default_factory=list)  # [{"target_name": str}, ...]
     aliases_to_add: list[str] = field(default_factory=list)
     reason: str | None = None
 

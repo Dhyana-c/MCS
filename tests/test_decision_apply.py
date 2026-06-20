@@ -1,4 +1,4 @@
-"""WritePipeline._apply_decisions 测试：4 种 action 类型 + 错误处理。"""
+"""WritePipeline._apply_decisions 测试：3 种 action 类型 + 错误处理。"""
 
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ def test_create_adds_node_with_edges(empty_graph, mock_llm):
                 action="create",
                 concept=concept,
                 edges_to=[
-                    {"target_id": "anchor1", "label": "相关"},
-                    {"target_id": "anchor2", "label": "相关"},
+                    {"target_id": "anchor1"},
+                    {"target_id": "anchor2"},
                 ],
             )
         ]
@@ -52,7 +52,7 @@ def test_create_adds_node_with_edges(empty_graph, mock_llm):
     new_node = changed[0]
     assert new_node.name == "新概念"
     # 两个锚点都应该是新节点的事实邻居（事实边两端可达）。
-    fact_targets = {e.target_id for e in empty_graph.get_facts(new_node.id)}
+    fact_targets = {e.target_id for e in empty_graph.get_relations(new_node.id)}
     assert fact_targets == {"anchor1", "anchor2"}
 
 
@@ -65,8 +65,8 @@ def test_create_links_intra_batch_via_edges_to_names(empty_graph, mock_llm):
                 action="create",
                 concept=ConceptDraft(name="苹果公司", content=""),
                 edges_to_names=[
-                    {"target_name": "iPhone", "label": "生产"},
-                    {"target_name": "乔布斯", "label": "创立"},
+                    {"target_name": "iPhone"},
+                    {"target_name": "乔布斯"},
                 ],
             ),
             Decision(action="create", concept=ConceptDraft(name="iPhone", content="")),
@@ -75,7 +75,7 @@ def test_create_links_intra_batch_via_edges_to_names(empty_graph, mock_llm):
     )
     assert [c.name for c in changed] == ["苹果公司", "iPhone", "乔布斯"]
     apple = next(n for n in empty_graph.get_all_nodes() if n.name == "苹果公司")
-    fact_targets = {n.name for e in empty_graph.get_facts(apple.id)
+    fact_targets = {n.name for e in empty_graph.get_relations(apple.id)
                     for n in empty_graph.get_all_nodes()
                     if n.id == e.target_id}
     assert fact_targets == {"iPhone", "乔布斯"}
@@ -90,16 +90,16 @@ def test_edges_to_names_skips_unknown_and_self(empty_graph, mock_llm):
                 action="create",
                 concept=ConceptDraft(name="A", content=""),
                 edges_to_names=[
-                    {"target_name": "A", "label": "自环"},
-                    {"target_name": "不存在", "label": "相关"},
-                    {"target_name": "B", "label": "相关"},
+                    {"target_name": "A"},
+                    {"target_name": "不存在"},
+                    {"target_name": "B"},
                 ],
             ),
             Decision(action="create", concept=ConceptDraft(name="B", content="")),
         ]
     )
     a = next(n for n in empty_graph.get_all_nodes() if n.name == "A")
-    fact_targets = {n.name for e in empty_graph.get_facts(a.id)
+    fact_targets = {n.name for e in empty_graph.get_relations(a.id)
                     for n in empty_graph.get_all_nodes()
                     if n.id == e.target_id}
     assert fact_targets == {"B"}
@@ -120,32 +120,13 @@ def test_edges_to_names_can_link_to_merged_target(empty_graph, mock_llm):
             Decision(
                 action="create",
                 concept=ConceptDraft(name="神经网络", content=""),
-                edges_to_names=[{"target_name": "DL", "label": "相关"}],
+                edges_to_names=[{"target_name": "DL"}],
             ),
         ]
     )
     nn = next(n for n in empty_graph.get_all_nodes() if n.name == "神经网络")
-    fact_targets = {e.target_id for e in empty_graph.get_facts(nn.id)}
+    fact_targets = {e.target_id for e in empty_graph.get_relations(nn.id)}
     assert "t1" in fact_targets
-
-
-def test_create_with_initial_statements_ignored(empty_graph, mock_llm):
-    """initial_statements 已废弃，create 时不再写入 extensions。"""
-    wp = _make_pipeline(empty_graph, mock_llm)
-    concept = ConceptDraft(name="C", content="some content")
-    changed = wp._apply_decisions(
-        [
-            Decision(
-                action="create",
-                concept=concept,
-                edges_to=[],
-                initial_statements=["s1", "s2"],
-            )
-        ]
-    )
-    node = changed[0]
-    assert node.content == "some content"
-    assert "statements" not in node.extensions
 
 
 def test_merge_does_not_add_node(empty_graph, mock_llm):
@@ -225,14 +206,13 @@ def test_merge_without_target_id_raises(empty_graph, mock_llm):
         )
 
 
-def test_sanitize_drops_targetless_merge_and_attach(empty_graph, mock_llm):
-    """LLM 偶发的 target_id=null 的 merge/attach 应被清洗丢弃，
+def test_sanitize_drops_targetless_merge(empty_graph, mock_llm):
+    """LLM 偶发的 target_id=null 的 merge 应被清洗丢弃，
 
     使整次摄入不再因单个坏决策崩溃；create 等正常决策保留。
     """
     wp = _make_pipeline(empty_graph, mock_llm)
     decisions = [
-        Decision(action="attach_statement", target_id=None, statement="坏"),
         Decision(
             action="merge",
             concept=ConceptDraft(name="X", content=""),
@@ -246,32 +226,6 @@ def test_sanitize_drops_targetless_merge_and_attach(empty_graph, mock_llm):
     changed = wp._apply_decisions(cleaned)
     assert len(changed) == 1
     assert changed[0].name == "好"
-
-
-def test_attach_statement_is_noop(empty_graph, mock_llm):
-    """attach_statement 已废弃，现为 no-op，不修改目标节点。"""
-    attr_node = Node(id="attr1", name="X的爱好", content="原始内容", role="attribute")
-    empty_graph.add_node(attr_node)
-
-    wp = _make_pipeline(empty_graph, mock_llm)
-    wp._apply_decisions(
-        [
-            Decision(
-                action="attach_statement",
-                target_id="attr1",
-                statement="说法1",
-            ),
-            Decision(
-                action="attach_statement",
-                target_id="attr1",
-                statement="说法2",
-            ),
-        ]
-    )
-    # attach_statement 为 no-op，content 不变，无 statements
-    node = empty_graph.get_node("attr1")
-    assert node.content == "原始内容"
-    assert "statements" not in node.extensions
 
 
 def test_no_op_changes_nothing(empty_graph, mock_llm):

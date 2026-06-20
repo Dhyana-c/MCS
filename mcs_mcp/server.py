@@ -67,7 +67,6 @@ class MCPServer:
         # 单 worker：串行 + 线程亲和（不靠锁）。MCS 在此线程内 build 与调用。
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcs-mcp-worker")
         self._mcs: MCS | None = None
-        self._relation_model: str = "property_graph"
         self._worker_thread_id: int | None = None
         # 在单 worker 线程内 build MCS（SQLite 连接绑该线程）。
         self._mcs = self._submit(self._build)
@@ -81,15 +80,12 @@ class MCPServer:
     def _build(self) -> MCS:
         self._worker_thread_id = threading.get_ident()
         config = MCSConfig.from_file(self._config_path)
-        self._relation_model = config.relation_model
         return Phase1Builder(config).build()
 
     def _do_query(self, query: str) -> str:
         assert self._mcs is not None  # build 成功后 _mcs 必非 None
         result = self._mcs.query(query)
-        return render_query_result(
-            result, self._relation_model, self._mcs.read_manager
-        )
+        return render_query_result(result, self._mcs.read_manager)
 
     def _do_ingest(self, text: str) -> str:
         assert self._mcs is not None

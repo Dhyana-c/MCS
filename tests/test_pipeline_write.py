@@ -123,31 +123,6 @@ def test_merge_decision_updates_existing_node(empty_graph, mock_llm):
     assert "新名字" in aliases
 
 
-def test_attach_statement_is_noop(empty_graph, mock_llm):
-    """attach_statement 已废弃，现为 no-op，不修改目标节点的 extensions。"""
-    target = Node(id="attr1", name="小明的爱好", content="", role="attribute")
-    empty_graph.add_node(target)
-
-    wp, _, _ = _build_pipelines(empty_graph, mock_llm)
-    mock_llm.set_response("extract_concepts", [ConceptDraft(name="X", content="")])
-    mock_llm.set_response(
-        "judge_relations",
-        [
-            Decision(
-                action="attach_statement",
-                target_id="attr1",
-                statement="喜欢红色@t1",
-            )
-        ],
-    )
-    wp.ingest("source text")
-    # attach_statement 现为 no-op，extensions 不应有 statements
-    statements = (
-        empty_graph.get_node("attr1").extensions.get("statements", {}).get("items", [])
-    )
-    assert statements == []
-
-
 def test_no_op_decision_changes_nothing(empty_graph, mock_llm):
     wp, _, _ = _build_pipelines(empty_graph, mock_llm)
     mock_llm.set_response("extract_concepts", [ConceptDraft(name="X", content="")])
@@ -357,7 +332,7 @@ def test_auto_persist_saves_edges(empty_graph, mock_llm):
     mock_llm.set_response("extract_concepts", [concept])
     mock_llm.set_response(
         "judge_relations",
-        [Decision(action="create", concept=concept, edges_to=[{"target_id": "anchor", "label": "相关"}])],
+        [Decision(action="create", concept=concept, edges_to=[{"target_id": "anchor"}])],
     )
     ctx = wp.ingest("text")
 
@@ -608,7 +583,7 @@ def test_create_dedups_into_existing_same_name(empty_graph, mock_llm):
         Decision(
             action="create",
             concept=ConceptDraft(name="Amazon", content="云计算巨头"),
-            edges_to=[{"target_id": "anc", "label": "拥有"}],
+            edges_to=[{"target_id": "anc"}],
         )
     ]
     wp._apply_decisions(decisions)
@@ -663,9 +638,9 @@ def test_ingest_writes_graph_summary_meta(mock_llm):
     from mcs.plugins.maintenance.graph_summary import GraphSummaryPlugin
 
     store = InMemoryStore()
-    store.add_node(Node(id="__seed_root__", name="__seed_root__", content="", role="hub"))
-    store.add_node(Node(id="h1", name="机器学习", content="ML 基础", role="hub"))
-    store.add_edge("__seed_root__", "h1", kind="hierarchy")
+    store.add_node(Node(id="__seed_root__", name="__seed_root__", content="", extensions={"hub": True}))
+    store.add_node(Node(id="h1", name="机器学习", content="ML 基础", extensions={"hub": True}))
+    store.add_edge("__seed_root__", "h1", type="关联")
 
     concept = ConceptDraft(name="梯度下降", content="优化算法")
     mock_llm.set_response("extract_concepts", [concept])

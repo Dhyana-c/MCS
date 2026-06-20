@@ -16,7 +16,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable
 
-from mcs.entities.graph import Edge, Node
+from mcs.entities.graph import EDGE_ASSOC, Edge, Node
 from mcs.rendering import format_ingest_status, render_query_result
 
 if TYPE_CHECKING:
@@ -54,7 +54,13 @@ def _node_to_dict(node: Node) -> dict:
     与 ``_render_nodes``（面向 LLM 文本）不同：本函数面向可视化端点，输出纯值、
     不含 dataclass 实例。**不**复用 LLM 渲染口径（铁律一仅约束 LLM 上下文 token）。
     """
-    return {"id": node.id, "name": node.name, "content": node.content, "role": node.role}
+    return {
+        "id": node.id,
+        "name": node.name,
+        "content": node.content,
+        "node_class": node.node_class,
+        "hub": node.hub,
+    }
 
 
 def _edge_to_dict(edge: Edge) -> dict:
@@ -64,15 +70,14 @@ def _edge_to_dict(edge: Edge) -> dict:
         "id": edge.id,
         "source": edge.source_id,
         "target": edge.target_id,
-        "kind": edge.kind,
-        "label": edge.label,
+        "type": edge.type,
     }
 
 
 def _neighbor_ids(store: "StoreInterface", node_id: str) -> list[str]:
-    """节点的无向邻居 id（用于路径搜索）：层级子节点 + 事实边端点 + 关联边端点。
+    """节点的无向邻居 id（用于路径搜索）：下钻成员 + 关系边端点。
 
-    事实/关联边两端邻接都索引到它（反查、双向可达），故路径搜索按无向图处理。
+    关联 / 互斥边两端邻接都索引到它（反查、双向可达），故路径搜索按无向图处理。
     """
     seen: set[str] = set()
     ids: list[str] = []
@@ -80,12 +85,7 @@ def _neighbor_ids(store: "StoreInterface", node_id: str) -> list[str]:
         if child.id not in seen:
             seen.add(child.id)
             ids.append(child.id)
-    for edge in store.get_facts(node_id) or []:
-        for eid in (edge.source_id, edge.target_id):
-            if eid != node_id and eid not in seen:
-                seen.add(eid)
-                ids.append(eid)
-    for edge in store.get_assoc(node_id) or []:
+    for edge in store.get_relations(node_id) or []:
         for eid in (edge.source_id, edge.target_id):
             if eid != node_id and eid not in seen:
                 seen.add(eid)
@@ -180,9 +180,7 @@ class MemoryStore:
             return f"[error] 种子节点不存在：{seed_id}"
         # existing_context 跳过种子定位，直接对给定种子做事实 BFS（MCS 公共 API）
         result = mcs.query("", existing_context=[node])
-        return render_query_result(
-            result, mcs.query_engine.relation_model, mcs.read_manager
-        )
+        return render_query_result(result, mcs.read_manager)
 
     def associate(self, seed_id: str, mode: str = "mcs") -> str:
         """从种子做 BFS 联想扩展：mcs（复用 mcs.query(existing_context)）/ hot、random（未实现）。"""
@@ -234,17 +232,15 @@ class MemoryStore:
     def _do_graph_view(self, node_id: str) -> dict | None:
         """worker 线程内取焦点节点的活跃邻域视图（纯只读，不进写/守门/裂变路径）。
 
-        返回 ``{node, nodes, edges, relation_model}``：
-          - nodes = 层级子节点 ∪ 关系边另一端节点，按 id 去重、不含焦点；
-          - edges = hierarchy 边（焦点→各层级子）∪ 关系边（按 relation_model 取
-            get_facts / get_assoc）。
-        关系边端点随响应返回（端点不在层级子节点中，必须单独收集才能连线）。
+        返回 ``{node, nodes, edges}``：
+          - nodes = 下钻成员 ∪ 关系边另一端节点，按 id 去重、不含焦点；
+          - edges = 下钻关联边（焦点→各下钻成员）∪ 关系边（关联 / 互斥，get_relations 反查）。
+        关系边端点随响应返回（端点不在下钻成员中，必须单独收集才能连线）。
         焦点节点不存在返回 None（不抛）；悬空关系边（另一端 get_node 返 None）跳过
         端点节点、但该边仍保留进 edges。
         """
         mcs = self._mcs
         store = mcs.store
-        relation_model = mcs.query_engine.relation_model
 
         focus = store.get_node(node_id)
         if focus is None:
@@ -252,22 +248,13 @@ class MemoryStore:
 
         children = store.get_out_hierarchy(node_id) or []
 
-        # 关系边来源随 relation_model 切换（property_graph→facts，attribute_node→assoc）
-        if relation_model == "attribute_node":
-            rel_edges = store.get_assoc(node_id) or []
-        else:
-            rel_edges = store.get_facts(node_id) or []
+        # 关系边（关联 / 互斥，核心节点侧已过滤事件边——载重规则）
+        rel_edges = store.get_relations(node_id) or []
 
         def _degree(nid: str) -> int:
-            """节点的"关系丰富度"= 层级子数 + 关系边度数（热力图热度）。
-
-            property_graph 计 fact 边、attribute_node 计 assoc 边（随 relation_model）。
-            """
+            """节点的"关系丰富度"= 下钻成员数 + 关系边度数（热力图热度）。"""
             deg = len(store.get_out_hierarchy(nid) or [])
-            if relation_model == "attribute_node":
-                deg += len(store.get_assoc(nid) or [])
-            else:
-                deg += len(store.get_facts(nid) or [])
+            deg += len(store.get_relations(nid) or [])
             return deg
 
         def _node_with_degree(n: Node) -> dict:
@@ -293,7 +280,7 @@ class MemoryStore:
                 continue  # 悬空边：跳过端点、边仍保留
             nodes_by_id[other_node.id] = _node_with_degree(other_node)
 
-        # 边集：hierarchy 边（焦点→各子，确定性 id 供前端去重）∪ 关系边
+        # 边集：下钻关联边（焦点→各下钻成员，确定性 id 供前端去重）∪ 关系边
         edges: list[dict] = []
         for child in children:
             if child.id == node_id:
@@ -304,8 +291,7 @@ class MemoryStore:
                         source_id=node_id,
                         target_id=child.id,
                         id=f"hierarchy::{node_id}::{child.id}",
-                        kind="hierarchy",
-                        label="",
+                        type=EDGE_ASSOC,
                     )
                 )
             )
@@ -316,7 +302,6 @@ class MemoryStore:
             "node": _node_with_degree(focus),
             "nodes": list(nodes_by_id.values()),
             "edges": edges,
-            "relation_model": relation_model,
         }
 
     def graph_view(self, node_id: str) -> dict | None:

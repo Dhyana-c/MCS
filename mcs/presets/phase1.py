@@ -24,7 +24,7 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
       - `idempotency_check`, `fanout_reducer`, `summary_regen`, `graph_summary`（write）
       - `alias_index`, `alias_entry`, `hub_fallback`, `priority_trim`（read）
       - `deepseek_llm`, `claude_llm`, `ollama_llm`（LLM）
-      - `rerank`, `community_merger`（opt-in，不入默认链）
+      - `rerank`（opt-in，不入默认链）
 
     注意：`sqlite_storage` 不是插件，是 Store 配置项，不在此注册表中。
 
@@ -35,7 +35,6 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
     """
     from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
     from mcs.plugins.index.alias_index import AliasEntryPlugin, AliasIndexPlugin
-    from mcs.plugins.index.community_merger import CommunityMergerPlugin
     from mcs.plugins.llm.claude_llm import ClaudeLLMPlugin
     from mcs.plugins.llm.deepseek_llm import DeepSeekLLMPlugin
     from mcs.plugins.llm.ollama_llm import OllamaLLMPlugin
@@ -72,7 +71,6 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
         "ollama_llm": OllamaLLMPlugin,
         # opt-in
         "rerank": RerankPlugin,
-        "community_merger": CommunityMergerPlugin,
     }
 
 
