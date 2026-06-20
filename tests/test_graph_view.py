@@ -259,3 +259,26 @@ def test_reads_run_in_single_worker_thread_not_caller():
         assert len(store.read_threads) == 1  # 全部经同一个 worker 线程（max_workers=1）
     finally:
         ms.shutdown()
+
+
+# === node_class 值透传（非默认类）===
+
+
+def test_node_class_value_passed_through():
+    """graph_view 原样透传 node_class 值（事件/事实/source，不止 keys 存在）。
+
+    现有断言只检 ``node_class`` 键存在；此处验证其**值**逐字透传，且非默认类
+    （事件）节点无邻居时 nodes 空、不崩。载重规则不在此测——本文件用 FakeStore，
+    其 ``get_relations`` 不做载重过滤；载重由真实 store 在
+    ``test_unified_graph_schema.test_get_relations_*`` 覆盖。
+    """
+    store = FakeStore()
+    store.add_node(_n("e", node_class="事件"))
+    ms = _make(store)
+    try:
+        out = ms.graph_view("e")
+        assert out is not None
+        assert out["node"]["node_class"] == "事件"
+        assert out["nodes"] == []  # 事件节点无邻居、不崩
+    finally:
+        ms.shutdown()

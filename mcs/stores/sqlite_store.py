@@ -7,10 +7,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import sqlite3
 import uuid
+import warnings
+from dataclasses import replace as dc_replace
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.store import StoreInterface
@@ -21,12 +24,15 @@ from mcs.entities.graph import (
     CORE_NODE_CLASSES,
     EDGE_ASSOC,
     EDGE_MUTEX,
+    Edge,
+    Node,
+    Subgraph,
     validate_node_class,
 )
+from mcs.interfaces.priority_scorer import DefaultPriorityScorer
 
 if TYPE_CHECKING:
     from mcs.core.token_budget import TokenBudget
-    from mcs.entities.graph import Edge, Node, Subgraph
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +115,6 @@ class SQLiteStore(StoreInterface):
         if priority_scorer is not None:
             self._priority_scorer = priority_scorer
         elif self._priority_scorer is None:
-            from mcs.interfaces.priority_scorer import DefaultPriorityScorer
-
             self._priority_scorer = DefaultPriorityScorer()
         self._create_tables(self._schema_extensions)
         # 任何读写前：校验 / 补写出处（扩展集变化告警放行）
@@ -171,6 +175,7 @@ class SQLiteStore(StoreInterface):
         type: str = EDGE_ASSOC,
         priority: float = 0.0,
         extensions: dict | None = None,
+        edge_id: str | None = None,
     ) -> str:
         if type not in ALLOWED_EDGE_TYPES:
             raise ValueError(
@@ -181,8 +186,6 @@ class SQLiteStore(StoreInterface):
         if source_id not in self._nodes or target_id not in self._nodes:
             return ""
 
-        from mcs.entities.graph import Edge
-
         existing = self._find_existing_edge(source_id, target_id, type)
         if existing is not None:
             return existing.id
@@ -190,7 +193,7 @@ class SQLiteStore(StoreInterface):
         edge = Edge(
             source_id=source_id,
             target_id=target_id,
-            id=str(uuid.uuid4()),
+            id=edge_id or str(uuid.uuid4()),
             type=type,
             priority=priority,
             extensions=dict(extensions) if extensions else {},
@@ -233,7 +236,6 @@ class SQLiteStore(StoreInterface):
         """按边 id 删除。向后兼容：delete_edge(source, target) 走旧路径。"""
         if target_id is not None:
             # 旧签名 delete_edge(source_id, target_id) — deprecated
-            import warnings
             warnings.warn(
                 "delete_edge(source, target) is deprecated; use delete_edge(edge_id)",
                 DeprecationWarning,
@@ -304,8 +306,6 @@ class SQLiteStore(StoreInterface):
     def get_subgraph(
         self, node_id: str, token_budget: TokenBudget | None = None
     ) -> Subgraph:
-        from mcs.entities.graph import EDGE_ASSOC, Subgraph
-
         sub = Subgraph(focus_id=node_id)
         focus = self._nodes.get(node_id)
         if focus is None:
@@ -354,17 +354,16 @@ class SQLiteStore(StoreInterface):
 
         除节点 / 边 / 邻接外，**MUST 一并捕获 4 个变更跟踪集**：还原它们后，
         下次 ``flush_changes`` 的删 / 增正好抵消本次（被回滚的）reorg，不残留
-        旧行、不漏删——否则边会在 DB 里翻倍。边拷贝**保留原 id**。
+        旧行、不漏删——否则边会在 DB 里翻倍。节点 / 边的 extensions **深拷贝**
+        （含嵌套结构彻底回滚）；边拷贝**保留原 id**。
         """
-        from dataclasses import replace as dc_replace
-
         return {
             "nodes": {
-                nid: dc_replace(n, extensions=dict(n.extensions or {}))
+                nid: dc_replace(n, extensions=copy.deepcopy(n.extensions or {}))
                 for nid, n in self._nodes.items()
             },
             "edges": {
-                eid: dc_replace(e, extensions=dict(e.extensions or {}))
+                eid: dc_replace(e, extensions=copy.deepcopy(e.extensions or {}))
                 for eid, e in self._edges.items()
             },
             "assoc_by_node": {k: set(v) for k, v in self._assoc_by_node.items()},
@@ -419,8 +418,6 @@ class SQLiteStore(StoreInterface):
 
     def load(self) -> None:
         """从 SQLite 数据库加载节点和边到内存。"""
-        from mcs.entities.graph import Edge, Node
-
         if self.conn is None:
             return
         for row in self.conn.execute(

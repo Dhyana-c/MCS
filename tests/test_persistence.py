@@ -477,3 +477,36 @@ def test_failed_persist_not_marked_and_retried(tmp_path, mock_llm):
         "SELECT * FROM document_chunks WHERE doc_id='D1' AND chunk_id='0'"
     ).fetchone()
     assert row2 is not None
+
+
+# ─── snapshot extensions 深拷贝（F：嵌套 mutation 回滚）───────────────────────
+
+
+def test_snapshot_restore_isolates_nested_extensions_in_memory():
+    """snapshot extensions 深拷贝：裂变期间原地改嵌套结构后回滚，快照不被污染。
+
+    浅拷贝（``dict(...)``）会因嵌套 list 共享引用而回滚失败——aliases 列表被原地
+    append 后，快照里的同一列表也变，restore 回不去。深拷贝隔离引用、彻底回滚。
+    """
+    store = InMemoryStore()
+    store.add_node(
+        Node(id="a", name="A", content="", extensions={"alias_index": {"aliases": ["x"]}})
+    )
+    snap = store.snapshot()
+    # 模拟裂变期间原地 mutate 当前节点 extensions 的嵌套结构
+    store.get_node("a").extensions["alias_index"]["aliases"].append("y")
+    store.restore(snap)
+    assert store.get_node("a").extensions["alias_index"]["aliases"] == ["x"]
+
+
+def test_snapshot_restore_isolates_nested_extensions_sqlite(tmp_path):
+    """SQLiteStore 同构：snapshot 深拷贝隔离嵌套结构（含变更跟踪集还原）。"""
+    store = SQLiteStore({"path": str(tmp_path / "g.db")})
+    store.initialize()
+    store.add_node(
+        Node(id="a", name="A", content="", extensions={"alias_index": {"aliases": ["x"]}})
+    )
+    snap = store.snapshot()
+    store.get_node("a").extensions["alias_index"]["aliases"].append("y")
+    store.restore(snap)
+    assert store.get_node("a").extensions["alias_index"]["aliases"] == ["x"]

@@ -12,7 +12,12 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.plugin import PluginType
-from mcs.entities.graph import CLASS_CONCEPT, EDGE_ASSOC
+from mcs.entities.graph import (
+    CLASS_CONCEPT,
+    EDGE_ASSOC,
+    SEED_ROOT_ID,
+    SEED_ROOT_NAME,
+)
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 
 if TYPE_CHECKING:
@@ -23,10 +28,6 @@ if TYPE_CHECKING:
     from mcs.entities.graph import Edge, Node
 
 logger = logging.getLogger(__name__)
-
-# 持久虚拟根：分层种子图的顶点（固定 id，永不删除）。兜底种子 = 它的(递归)子节点。
-SEED_ROOT_ID = "__seed_root__"
-SEED_ROOT_NAME = "__seed_root__"
 
 
 class FanoutReducerPlugin(CompactionPluginInterface):

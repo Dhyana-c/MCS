@@ -67,6 +67,7 @@ class StoreInterface(ABC):
         type: str = "关联",
         priority: float = 0.0,
         extensions: dict | None = None,
+        edge_id: str | None = None,
     ) -> str:
         """添加有向边 ``source → target``，返回边 id。
 
@@ -74,6 +75,10 @@ class StoreInterface(ABC):
         ``mcs.entities.graph.ALLOWED_EDGE_TYPES``）。一条 (source, target, type)
         只存一份，但两端邻接都索引到它（反查、双向可达）。``extensions`` 落到
         ``Edge.extensions``（与 ``Node.extensions`` 对称）。
+
+        ``edge_id`` 非空时用它作边 id（如从 DB 加载历史边时保留原始主键），否则
+        mint 新 uuid——使 cross_doc_linker 等需保留既存 id 的场景走公开 API，
+        不必绕过本方法去碰 store 内部属性。
         """
         ...
 

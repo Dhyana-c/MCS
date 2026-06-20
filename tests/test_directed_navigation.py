@@ -7,9 +7,8 @@ from __future__ import annotations
 
 from conftest import init_plugin_manager
 
-from mcs.entities.graph import Node
+from mcs.entities.graph import Node, SEED_ROOT_ID
 from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
-from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.plugin import PluginType
+from mcs.entities.graph import SEED_ROOT_ID
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 
 if TYPE_CHECKING:
@@ -62,8 +63,6 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
         if self.store is None:
             return []
         # 优先：从持久虚拟根自顶向下导航（其(递归)子节点即兜底种子）
-        from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
-
         root = self.store.get_node(SEED_ROOT_ID)
         if root is not None:
             children = self.store.get_out_hierarchy(root.id)

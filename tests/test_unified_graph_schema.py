@@ -272,3 +272,25 @@ def test_sqlite_no_relation_model_hard_reject(tmp_path):
     store2 = SQLiteStore({"path": str(tmp_path / "t.db")})
     store2.initialize()  # 不抛
     store2.shutdown()
+
+
+# ── update_node 修改 node_class / hub（#20 续）─────────────────────────────
+
+
+def test_update_node_changes_node_class_to_valid():
+    """update_node 把 node_class 改成另一登记值（概念→事实）正常生效。"""
+    store = InMemoryStore()
+    store.add_node(Node(id="x", name="x", content="", node_class=CLASS_CONCEPT))
+    store.update_node("x", {"node_class": CLASS_FACT})
+    assert store.get_node("x").node_class == CLASS_FACT
+
+
+def test_update_node_toggles_hub_via_property():
+    """update_node 经 hub property 切换标记（hub setter 落 extensions["hub"]）。"""
+    store = InMemoryStore()
+    store.add_node(Node(id="x", name="x", content=""))
+    assert store.get_node("x").hub is False
+    store.update_node("x", {"hub": True})
+    assert store.get_node("x").hub is True
+    store.update_node("x", {"hub": False})
+    assert store.get_node("x").hub is False

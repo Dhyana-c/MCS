@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import copy
 import uuid
+import warnings
+from dataclasses import replace as dc_replace
 from typing import TYPE_CHECKING
 
 from mcs.core.store import StoreInterface
@@ -17,13 +20,15 @@ from mcs.entities.graph import (
     CORE_NODE_CLASSES,
     EDGE_ASSOC,
     EDGE_MUTEX,
+    Edge,
+    Node,
+    Subgraph,
     validate_node_class,
 )
 from mcs.interfaces.priority_scorer import DefaultPriorityScorer
 
 if TYPE_CHECKING:
     from mcs.core.token_budget import TokenBudget
-    from mcs.entities.graph import Edge, Node, Subgraph
 
 
 class InMemoryStore(StoreInterface):
@@ -94,6 +99,7 @@ class InMemoryStore(StoreInterface):
         type: str = EDGE_ASSOC,
         priority: float = 0.0,
         extensions: dict | None = None,
+        edge_id: str | None = None,
     ) -> str:
         if type not in ALLOWED_EDGE_TYPES:
             raise ValueError(
@@ -104,8 +110,6 @@ class InMemoryStore(StoreInterface):
         if source_id not in self._nodes or target_id not in self._nodes:
             return ""
 
-        from mcs.entities.graph import Edge
-
         existing = self._find_existing_edge(source_id, target_id, type)
         if existing is not None:
             return existing.id
@@ -113,7 +117,7 @@ class InMemoryStore(StoreInterface):
         edge = Edge(
             source_id=source_id,
             target_id=target_id,
-            id=str(uuid.uuid4()),
+            id=edge_id or str(uuid.uuid4()),
             type=type,
             priority=priority,
             extensions=dict(extensions) if extensions else {},
@@ -157,7 +161,6 @@ class InMemoryStore(StoreInterface):
         """按边 id 删除。向后兼容：delete_edge(source, target) 走旧路径。"""
         if target_id is not None:
             # 旧签名 delete_edge(source_id, target_id) — deprecated
-            import warnings
             warnings.warn(
                 "delete_edge(source, target) is deprecated; use delete_edge(edge_id)",
                 DeprecationWarning,
@@ -228,8 +231,6 @@ class InMemoryStore(StoreInterface):
     def get_subgraph(
         self, node_id: str, token_budget: TokenBudget | None = None
     ) -> Subgraph:
-        from mcs.entities.graph import EDGE_ASSOC, Subgraph
-
         sub = Subgraph(focus_id=node_id)
         focus = self._nodes.get(node_id)
         if focus is None:
@@ -285,18 +286,17 @@ class InMemoryStore(StoreInterface):
     def snapshot(self) -> dict:
         """捕获内部图状态快照（供 fanout 回滚）。
 
-        节点用 ``dc_replace`` 拷贝（含 extensions 浅拷贝），使原地字段改动
-        （content / node_class / hub）也能回滚；边拷贝并**保留原 id**；邻接 set 拷贝。
+        节点用 ``dc_replace`` 拷贝（含 extensions **深拷贝**），使原地字段改动
+        （含嵌套结构，如 alias / source 列表）也能彻底回滚；边拷贝并**保留原 id**；
+        邻接 set 拷贝。
         """
-        from dataclasses import replace as dc_replace
-
         return {
             "nodes": {
-                nid: dc_replace(n, extensions=dict(n.extensions or {}))
+                nid: dc_replace(n, extensions=copy.deepcopy(n.extensions or {}))
                 for nid, n in self._nodes.items()
             },
             "edges": {
-                eid: dc_replace(e, extensions=dict(e.extensions or {}))
+                eid: dc_replace(e, extensions=copy.deepcopy(e.extensions or {}))
                 for eid, e in self._edges.items()
             },
             "assoc_by_node": {k: set(v) for k, v in self._assoc_by_node.items()},

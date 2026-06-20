@@ -118,28 +118,6 @@ class TokenBudget:
         )
         return self.estimate(rendered)
 
-    # === Deprecated 别名（统一模型已无 fact/assoc 之分） ===
-
-    def estimate_fact_edge(
-        self,
-        edge: Edge,
-        node_map: dict[str, Node] | None = None,
-        extensions: list | None = None,
-        purpose: str = "select_facts",
-    ) -> int:
-        """Deprecated: ``estimate_relation_edge`` 的别名（统一模型无 fact 边）。"""
-        return self.estimate_relation_edge(edge, node_map, extensions, purpose)
-
-    def estimate_assoc_edge(
-        self,
-        edge: Edge,
-        node_map: dict[str, Node] | None = None,
-        extensions: list | None = None,
-        purpose: str = "select_facts",
-    ) -> int:
-        """Deprecated: ``estimate_relation_edge`` 的别名（统一模型无 assoc 边）。"""
-        return self.estimate_relation_edge(edge, node_map, extensions, purpose)
-
     def estimate_active_view(
         self,
         node: Node,

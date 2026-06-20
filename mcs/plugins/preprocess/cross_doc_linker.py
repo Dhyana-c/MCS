@@ -276,25 +276,18 @@ def load_graph_from_db(db_path: str) -> GraphStore:
                     extensions=ext_raw,
                 )
             )
-        # 直接构造 Edge 保留原 id（镜像 SQLiteStore.load）——不走 add_edge 以免
-        # 重新 mint uuid，使载入图的边 id 与 DB 主键一致。
+        # 用公开 add_edge + edge_id 保留 DB 原始边 id——不再直接操作 store 内部
+        # 属性（_nodes / _edges / _assoc_*）。悬空边由 add_edge 的节点存在性守门跳过。
         for row in conn.execute(
             "SELECT id, source_id, target_id, type, priority FROM edges"
         ):
-            eid, src, tgt = row[0], row[1], row[2]
-            if src not in graph._nodes or tgt not in graph._nodes:
-                continue  # 跳过悬空边（与 add_edge 守门一致）
-            edge = Edge(
-                id=eid,
-                source_id=src,
-                target_id=tgt,
+            graph.add_edge(
+                row[1],
+                row[2],
                 type=row[3] or EDGE_ASSOC,
                 priority=row[4] if row[4] is not None else 0.0,
+                edge_id=row[0],
             )
-            graph._edges[eid] = edge
-            graph._assoc_by_node.setdefault(src, set()).add(eid)
-            graph._assoc_by_node.setdefault(tgt, set()).add(eid)
-            graph._assoc_out.setdefault(src, set()).add(tgt)
     finally:
         conn.close()
     return graph

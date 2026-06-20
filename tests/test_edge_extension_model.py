@@ -19,7 +19,7 @@ from mcs.core.context_renderer import ContextRenderer
 from mcs.core.plugin import PluginType
 from mcs.core.plugin_manager import PluginManager
 from mcs.core.token_budget import TokenBudget
-from mcs.entities.graph import EDGE_ASSOC, Edge, Node
+from mcs.entities.graph import CLASS_FACT, EDGE_ASSOC, EDGE_MUTEX, Edge, Node
 from mcs.interfaces.edge_extension import EdgeExtensionInterface
 from mcs.interfaces.priority_scorer import DefaultPriorityScorer, PriorityScorer
 from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
@@ -427,3 +427,50 @@ def test_fresh_db_extensions_column_present(tmp_path):
     assert cols_before == cols_after
     assert "extensions_json" in cols_after
     assert "type" in cols_after  # 统一模型 type 列
+
+
+# ─── 互斥边扩展（与关联边同构：渲染 / 编解码 / 估算）──────────────────────────
+
+
+def test_mutex_edge_extension_renders_like_assoc():
+    """互斥边扩展渲染与关联边同形（主 — 宾 + 片段），type 不影响渲染口径。"""
+    edge = Edge(
+        source_id="a", target_id="b", type=EDGE_MUTEX,
+        extensions={"activity": {"count": 4}},
+    )
+    out = ContextRenderer.render_relation_edge(
+        edge, _nm(), extensions=[ActivityEdgeExt()], purpose="select_facts"
+    )
+    assert "A — B" in out
+    assert "活跃=4" in out
+
+
+def test_mutex_edge_extensions_sqlite_roundtrip(tmp_path):
+    """互斥边扩展 SQLite 编解码保真（与关联边同构）。"""
+    db = str(tmp_path / "mutex.db")
+    store = SQLiteStore({"path": db})
+    store.initialize(edge_extensions={"activity": ActivityEdgeExt()})
+    store.add_node(Node(id="fa", name="FA", content="", node_class=CLASS_FACT))
+    store.add_node(Node(id="fb", name="FB", content="", node_class=CLASS_FACT))
+    store.add_edge("fa", "fb", type=EDGE_MUTEX, extensions={"activity": {"count": 9}})
+    store.save_full()
+    store.shutdown()
+
+    store2 = SQLiteStore({"path": db})
+    store2.initialize(edge_extensions={"activity": ActivityEdgeExt()})
+    store2.load()
+    mutex = [e for e in store2.get_all_edges() if e.type == EDGE_MUTEX]
+    assert len(mutex) == 1
+    assert mutex[0].extensions.get("activity", {}).get("count") == 9
+
+
+def test_estimate_relation_edge_mutex_equals_render():
+    """互斥边渲染 == 估算（查询侧一致性，与关联边对称）。"""
+    tb = TokenBudget(8000)
+    edge = Edge(
+        source_id="a", target_id="b", type=EDGE_MUTEX,
+        extensions={"activity": {"count": 6}},
+    )
+    exts = [ActivityEdgeExt()]
+    rendered = ContextRenderer.render_relation_edge(edge, _nm(), exts, "select_facts")
+    assert tb.estimate_relation_edge(edge, _nm(), exts, "select_facts") == tb.estimate(rendered)

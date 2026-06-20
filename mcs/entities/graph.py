@@ -52,6 +52,13 @@ EDGE_MUTEX = "互斥"  # 当前唯一语义类型：事实 ↔ 事实
 ALLOWED_EDGE_TYPES: frozenset[str] = frozenset({EDGE_ASSOC, EDGE_MUTEX})
 
 
+# ── 持久虚拟根（分层种子图顶点）──────────────────────────────────────────
+# 固定 id、永不删除；兜底种子 = 它的（递归）子节点。定义于纯实体模块，
+# 避免使用方（hub_fallback / 测试）为引用常量而循环导入 fanout_reducer 插件。
+SEED_ROOT_ID = "__seed_root__"
+SEED_ROOT_NAME = "__seed_root__"
+
+
 @dataclass
 class Node:
     """图节点（统一模型）。
@@ -140,6 +147,8 @@ __all__ = [
     "EDGE_ASSOC",
     "EDGE_MUTEX",
     "ALLOWED_EDGE_TYPES",
+    "SEED_ROOT_ID",
+    "SEED_ROOT_NAME",
     # 数据类
     "Node",
     "Edge",

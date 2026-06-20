@@ -75,7 +75,7 @@ def test_disable_llm_navigation_returns_hubs(mock_llm):
 
 def test_navigates_from_persistent_root(mock_llm):
     """存在持久根 __seed_root__ 时，从根自顶向下导航；绝不把合成根当种子。"""
-    from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
+    from mcs.entities.graph import SEED_ROOT_ID
 
     g = GraphStore()
     g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", extensions={"hub": True}))
@@ -103,7 +103,7 @@ def test_navigates_from_persistent_root(mock_llm):
 
 def test_root_present_no_llm_returns_children(mock_llm):
     """有持久根但关闭导航：返回根的直接子节点作种子（不含根本身）。"""
-    from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
+    from mcs.entities.graph import SEED_ROOT_ID
 
     g = GraphStore()
     g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", extensions={"hub": True}))

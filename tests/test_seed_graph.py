@@ -11,8 +11,8 @@ from mcs.core.query_engine import QueryEngine
 from mcs.core.token_budget import TokenBudget
 from mcs.entities.config import MCSConfig
 from mcs.entities.decisions import Community, MultiHubDecision
-from mcs.entities.graph import Node
-from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID, FanoutReducerPlugin
+from mcs.entities.graph import Node, SEED_ROOT_ID
+from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore
