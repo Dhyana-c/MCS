@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from mcs.entities.graph import CLASS_CONCEPT, CLASS_EVENT
+from mcs.entities.graph import CLASS_CONCEPT, CLASS_EVENT, CLASS_SOURCE
 
 ActionType = Literal["merge", "create", "no_op"]
 
@@ -118,5 +118,29 @@ class EventData:
     name: str
     content: str
     timestamp: str | None = None  # ISO 8601
+    target_ids: list[str] = field(default_factory=list)
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SourceData:
+    """Source 规则入库的结构化输入（不经 LLM）。
+
+    宪法 D5：source 按类型切分分类、保真存入、不经 LLM。系统创建
+    ``CLASS_SOURCE`` 节点。
+
+    ``source_type`` 标识资料类型（文件/网页/段落/对话记录等），由扩展名/
+    格式/来源等规则判定，决定怎么切分、大字段怎么处理。
+
+    ``chunks`` 是切分后的片段列表（每个片段为 dict，含 content 和可选的
+    chunk_index / chunk_id 等元信息）。若未切分，整个 source 作为一个
+    chunk 存入。每个 chunk 对应一个 source 节点。
+
+    ``target_ids`` 是本 source 关联的核心节点 id（事实 / 概念）。
+    """
+
+    name: str
+    source_type: str = ""  # 文件/网页/段落/对话记录
+    chunks: list[dict[str, Any]] = field(default_factory=list)
     target_ids: list[str] = field(default_factory=list)
     extensions: dict[str, Any] = field(default_factory=dict)

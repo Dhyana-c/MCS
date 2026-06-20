@@ -175,13 +175,17 @@ class QueryEngine:
         processed = self._run_preprocess(query, ctx)
         return self._locate_seeds(processed, ctx)
 
-    def get_related_events(self, node_id: str) -> list[Node]:
-        """定向查事件：绕过载重规则，获取背书此核心节点的全部事件。
+    def get_related_events(self, node_id: str, limit: int | None = None) -> list[Node]:
+        """定向查事件：绕过载重规则，获取背书此核心节点的事件（时间倒排）。
 
         宪法载重规则使核心节点 ``get_relations`` 不含事件边。
         查询需要出处/证据时用此方法——独立检索步，不进常驻活跃视图。
+
+        Args:
+            node_id: 核心节点 id
+            limit: 最多返回的事件数（None = 全部）。用于事件层时间倒排截断。
         """
-        return self.store.get_related_events(node_id)
+        return self.store.get_related_events(node_id, limit=limit)
 
     # === 阶段辅助方法 ===
 
@@ -261,14 +265,23 @@ class QueryEngine:
             query: str,
             ctx: QueryContext,
     ) -> tuple[list[Node], list[Edge]]:
-        """阶段 ③：批量事实 BFS 遍历（分层 + 富余合并）。
+        """阶段 ③：批量事实 BFS 遍历（四工作区 + 预算分离）。
 
-        逐层扩展：每层把待扩展节点的活跃双向视图（出事实 + 入事实 + 层级邻居）
-        按渲染 token 贪心打包到 ``T*0.8``——合计 ≤ 余量的多个节点合并进**一次**
-        ``select_facts`` 调用（spec query-pipeline「按层分批、富余合并」）；单节点视图
-        已超余量则自成一批。批量调用解析失败时**逐节点回退**，保证遍历不中断
-        （spec batch-neighbor-traverse）。LLM 选中的节点 / 事实端点补入 accumulated
-        并作为下一层 frontier。
+        四工作区（§4.3）：
+          - **积累区**（accumulated）：已确认相关的节点，逐轮累积，占 token_budget（≤ T）
+          - **活跃区**（active）：本轮待 LLM 推理/筛选的候选，占 T − 积累区
+          - **visited**：已处理节点 id，去重防重复遍历（仅存 id，不进 LLM）
+          - **frontier**：BFS 待扩展节点 id 队列（仅存 id，不进 LLM）
+
+        预算分离：积累区 + 活跃区 ≤ T。积累区逐轮变大、活跃区空间随之收缩，
+        逼近 token_budget 即停。
+
+        逐层扩展：每层把待扩展节点的活跃双向视图按渲染 token 贪心打包到
+        ``T − 积累区``——合计 ≤ 余量的多个节点合并进**一次** ``select_facts``
+        调用（spec query-pipeline「按层分批、富余合并」）；单节点视图已超余量
+        则自成一批。批量调用解析失败时**逐节点回退**，保证遍历不中断
+        （spec batch-neighbor-traverse）。LLM 选中的节点 / 事实端点补入
+        accumulated 并作为下一层 frontier。
 
         返回 (accumulated_nodes, selected_fact_edges)。
         """
@@ -278,16 +291,22 @@ class QueryEngine:
         from mcs.core.context_renderer import ContextRenderer
         from mcs.core.errors import LLMParseError
 
-        visited: set[str] = set()
-        accumulated: list[Node] = []
+        # ── 四工作区 ──
+        visited: set[str] = set()           # 已处理节点 id（簿记，不进 LLM）
+        accumulated: list[Node] = []        # 积累区（进 LLM，占 token_budget）
         selected_edges: list[Edge] = []
         selected_edge_ids: set[str] = set()
         estimate_cache: dict[str, int] = {}
-        used_tokens = 0
-        budget = self.token_budget.T
-        pack_budget = budget * 0.8
+        used_tokens = 0                     # 积累区已用 token
+        budget = self.token_budget.T        # token_budget（积累区上限 ≤ T）
         renderer = ContextRenderer(self.plugin_manager)
 
+        # read-repair 同名合并：name → 首次出现的节点 id
+        # 同名字面识别——同名当场可见、零成本；同名≠同义需消歧（Phase 1 不做 LLM 判定）
+        name_index: dict[str, str] = {}     # name → node_id（首次遇到）
+        merged_into: dict[str, str] = {}    # node_id → target_id（被合并掉的）
+
+        # frontier（BFS 待扩展队列，仅存 id→Node 引用，不进 LLM）
         frontier: list[Node] = []
         for seed in seeds:
             if seed.id not in visited:
@@ -297,6 +316,93 @@ class QueryEngine:
                     seed, estimate_cache
                 )
                 frontier.append(seed)
+
+        def _try_read_repair(node: Node) -> Node:
+            """read-repair 同名合并：同名节点合并到首次遇到的那一个。
+
+            - 同名字面识别（零成本）
+            - 合并方式：别名并入 + content 追加（子串去重）
+            - 不删除节点（避免查询路径持久化风险），只在工作集中合并
+            - 合并后用 estimate_node 重算 token 差值（铁律一：口径 == 渲染）
+            - 超 T 则挂起（不合并，保留两个节点）
+            - 同名≠同义需消歧：Phase 1 不做 LLM 判定，仅字面同名合并
+
+            返回合并后的有效节点（可能是已有的那个，也可能是原节点）。
+            """
+            nonlocal used_tokens
+            name = node.name
+            if not name or name not in name_index:
+                # 首次遇到此名字
+                name_index[name] = node.id
+                return node
+
+            target_id = name_index[name]
+            if target_id == node.id:
+                return node  # 自身，跳过
+
+            target = self.store.get_node(target_id)
+            if target is None:
+                name_index[name] = node.id
+                return node
+
+            # 找到积累区中的 target 实例
+            target_node = None
+            for acc_node in accumulated:
+                if acc_node.id == target_id:
+                    target_node = acc_node
+                    break
+            if target_node is None:
+                # target 不在积累区（不应发生，但防御）
+                name_index[name] = node.id
+                return node
+
+            # 记录合并前 token
+            old_target_token = self.token_budget.estimate_node(
+                target_node, estimate_cache
+            )
+
+            # 模拟合并后的 content（子串去重）
+            extra_content = node.content
+            merged_content = target_node.content or ""
+            if extra_content and extra_content not in (target_node.content or ""):
+                merged_content = (target_node.content or "") + "\n" + extra_content
+            elif extra_content and (target_node.content or "") in extra_content:
+                # 新 content 包含旧 content → 替换
+                merged_content = extra_content
+
+            # 临时修改 content 用于重算 token
+            saved_content = target_node.content
+            target_node.content = merged_content
+            # 清缓存，强制重算（P2-4：保持 estimate_cache 与实际一致）
+            estimate_cache.pop(target_id, None)
+            new_target_token = self.token_budget.estimate_node(
+                target_node, estimate_cache
+            )
+            delta = new_target_token - old_target_token
+
+            # 守门：合并后是否超 T
+            if used_tokens + delta > budget:
+                # 超 T → 挂起（恢复 content，不合并）
+                target_node.content = saved_content
+                estimate_cache.pop(target_id, None)
+                # 恢复缓存为旧值
+                estimate_cache[target_id] = old_target_token
+                return node
+
+            # 合并确认：used_tokens 增量
+            used_tokens += delta
+
+            # 别名追加（用 setdefault 模式，与 write_pipeline 一致）
+            aliases = target_node.extensions.setdefault(
+                "alias_index", {}
+            ).setdefault("aliases", [])
+            if node.name and node.name not in aliases and node.name != target_node.name:
+                aliases.append(node.name)
+
+            # 标记此节点已被合并
+            merged_into[node.id] = target_id
+            visited.add(node.id)
+            return target_node
 
         def _node_view(node: Node):
             """单节点活跃双向视图 (view_nodes, relation_edges)；无可扩展内容返回 (None, None)。"""
@@ -340,6 +446,7 @@ class QueryEngine:
         def _consume(indices, view_nodes, facts):
             """编号映射回节点 / 事实边（1-based），补入 accumulated。
 
+            新节点加入前先走 read-repair 同名合并。
             返回 (新增节点列表, 是否撞 max_accumulated cap)。
             """
             nonlocal used_tokens
@@ -353,9 +460,13 @@ class QueryEngine:
                 if zero_idx < 0:
                     continue
                 if zero_idx < n_nodes:
-                    # 节点条目 → 加入 accumulated
+                    # 节点条目 → read-repair + 加入 accumulated
                     sel_node = view_nodes[zero_idx]
                     if sel_node.id not in visited:
+                        effective = _try_read_repair(sel_node)
+                        if effective.id != sel_node.id:
+                            # 被合并到已有节点 → 不再重复加入 accumulated
+                            continue
                         visited.add(sel_node.id)
                         accumulated.append(sel_node)
                         used_tokens += self.token_budget.estimate_node(
@@ -409,12 +520,17 @@ class QueryEngine:
             if not prepared:
                 break
 
-            # 贪心按层打包：合计 ≤ pack_budget 合并为一批；单节点超限自成一批
+            # 活跃区预算 = T − 积累区已用（动态收缩）
+            active_budget = budget - used_tokens
+            if active_budget <= 0:
+                break
+
+            # 贪心按层打包：合计 ≤ active_budget 合并为一批；单节点超限自成一批
             batches: list[list] = []
             cur: list = []
             cur_tok = 0
             for item in prepared:
-                if cur and cur_tok + item[3] > pack_budget:
+                if cur and cur_tok + item[3] > active_budget:
                     batches.append(cur)
                     cur = []
                     cur_tok = 0

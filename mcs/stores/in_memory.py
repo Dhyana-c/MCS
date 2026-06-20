@@ -241,6 +241,33 @@ class InMemoryStore(StoreInterface):
             if e.source_id == source_id and e.target_id == target_id
         ]
 
+    # === 定向查事件（绕载重规则）===
+
+    def get_related_events(self, node_id: str, limit: int | None = None) -> list[Node]:
+        """定向查事件：利用关联边索引高效查找，时间倒排 + limit 截断。
+
+        覆写基类的全量扫描默认实现——InMemoryStore 有 ``_assoc_by_node`` 索引，
+        直接从 target 侧查 source 为事件的关联边。
+        """
+        node = self._nodes.get(node_id)
+        if node is None:
+            return []
+        events: list[Node] = []
+        for eid in self._assoc_by_node.get(node_id, set()):
+            edge = self._edges.get(eid)
+            if edge is None or edge.type != EDGE_ASSOC:
+                continue
+            # 事件 → node_id（target 侧）
+            if edge.target_id == node_id:
+                source = self._nodes.get(edge.source_id)
+                if source is not None and source.node_class == CLASS_EVENT:
+                    events.append(source)
+        # 时间倒排
+        events.sort(key=lambda n: (n.extensions or {}).get("event_meta", {}).get("timestamp", ""), reverse=True)
+        if limit is not None:
+            events = events[:limit]
+        return events
+
     # === 子图 / 全量查询 ===
 
     def get_subgraph(

@@ -21,8 +21,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.errors import InvalidDecisionError, UnknownActionError
-from mcs.entities.decisions import ConceptDraft, Decision, DecisionList, EventData
-from mcs.entities.graph import CLASS_CONCEPT, CLASS_EVENT, EDGE_ASSOC, EDGE_MUTEX
+from mcs.entities.decisions import ConceptDraft, Decision, DecisionList, EventData, SourceData
+from mcs.entities.graph import CLASS_CONCEPT, CLASS_EVENT, CLASS_SOURCE, EDGE_ASSOC, EDGE_MUTEX
 
 if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginManager
@@ -383,6 +383,55 @@ class WritePipeline:
                 )
 
         return node
+
+    def ingest_source(self, source_data: SourceData) -> list[Node]:
+        """Source 规则入库（不经 LLM）。
+
+        宪法 D5：source 按类型切分分类、保真存入。每个 chunk 对应一个
+        ``CLASS_SOURCE`` 节点，并对 ``target_ids`` 中每个 id 创建
+        ``source → 目标`` 的 ``EDGE_ASSOC`` 边。
+
+        若 chunks 为空，把 name+extensions 整体作为一个节点存入。
+        返回创建的 source 节点列表。
+        """
+        from mcs.entities.graph import Node
+
+        # 若无 chunks，整条 source 作为一个节点
+        chunks = source_data.chunks
+        if not chunks:
+            chunks = [{"content": source_data.name}]
+
+        created: list[Node] = []
+        for chunk in chunks:
+            content = chunk.get("content", "")
+            chunk_meta = {k: v for k, v in chunk.items() if k != "content"}
+            meta = {
+                "source_type": source_data.source_type,
+                "chunk": chunk_meta,
+                "targets": list(source_data.target_ids),
+            }
+            ext = dict(source_data.extensions or {})
+            ext["source_meta"] = meta
+
+            node = Node(
+                id=str(uuid.uuid4()),
+                name=source_data.name,
+                content=content,
+                node_class=CLASS_SOURCE,
+                extensions=ext,
+            )
+            self.store.add_node(node)
+            created.append(node)
+
+            for tid in source_data.target_ids:
+                if self.store.get_node(tid) is not None:
+                    self.store.add_edge(node.id, tid, type=EDGE_ASSOC)
+                else:
+                    logger.warning(
+                        "ingest_source: 目标节点 %s 不存在，跳过关联边", tid
+                    )
+
+        return created
 
     def _dispatch_merge(self, decision: Decision) -> None:
         """合并：把新概念的名称/别名并入 ``target_id`` 的别名槽，并把

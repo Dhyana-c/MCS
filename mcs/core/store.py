@@ -26,6 +26,15 @@ if TYPE_CHECKING:
     from mcs.entities.graph import Edge, Node, Subgraph
 
 
+def _event_sort_key(node: Node) -> str:
+    """事件节点排序键：取 extensions.event_meta.timestamp，无则空串（排末尾）。
+
+    用于 ``get_related_events`` 的时间倒排截断。
+    """
+    meta = (node.extensions or {}).get("event_meta", {})
+    return meta.get("timestamp", "")
+
+
 class StoreInterface(ABC):
     """统一存储抽象基类。
 
@@ -121,15 +130,20 @@ class StoreInterface(ABC):
         """
         ...
 
-    def get_related_events(self, node_id: str) -> list[Node]:
-        """定向查事件：绕过载重规则，返回**指向此核心节点的全部事件节点**。
+    def get_related_events(self, node_id: str, limit: int | None = None) -> list[Node]:
+        """定向查事件：绕过载重规则，返回指向此核心节点的事件节点（时间倒排）。
 
         宪法载重规则使核心节点 ``get_relations`` 不含事件边（核心不反查）。
         查询需要出处/证据时，用此方法**定向**获取背书此核心节点的事件——独立检索步，
         不进常驻活跃视图、不占 T 预算。
 
         返回以本节点为 target 的 ``关联`` 边的 source 端中 ``node_class=="事件"``
-        的节点列表（时间倒排，Phase 1 返回全部）。
+        的节点列表，按 **时间倒排**（extensions.event_meta.timestamp 降序，
+        无 timestamp 的排末尾），Phase 1 limit=None 返回全部。
+
+        Args:
+            node_id: 核心节点 id
+            limit: 最多返回的事件数（None = 全部）。用于事件层时间倒排截断。
         """
         # 默认实现：扫全量边找 target==node_id 且 source 为事件的关联边
         node = self.get_node(node_id)
@@ -144,6 +158,10 @@ class StoreInterface(ABC):
             source = self.get_node(edge.source_id)
             if source is not None and source.node_class == "事件":
                 events.append(source)
+        # 时间倒排：有 timestamp 的排前、降序；无 timestamp 的排末尾
+        events.sort(key=_event_sort_key, reverse=True)
+        if limit is not None:
+            events = events[:limit]
         return events
 
     def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:

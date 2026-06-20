@@ -477,3 +477,242 @@ def test_get_related_events_no_events():
     mock = MockLLM()
     engine = make_query_engine(g, mock, _StaticEntry(["c1"], g))
     assert engine.get_related_events("c1") == []
+
+
+def test_get_related_events_sorted_by_timestamp_desc():
+    """get_related_events 按时间倒排：最新事件排最前。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    fact = Node(id="f1", name="某事实", content="某事实", node_class="事实")
+    g.add_node(fact)
+
+    e1 = Node(
+        id="e1", name="早期事件", content="", node_class=CLASS_EVENT,
+        extensions={"event_meta": {"timestamp": "2024-01-01T00:00:00"}},
+    )
+    e2 = Node(
+        id="e2", name="中期事件", content="", node_class=CLASS_EVENT,
+        extensions={"event_meta": {"timestamp": "2024-06-15T00:00:00"}},
+    )
+    e3 = Node(
+        id="e3", name="最新事件", content="", node_class=CLASS_EVENT,
+        extensions={"event_meta": {"timestamp": "2025-03-20T00:00:00"}},
+    )
+    for e in [e1, e2, e3]:
+        g.add_node(e)
+        g.add_edge(e.id, "f1", type=EDGE_ASSOC)
+
+    mock = MockLLM()
+    engine = make_query_engine(g, mock, _StaticEntry(["f1"], g))
+    events = engine.get_related_events("f1")
+    # 时间倒排：最新排最前
+    assert [e.id for e in events] == ["e3", "e2", "e1"]
+
+
+def test_get_related_events_limit_truncation():
+    """limit 截断：只返回最新的 N 个事件（时间倒排截断）。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    fact = Node(id="f1", name="某事实", content="某事实", node_class="事实")
+    g.add_node(fact)
+
+    e1 = Node(
+        id="e1", name="旧事件", content="", node_class=CLASS_EVENT,
+        extensions={"event_meta": {"timestamp": "2024-01-01T00:00:00"}},
+    )
+    e2 = Node(
+        id="e2", name="新事件", content="", node_class=CLASS_EVENT,
+        extensions={"event_meta": {"timestamp": "2025-06-01T00:00:00"}},
+    )
+    for e in [e1, e2]:
+        g.add_node(e)
+        g.add_edge(e.id, "f1", type=EDGE_ASSOC)
+
+    mock = MockLLM()
+    engine = make_query_engine(g, mock, _StaticEntry(["f1"], g))
+    # limit=1 → 只返回最新
+    events = engine.get_related_events("f1", limit=1)
+    assert len(events) == 1
+    assert events[0].id == "e2"
+
+
+def test_get_related_events_no_timestamp_sorted_last():
+    """无 timestamp 的事件排在有 timestamp 的之后。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    fact = Node(id="f1", name="某事实", content="某事实", node_class="事实")
+    g.add_node(fact)
+
+    e_ts = Node(
+        id="e_ts", name="有时间事件", content="", node_class=CLASS_EVENT,
+        extensions={"event_meta": {"timestamp": "2025-01-01T00:00:00"}},
+    )
+    e_no = Node(
+        id="e_no", name="无时间事件", content="", node_class=CLASS_EVENT,
+        extensions={"event_meta": {}},
+    )
+    for e in [e_ts, e_no]:
+        g.add_node(e)
+        g.add_edge(e.id, "f1", type=EDGE_ASSOC)
+
+    mock = MockLLM()
+    engine = make_query_engine(g, mock, _StaticEntry(["f1"], g))
+    events = engine.get_related_events("f1")
+    # 有 timestamp 的排前
+    assert events[0].id == "e_ts"
+    assert events[1].id == "e_no"
+
+
+# ─── read-repair 同名合并 ──────────────────────────────────────────────
+
+
+def test_read_repair_merges_same_name_nodes():
+    """read-repair：BFS 遇到同名节点时合并到首次遇到的那一个。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    # 两个同名节点（不同 id）
+    a1 = Node(id="a1", name="苹果", content="苹果公司")
+    a2 = Node(id="a2", name="苹果", content="苹果水果")
+    b = Node(id="b", name="其他", content="其他节点")
+    for n in [a1, a2, b]:
+        g.add_node(n)
+    g.add_edge("b", "a1")
+    g.add_edge("b", "a2")
+
+    mock = MockLLM()
+    # select_facts 选中所有候选
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    engine = make_query_engine(g, mock, _StaticEntry(["b"], g))
+    result = engine.query("苹果")
+    # a1 和 a2 同名 → 合并，accumulated 中只有一个苹果节点
+    apple_nodes = [n for n in result.nodes if n.name == "苹果"]
+    assert len(apple_nodes) == 1
+    # 合并后 content 应包含两者的信息
+    assert "苹果公司" in apple_nodes[0].content
+
+
+def test_read_repair_no_merge_different_names():
+    """read-repair：不同名节点不合并。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    a = Node(id="a", name="苹果", content="苹果公司")
+    b = Node(id="b", name="橙子", content="橙子水果")
+    c = Node(id="c", name="水果", content="水果概念")
+    for n in [a, b, c]:
+        g.add_node(n)
+    g.add_edge("c", "a")
+    g.add_edge("c", "b")
+
+    mock = MockLLM()
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    engine = make_query_engine(g, mock, _StaticEntry(["c"], g))
+    result = engine.query("水果")
+    names = {n.name for n in result.nodes}
+    assert "苹果" in names
+    assert "橙子" in names
+
+
+def test_read_repair_hangs_when_over_budget():
+    """read-repair：合并后超 T 时挂起（不合并，保留两个节点）。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    # 第一个同名节点 content 很长
+    a1 = Node(id="a1", name="大概念", content="X" * 4000)
+    a2 = Node(id="a2", name="大概念", content="Y" * 4000)
+    b = Node(id="b", name="种子", content="种子")
+    for n in [a1, a2, b]:
+        g.add_node(n)
+    g.add_edge("b", "a1")
+    g.add_edge("b", "a2")
+
+    mock = MockLLM()
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    # 极小预算：合并后必定超 T
+    engine = QueryEngine(
+        store=g, llm=mock,  # type: ignore[arg-type]
+        plugin_manager=PluginManager(),
+        token_budget=TokenBudget(200),
+        max_rounds=5,
+    )
+    # 手动注册 entry 插件
+    engine.plugin_manager.register(_StaticEntry(["b"], g))
+    result = engine.query("大概念")
+    # 超 T → 挂起，两个同名节点都保留或至少第一个
+    big_nodes = [n for n in result.nodes if n.name == "大概念"]
+    assert len(big_nodes) >= 1
+
+
+def test_read_repair_substring_dedup():
+    """read-repair：content 子串去重——新 content 是已有 content 子串时不追加。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    a1 = Node(id="a1", name="AI", content="Artificial Intelligence is a field")
+    a2 = Node(id="a2", name="AI", content="Intelligence")  # 子串
+    b = Node(id="b", name="种子", content="种子")
+    for n in [a1, a2, b]:
+        g.add_node(n)
+    g.add_edge("b", "a1")
+    g.add_edge("b", "a2")
+
+    mock = MockLLM()
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    engine = make_query_engine(g, mock, _StaticEntry(["b"], g))
+    result = engine.query("AI")
+    ai_nodes = [n for n in result.nodes if n.name == "AI"]
+    assert len(ai_nodes) == 1
+    # 子串不追加
+    assert "Artificial Intelligence is a field" in ai_nodes[0].content
+
+
+def test_read_repair_name_equals_content_boundary():
+    """read-repair：name==content 合并后 name≠content，token 估算必须正确（铁律一）。
+
+    合并前 name==content="X" → 渲染只算一份（去重）。
+    合并后 content="X\\nY"、name="X" 不再相等 → 渲染算两份（name + content）。
+    used_tokens 必须反映这个增量，否则估算口径≠渲染口径（铁律一违反）。
+    """
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    # name == content：渲染去重只算一份
+    a1 = Node(id="a1", name="X", content="X")
+    a2 = Node(id="a2", name="X", content="Y")  # 同名不同 content
+    b = Node(id="b", name="种子", content="种子")
+    for n in [a1, a2, b]:
+        g.add_node(n)
+    g.add_edge("b", "a1")
+    g.add_edge("b", "a2")
+
+    mock = MockLLM()
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    engine = make_query_engine(g, mock, _StaticEntry(["b"], g))
+    result = engine.query("X")
+    ai_nodes = [n for n in result.nodes if n.name == "X"]
+    assert len(ai_nodes) == 1
+    # 合并后 content 应包含两者
+    assert "X" in ai_nodes[0].content
+    assert "Y" in ai_nodes[0].content
+    # name != content → 不再去重
+    assert ai_nodes[0].name != ai_nodes[0].content

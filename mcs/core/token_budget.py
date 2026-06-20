@@ -17,13 +17,32 @@ if TYPE_CHECKING:
 class TokenBudget:
     """子图操作的 token 预算。
 
-    常规设置为 ``T ≈ W / 2``，其中 W 是 LLM 上下文窗口。第一阶段默认值：8000。
+    上下文窗口划分：``W = S + T + R``（§4.1）。
+
+    - **W**：LLM 上下文窗口总大小。
+    - **S**：系统窗口（系统提示 + 指令），固定开销。
+    - **T**：查询窗口——不变量阈值，任意节点活跃视图 ≤ T。
+    - **R**：结果窗口（模型写回结果的空间），默认 ``R = T``。
+
+    常规设置 ``T ≈ (W - S) / 2``（因为 ``R = T`` 默认）。
+    第一阶段默认值：W=16000, S=0, T=8000, R=8000。
     """
 
     def __init__(
-        self, max_tokens: int, counter: Callable[[str], int] | None = None
+        self,
+        max_tokens: int,
+        counter: Callable[[str], int] | None = None,
+        *,
+        window_size: int | None = None,
+        system_window: int = 0,
+        result_window: int | None = None,
     ):
+        # 向后兼容：max_tokens 即 T
         self.T = max_tokens
+        # W = S + T + R；默认 R = T，W = S + 2T
+        self.S = system_window
+        self.R = result_window if result_window is not None else self.T
+        self.W = window_size if window_size is not None else self.S + self.T + self.R
         # 可选注入真分词器的 count 函数 (text)->int；None 时用经验式估计
         self._counter = counter
 
