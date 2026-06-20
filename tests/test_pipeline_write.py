@@ -11,7 +11,7 @@ from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
 from mcs.entities.config import MCSConfig
 from mcs.entities.decisions import ConceptDraft, Decision
-from mcs.entities.graph import Node
+from mcs.entities.graph import CLASS_CONCEPT, CLASS_EVENT, CORE_NODE_CLASSES, Node
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 from mcs.interfaces.write_preprocess_plugin import WritePreprocessPluginInterface
 from mcs.stores.in_memory import InMemoryStore
@@ -85,8 +85,11 @@ def test_create_decision_adds_node(empty_graph, mock_llm):
     assert len(ctx.changed) == 1
     assert ctx.changed[0].name == "深度学习"
     nodes = empty_graph.get_all_nodes()
-    assert len(nodes) == 1
-    assert nodes[0].name == "深度学习"
+    # ingest 现在还会建一个记录事件节点；概念节点恰一个
+    concepts = [n for n in nodes if n.node_class == CLASS_CONCEPT]
+    assert len(concepts) == 1
+    assert concepts[0].name == "深度学习"
+    assert len([n for n in nodes if n.node_class == CLASS_EVENT]) == 1
 
 
 def test_merge_decision_updates_existing_node(empty_graph, mock_llm):
@@ -132,7 +135,12 @@ def test_no_op_decision_changes_nothing(empty_graph, mock_llm):
     )
     ctx = wp.ingest("text")
     assert ctx.changed == []
-    assert empty_graph.get_all_nodes() == []
+    # no_op 不建概念 / 事实；ingest 仍记一个事件节点（记录行为已发生）
+    core_nodes = [
+        n for n in empty_graph.get_all_nodes() if n.node_class in CORE_NODE_CLASSES
+    ]
+    assert core_nodes == []
+    assert len([n for n in empty_graph.get_all_nodes() if n.node_class == CLASS_EVENT]) == 1
 
 
 def test_compaction_chain_runs_when_should_run_true(empty_graph, mock_llm):
@@ -272,8 +280,10 @@ def test_auto_persist_saves_changed_nodes(empty_graph, mock_llm):
     ctx = wp.ingest("text")
 
     assert ctx.persisted is True
-    # 验证数据已写入 SQLite
-    rows = store.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()
+    # changed 概念节点已落盘（ingest 还会落一个记录事件节点，不计入此断言）
+    rows = store.conn.execute(
+        "SELECT COUNT(*) FROM nodes WHERE node_class=?", (CLASS_CONCEPT,)
+    ).fetchone()
     assert rows[0] == 1
 
 
@@ -337,8 +347,11 @@ def test_auto_persist_saves_edges(empty_graph, mock_llm):
     ctx = wp.ingest("text")
 
     assert ctx.persisted is True
-    rows = store.conn.execute("SELECT COUNT(*) FROM edges").fetchone()
-    assert rows[0] == 1  # 一条事实边（存一份、两端索引）
+    # create 动作的边（new → anchor）落盘；另有事件 → new 的背书边，不计入此断言
+    rows = store.conn.execute(
+        "SELECT COUNT(*) FROM edges WHERE target_id=?", ("anchor",)
+    ).fetchone()
+    assert rows[0] == 1
 
 
 def test_auto_persist_storage_exception_handled(empty_graph, mock_llm):

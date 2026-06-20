@@ -16,7 +16,6 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable
 
-from mcs.entities.decisions import EventData
 from mcs.entities.graph import EDGE_ASSOC, Edge, Node
 from mcs.rendering import format_ingest_status, render_query_result
 
@@ -151,32 +150,6 @@ class MemoryStore:
     def learn(self, text: str) -> str:
         """写记忆：跑 mcs.ingest（worker 线程）→ 状态摘要文本。"""
         return self._submit(self._do_learn, text)
-
-    # === learn_event（事件规则入库，不经 LLM） ===
-
-    def _do_learn_event(self, name: str, content: str,
-                        timestamp: str | None = None,
-                        target_ids: list[str] | None = None) -> str:
-        event_data = EventData(
-            name=name, content=content,
-            timestamp=timestamp,
-            target_ids=target_ids or [],
-        )
-        node = self._mcs.ingest_event(event_data)
-        return f"事件入库成功：id={node.id}, name={node.name}"
-
-    def learn_event(self, name: str, content: str,
-                    timestamp: str | None = None,
-                    target_ids: list[str] | None = None) -> str:
-        """事件规则入库（不经 LLM）：创建事件节点并连背书边。
-
-        Args:
-            name: 事件名称
-            content: 事件内容
-            timestamp: ISO 8601 时间戳（可选）
-            target_ids: 背书目标节点 id 列表（可选）
-        """
-        return self._submit(self._do_learn_event, name, content, timestamp, target_ids)
 
     # === search（种子搜索，阶段② 封装） ===
 

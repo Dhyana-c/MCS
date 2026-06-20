@@ -23,7 +23,10 @@ from mcs.entities.decisions import (
     ConceptDraft,
     Decision,
     DecisionList,
+    EventData,
+    IngestInput,
     MultiHubDecision,
+    SourceData,
 )
 from mcs.entities.graph import Edge, Node, Subgraph
 
@@ -39,6 +42,9 @@ __all__ = [
     "Community",
     "MultiHubDecision",
     "ActionType",
+    "EventData",
+    "SourceData",
+    "IngestInput",
     # config
     "MCSConfig",
     "PHASE1_SHARED_PLUGINS",

@@ -1,16 +1,20 @@
-"""写入管道 - 将文本导入 MCS 的 7 阶段管道。
+"""写入管道 - 将文本导入 MCS 的 ⓪ + 7 阶段管道。
 
-7 个阶段按顺序执行，参见 openspec/specs/write-pipeline/spec.md：
+规则入库前置段 ⓪（不经 LLM）+ 7 段 LLM 核心管线，按顺序执行，参见
+openspec/specs/write-pipeline/spec.md：
 
+    ⓪ 规则入库           (建事件节点（整输入、timestamp）+ 可选 source 节点；不经 LLM)
     ① 前置插件链         (PostprocessPlugin chain on text)
     ② 关联节点定位       (复用查询管道)
-    ③ 概念提取           (LLM: extract_concepts)
+    ③ 概念提取           (LLM: extract_concepts；仅 content)
     ④ 关系判定           (LLM: judge_relations → DecisionList)
-    ⑤ 图更新             (无 LLM；原子地应用 DecisionList)
+    ⑤ 图更新             (无 LLM；原子地应用 DecisionList + 事件/source → 概念/事实 背书连边)
     ⑥ 压缩判定插件链     (CompactionPlugin chain, 条件性, 含不变量守门)
     ⑦ 自动落盘           (SQLiteStore 增量持久化)
 
-阶段 ④ 产生一个 ``DecisionList``（纯数据）；阶段 ⑤ 应用它。
+阶段 ④ 产生一个 ``DecisionList``（纯数据）；阶段 ⑤ 应用它，并把 ⓪ 建的事件 / source
+对本次新建 / 命中的概念 / 事实连 ``关联`` 背书边。即便 content 抽取为零概念 / 事实，
+⓪ 建的事件 / source 仍随 ⑦ 落盘（记录行为已发生）。
 """
 
 from __future__ import annotations
@@ -18,11 +22,26 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.errors import InvalidDecisionError, UnknownActionError
-from mcs.entities.decisions import ConceptDraft, Decision, DecisionList, EventData, SourceData
-from mcs.entities.graph import CLASS_CONCEPT, CLASS_EVENT, CLASS_SOURCE, EDGE_ASSOC, EDGE_MUTEX
+from mcs.entities.decisions import (
+    ConceptDraft,
+    Decision,
+    DecisionList,
+    EventData,
+    IngestInput,
+    SourceData,
+)
+from mcs.entities.graph import (
+    CLASS_CONCEPT,
+    CLASS_EVENT,
+    CLASS_SOURCE,
+    CORE_NODE_CLASSES,
+    EDGE_ASSOC,
+    EDGE_MUTEX,
+)
 
 if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginManager
@@ -52,6 +71,11 @@ class WriteContext:
     - ``changed``: 阶段 ⑤ 的输出（新创建或合并的节点）
     - ``persisted``: 阶段 ⑦ 的输出（落盘是否成功）
 
+    规则入库产物（⓪ 段，补充字段，不移除既有字段）：
+
+    - ``event_node``: 本次 ingest 记录的事件节点（落时间轴）
+    - ``source_nodes``: 按 ``IngestInput.source`` 规则切分建的 source 节点列表
+
     参见 openspec/specs/write-pipeline/spec.md "WriteContext 含八个状态字段"。
     """
 
@@ -64,6 +88,8 @@ class WriteContext:
     changed: list[Node] = field(default_factory=list)
     persisted: bool = False
     metadata: dict = field(default_factory=dict)
+    event_node: Node | None = None
+    source_nodes: list[Node] = field(default_factory=list)
 
 
 class WritePipeline:
@@ -101,25 +127,38 @@ class WritePipeline:
 
     # === 公共 API ===
 
-    def ingest(self, text: str, **metadata: Any) -> WriteContext:
-        """执行 7 阶段写入管道。返回最终的 WriteContext。
+    def ingest(self, data: str | IngestInput, **metadata: Any) -> WriteContext:
+        """执行 ⓪ + 7 阶段写入管道。返回最终的 WriteContext。
 
-        概念提取为空时静默返回（跳过阶段 ④⑤⑥⑦）。
+        入参接受 ``str | IngestInput``：``str`` 归一化为 ``IngestInput(content=text)``
+        （now 时间戳、无 source），既有 ``str`` 调用行为不变（除新增的一条记录事件外）。
+
+        概念提取为空时静默返回（跳过 ④⑤⑥），但 ⓪ 建的事件 / source 仍随 ⑦ 落盘
+        （记录行为已发生）。
         """
+        # 入口归一化：str → IngestInput
+        if isinstance(data, str):
+            data = IngestInput(content=data)
+        merged_metadata = {**data.metadata, **metadata}
+
         ctx = WriteContext(
             system_prompt=self.system_prompt,
-            user_input=text,
-            metadata=dict(metadata),
+            user_input=data.content,
+            metadata=merged_metadata,
         )
 
-        # 阶段 ①: 前置插件链（幂等检查/摘要等）
-        processed = self._run_preprocess(text, ctx)
+        # 阶段 ⓪: 规则入库（不经 LLM）——建事件节点（整输入、timestamp）+ source 节点。
+        #   先建，使其 id 可用于 ⑤ 的背书连边；即便 content 抽取为空仍入库（记录行为已发生）。
+        ctx.event_node, ctx.source_nodes = self._rule_ingest(data)
+
+        # 阶段 ①: 前置插件链（幂等检查/摘要等）——只作用于 content
+        processed = self._run_preprocess(data.content, ctx)
         ctx.processed = processed
 
         # 阶段 ②: 关联节点定位（轻量查询模式）
         ctx.related = self.query_engine.query_nodes(processed)
 
-        # 阶段 ③: 概念提取
+        # 阶段 ③: 概念提取（LLM，仅 content）
         concepts = self.llm.call(
             purpose="extract_concepts",
             nodes_in=ctx.related,
@@ -127,8 +166,11 @@ class WritePipeline:
         ) or []
         ctx.concepts = concepts
         if not concepts:
+            # 概念数为 0：跳过 ④⑤⑥，但事件 / source 已在 ⓪ 建好（add_node 自动跟踪），
+            # 仍随 ⑦ 落盘（记录行为已发生）。
+            self._run_persist(ctx)
             self._mark_ingested_if_success(ctx)
-            return ctx  # 概念数为 0 时静默返回（仍标记已摄入，避免续跑重复处理空块）
+            return ctx
 
         # 阶段 ④: 关系判定
         decisions = self.llm.call(
@@ -142,8 +184,9 @@ class WritePipeline:
         decisions = self._sanitize_decisions(decisions)
         ctx.decisions = decisions
 
-        # 阶段 ⑤: 图更新
+        # 阶段 ⑤: 图更新（含事件 / source → 本次概念 / 事实 背书连边）
         ctx.changed = self._apply_decisions(decisions)
+        self._apply_endorsements(ctx)
         self._attach_pending_source(ctx)
         self._notify_indexes(ctx.changed)
 
@@ -255,9 +298,13 @@ class WritePipeline:
         pending_mutex_names: list[tuple[str, list[str]]] = []
         # 精确同名去重索引：create 时若已有同名节点则并入而非新建（确定性兜底，
         # 不依赖 judge_relations 的 merge 判定——其 prompt 偏向 create 会让同名实体
-        # 裂成多个节点、碎片化事实、压低召回）。
+        # 裂成多个节点、碎片化事实、压低召回）。仅纳入**核心节点**（概念 / 事实）——
+        # 事件 / source（⓪ 规则入库、名由 content 派生）不是概念，不应吸收概念
+        # （否则"content≈概念名"会把概念错并入同名事件节点）。
         existing_by_name: dict[str, str] = {}
         for n in self.store.get_all_nodes():
+            if n.node_class not in CORE_NODE_CLASSES:
+                continue
             key = _norm_name(n.name)
             if key:
                 existing_by_name.setdefault(key, n.id)
@@ -347,19 +394,34 @@ class WritePipeline:
 
         return changed
 
-    def ingest_event(self, event_data: EventData) -> Node:
-        """事件规则入库（不经 LLM）。
+    # === 阶段 ⓪ 规则入库原语（事件 / source，不经 LLM）===
 
-        宪法 D5：事件按既定结构直接存。创建 ``CLASS_EVENT`` 节点
-        并对 ``target_ids`` 中每个 id 创建 ``事件 → 目标`` 的 ``EDGE_ASSOC`` 边
-        （背书·提及，方向固定；核心不反查——载重规则已在 store 层落实）。
+    def _rule_ingest(self, data: IngestInput) -> tuple[Node, list[Node]]:
+        """阶段 ⓪：规则入库（不经 LLM）——建记录事件 + source 节点，**不连背书边**。
 
-        事件节点 extensions 中自动注入 ``event_meta``：
-        ``{"timestamp": <timestamp>, "targets": [<target_ids>]}``。
+        事件节点记本次 ingest 的整个 ``content``（落时间轴：``timestamp`` 或 now 兜底）；
+        source 按 ``data.source`` 切分。背书目标（本次抽出的概念 / 事实）的 id 要到
+        ⑤ 图更新后才确定，故此处只建节点，背书边由 ``_apply_endorsements`` 单独连。
+        """
+        timestamp = data.timestamp or _now_iso()
+        event_name = data.event_name or _derive_event_name(data.content)
+        event_node = self._build_event_node(
+            EventData(name=event_name, content=data.content, timestamp=timestamp)
+        )
+        source_nodes: list[Node] = []
+        if data.source is not None:
+            source_nodes = self._build_source_nodes(data.source)
+        return event_node, source_nodes
+
+    def _build_event_node(self, event_data: EventData) -> Node:
+        """事件建节点原语（不经 LLM，不连边）。
+
+        创建 ``CLASS_EVENT`` 节点并注入 ``extensions.event_meta``
+        （``timestamp`` / ``targets``）。背书边由 ``_connect_endorsement_edges`` 单独连。
         """
         from mcs.entities.graph import Node
 
-        meta = {"targets": list(event_data.target_ids)}
+        meta: dict[str, Any] = {"targets": list(event_data.target_ids)}
         if event_data.timestamp:
             meta["timestamp"] = event_data.timestamp
         ext = dict(event_data.extensions or {})
@@ -373,26 +435,14 @@ class WritePipeline:
             extensions=ext,
         )
         self.store.add_node(node)
-
-        for tid in event_data.target_ids:
-            if self.store.get_node(tid) is not None:
-                self.store.add_edge(node.id, tid, type=EDGE_ASSOC)
-            else:
-                logger.warning(
-                    "ingest_event: 目标节点 %s 不存在，跳过背书边", tid
-                )
-
         return node
 
-    def ingest_source(self, source_data: SourceData) -> list[Node]:
-        """Source 规则入库（不经 LLM）。
+    def _build_source_nodes(self, source_data: SourceData) -> list[Node]:
+        """Source 建节点原语（不经 LLM，不连边）。
 
-        宪法 D5：source 按类型切分分类、保真存入。每个 chunk 对应一个
-        ``CLASS_SOURCE`` 节点，并对 ``target_ids`` 中每个 id 创建
-        ``source → 目标`` 的 ``EDGE_ASSOC`` 边。
-
-        若 chunks 为空，把 name+extensions 整体作为一个节点存入。
-        返回创建的 source 节点列表。
+        每个 chunk 对应一个 ``CLASS_SOURCE`` 节点并注入 ``extensions.source_meta``
+        （``source_type`` / ``chunk`` / ``targets``）。无 chunks 时整条 source 作为一个节点。
+        背书边由 ``_connect_endorsement_edges`` 单独连。
         """
         from mcs.entities.graph import Node
 
@@ -422,16 +472,43 @@ class WritePipeline:
             )
             self.store.add_node(node)
             created.append(node)
-
-            for tid in source_data.target_ids:
-                if self.store.get_node(tid) is not None:
-                    self.store.add_edge(node.id, tid, type=EDGE_ASSOC)
-                else:
-                    logger.warning(
-                        "ingest_source: 目标节点 %s 不存在，跳过关联边", tid
-                    )
-
         return created
+
+    def _connect_endorsement_edges(
+        self, endorser_id: str, target_ids: list[str], kind: str = "endorse"
+    ) -> None:
+        """对一个源端节点（事件 / source）到 ``target_ids`` 各建一条 ``关联`` 背书边。
+
+        目标不存在则跳过并告警（不建悬空边）。``kind`` 仅用于日志。
+        载重规则——核心节点 ``get_relations`` 过滤对端为事件的关联边——由 store 层落实，
+        此处只建 ``事件/source → 目标`` 的正向边（事件 / source 为源端）。
+        """
+        for tid in target_ids:
+            if self.store.get_node(tid) is not None:
+                self.store.add_edge(endorser_id, tid, type=EDGE_ASSOC)
+            else:
+                logger.warning("%s: 目标节点 %s 不存在，跳过背书边", kind, tid)
+
+    def _apply_endorsements(self, ctx: WriteContext) -> None:
+        """阶段 ⑤ 后：把 ⓪ 建的事件 / source 对本次新建 / 命中的概念 / 事实连背书边。
+
+        方向固定：事件 / source（源端）→ 概念 / 事实（目标端）。``event_meta.targets`` /
+        ``source_meta.targets`` 回填为本次目标 id（冗余存储，与边一致）。无 changed 核心
+        节点时（如全部 no_op）不连边——事件 / source 仍入库，只是无背书对象。
+        """
+        target_ids = [n.id for n in ctx.changed if n.node_class in CORE_NODE_CLASSES]
+        if not target_ids:
+            return
+        endorsers: list[tuple[Node, str]] = []
+        if ctx.event_node is not None:
+            endorsers.append((ctx.event_node, "event_meta"))
+        endorsers.extend((s, "source_meta") for s in ctx.source_nodes)
+        for node, meta_key in endorsers:
+            self._connect_endorsement_edges(node.id, target_ids, kind="ingest")
+            meta = (node.extensions or {}).get(meta_key)
+            if isinstance(meta, dict):
+                existing = set(meta.get("targets") or [])
+                meta["targets"] = sorted(existing | set(target_ids))
 
     def _dispatch_merge(self, decision: Decision) -> None:
         """合并：把新概念的名称/别名并入 ``target_id`` 的别名槽，并把
@@ -592,3 +669,19 @@ def _reattach_concepts(
 def _norm_name(name: str | None) -> str:
     """概念名归一化（去空白 + 小写），用于精确同名去重。"""
     return (name or "").strip().lower()
+
+
+def _now_iso() -> str:
+    """当前 UTC 时间的 ISO 8601 字符串，用作事件节点 ``timestamp`` 缺省值（记录行为时间）。"""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _derive_event_name(content: str) -> str:
+    """从 content 规则派生事件节点 name（缺省口径）：去空白换行、截断至 40 字、空则 "ingest"。
+
+    允许 ``IngestInput.event_name`` 覆盖；缺省截断派生仅为可观测 / 反查友好，无语义含义。
+    """
+    text = " ".join((content or "").split())
+    if not text:
+        return "ingest"
+    return text[:40] + ("…" if len(text) > 40 else "")

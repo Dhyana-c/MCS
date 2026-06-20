@@ -5,7 +5,7 @@ TBD - created by archiving change config-file-loading. Update Purpose after arch
 ## Requirements
 ### Requirement: 从 YAML 文件加载 MCSConfig
 
-系统 SHALL 提供 `MCSConfig.from_file(path)`，从 YAML 文件加载并返回与手写**形状一致**的 `MCSConfig`。若文件含 `preset` 键，MUST 先调用对应 preset 工厂（`knowledge_graph` / `memory_system`，传 `write_llm` / `read_llm` / `relation_model`）铺底，再用**其余**键叠加；无 `preset` 则以 `MCSConfig()` 默认为底。有 `preset` 时 `write_llm` / `read_llm` / `relation_model` MUST 仅作工厂参数消费、MUST NOT 再作字段二次叠加（否则把工厂产出的插件名如 `deepseek_llm` 覆盖回短名 `deepseek`，导致 builder 找不到 LLM 插件）。叠加规则：标量字段覆盖；`shared_plugins` / `write_plugins` / `read_plugins` 显式给出则替换、否则保留底；`plugin_configs` 按插件名**两层深合并**（preset 的 `model` 与文件的 `api_key` 共存）；`prompt_overrides` 按 purpose 合并。既有代码构造路径（`create_mcs` / `Phase1Builder(config).build()`）MUST 逐字不变——`from_file` 为纯新增。
+系统 SHALL 提供 `MCSConfig.from_file(path)`，从 YAML 文件加载并返回与手写**形状一致**的 `MCSConfig`。若文件含 `preset` 键，MUST 先调用对应 preset 工厂（`knowledge_graph` / `memory_system`，传 `write_llm` / `read_llm`）铺底，再用**其余**键叠加；无 `preset` 则以 `MCSConfig()` 默认为底。有 `preset` 时 `write_llm` / `read_llm` MUST 仅作工厂参数消费、MUST NOT 再作字段二次叠加（否则把工厂产出的插件名如 `deepseek_llm` 覆盖回短名 `deepseek`）。**MUST NOT 再接收 / 叠加 `relation_model`（已删除）。** 叠加规则：标量字段覆盖；`shared_plugins` / `write_plugins` / `read_plugins` 显式给出则替换、否则保留底；`plugin_configs` 按插件名**两层深合并**；`prompt_overrides` 按 purpose 合并。既有构造路径（`create_mcs` / `Phase1Builder(config).build()`）MUST 逐字不变。
 
 #### Scenario: preset 叠加产出等价手写
 

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from mcs.core.query_engine import QueryEngine
     from mcs.core.store import StoreInterface
     from mcs.core.write_pipeline import WritePipeline
-    from mcs.entities.decisions import EventData, SourceData
+    from mcs.entities.decisions import IngestInput
 
 logger = logging.getLogger(__name__)
 
@@ -54,17 +54,13 @@ class MCS:
 
     # === 公共 API ===
 
-    def ingest(self, text: str, **metadata: Any) -> Any:
-        """执行写入管线。返回最终的 WriteContext。"""
-        return self.write_pipeline.ingest(text, **metadata)
+    def ingest(self, data: str | "IngestInput", **metadata: Any) -> Any:
+        """执行写入管线。返回最终的 WriteContext。
 
-    def ingest_event(self, event_data: "EventData") -> Any:
-        """事件规则入库（不经 LLM）。创建事件节点并连背书边。"""
-        return self.write_pipeline.ingest_event(event_data)
-
-    def ingest_source(self, source_data: "SourceData") -> Any:
-        """Source 规则入库（不经 LLM）。按类型切分存入 source 节点。"""
-        return self.write_pipeline.ingest_source(source_data)
+        入参接受 ``str | IngestInput``（``str`` 经兼容垫片归一化为
+        ``IngestInput(content=text)``，老调用零改动）。
+        """
+        return self.write_pipeline.ingest(data, **metadata)
 
     def query(
         self,
@@ -88,7 +84,7 @@ class MCS:
         返回实际执行的插件名称列表。
 
         触发时机建议：
-        - 写入后（ingest/ingest_event/ingest_source 返回后）
+        - 写入后（ingest 返回后）
         - 定时器（外部调度器控制频率和算力预算）
         - 手动（force=True 强制全扫）
 

@@ -5,12 +5,24 @@
 ## Requirements
 ### Requirement: 写流程为 7 段固定管线
 
-The system SHALL implement ingest as a 7-stage pipeline in this fixed order: ① 前置插件链 → ② 关联节点定位 → ③ 概念提取 → ④ 关系判定 → ⑤ 图更新 → ⑥ 压缩判定插件链 → ⑦ 自动落盘.
+The system SHALL implement ingest with a deterministic 规则入库前置段 ⓪ followed by the 7-stage LLM core pipeline in this fixed order: ⓪ 规则入库（建事件 + 可选 source 节点，不经 LLM）→ ① 前置插件链 → ② 关联节点定位 → ③ 概念提取 → ④ 关系判定 → ⑤ 图更新（含事件 / source → 概念 / 事实 背书连边）→ ⑥ 压缩判定插件链 → ⑦ 自动落盘. ingest 入参 SHALL 接受 `str | IngestInput`；`str` MUST 被归一化为 `IngestInput(content=text)`（now 时间戳、无 source），既有 `str` 调用行为 MUST 保持不变（除新增的一条记录事件外）。
 
-#### Scenario: 7 段顺序固定
+#### Scenario: 规则入库先于 LLM 核心管线
 
-- **WHEN** 调用 `WritePipeline.ingest(text, **metadata)`
+- **WHEN** 调用 `WritePipeline.ingest(data, **metadata)`
+- **THEN** ⓪ MUST 先建事件（及可选 source）节点、不经 LLM，再执行 ①–⑦
+- **AND** ⓪ 建的事件 / source 节点 id MUST 可用于 ⑤ 的背书连边
+
+#### Scenario: 7 段核心顺序固定
+
+- **WHEN** ⓪ 完成之后
 - **THEN** 框架 MUST 按 ①→②→③→④→⑤→⑥→⑦ 顺序执行；任何插件不得调整段的顺序
+
+#### Scenario: str 向后兼容
+
+- **WHEN** 以 `str` 调用 `ingest`
+- **THEN** MUST 归一化为 `IngestInput(content=text)`（无 source、now 时间戳）
+- **AND** 概念 / 事实抽取与连边行为 MUST 与既有 `str` 路径逐字等价
 
 #### Scenario: 写流程不含独立仲裁段
 
@@ -20,9 +32,7 @@ The system SHALL implement ingest as a 7-stage pipeline in this fixed order: ①
 #### Scenario: 写流程不含内部 Loop
 
 - **WHEN** 一次 `ingest()` 调用
-- **THEN** 框架 MUST 按线性 7 段执行；不在框架内做"对超长 text 自动分批 Loop"；分批由调用方决定
-
----
+- **THEN** 框架 MUST 按线性段执行；不在框架内做"对超长 text 自动分批 Loop"；分批由调用方决定
 
 ### Requirement: 阶段 ① 使用独立的 PreprocessPlugin 类型
 
@@ -94,69 +104,34 @@ Stages ③ and ④ SHALL be implemented as TWO separate LLM calls, not merged in
 
 ### Requirement: DecisionList 为纯数据，与图更新严格分离
 
-阶段 ④ 输出 MUST 为可序列化的 `DecisionList`；阶段 ⑤ SHALL 原子应用、无 LLM 调用。**`property_graph` 模式**下，Decision 的 `edges_to`（到已有节点）与 `edges_to_names`（到同批新概念）MUST 均为 `list[dict]`（含 `target_id` / `target_name` 与 `label`），用于创建 `kind="fact"` 事实边——**一条事实只存一份**（两端索引），MUST NOT 双向对存；⑤ 第二遍按名解析 `edges_to_names` 时，MUST 同样只写**一条带 label** 的事实边，MUST NOT 再落两条对向单向边。**`attribute_node` 模式**下，⑤ 改为建属性节点 + `kind="assoc"` 无类型边（见 `attribute-node-model`，权威），MUST NOT 建带 label 事实边。两模式的阶段 ⑤ MUST 同为原子应用、无 LLM 调用。
+阶段 ④ 输出 MUST 为可序列化的 `DecisionList`；阶段 ⑤ SHALL 原子应用、**无 LLM 调用**。关系 MUST 具体化为**命题（事实）节点**（`node_class=事实`，谓词落其 `content`）+ `关联` 边连其端点；MUST NOT 建带 `label` 的事实边、MUST NOT 按 `relation_model` 分模式。互斥 MUST 表示为两个事实节点间的 `互斥` 边。
 
-#### Scenario: create 写一条带 label 事实边
+#### Scenario: ⑤ 关系建命题节点 + 关联边
 
-- **WHEN** （`property_graph` 模式）create decision 含 `edges_to=[{"target_id": "X", "label": "喜欢"}]`
-- **THEN** ⑤ MUST 创建一条 `(new_node, X, kind="fact", label="喜欢")` 边，MUST NOT 同时写反向副本
-
-#### Scenario: merge 写一条带 label 事实边
-
-- **WHEN** （`property_graph` 模式）merge decision 含 `edges_to=[{"target_id": "X", "label": "属于"}]`
-- **THEN** ⑤ MUST 创建一条 `(merged_node, X, kind="fact", label="属于")` 边
-
-#### Scenario: 篇内关系（edges_to_names）写单条 label 事实边
-
-- **WHEN** （`property_graph` 模式）同批新概念 X 与 Y 间有关系 `X —label→ Y`（经 `edges_to_names` 按名解析）
-- **THEN** ⑤ 第二遍 MUST 创建一条 `(X, Y, kind="fact", label)` 边，MUST NOT 写 `Y→X` 副本
-
-#### Scenario: attribute_node 模式 ⑤ 建属性节点 + assoc 边
-
-- **WHEN** `attribute_node` 模式应用一条关系决策
-- **THEN** ⑤ MUST 建 / 复用属性节点并连 `kind="assoc"` 边，MUST NOT 调用 `add_edge(kind="fact")`
+- **WHEN** 应用一条关系决策（X 与 Y 有关系"喜欢"）
+- **THEN** ⑤ MUST 建 / 复用命题节点（content 含"喜欢"），并连 `X —关联— 命题`、`命题 —关联— Y`
+- **AND** MUST NOT 调用 `add_edge(kind="fact")`、MUST NOT 产生带 label 的边
 
 #### Scenario: 图更新阶段无 LLM 调用
 
-- **WHEN** 执行 ⑤（两种模式）
+- **WHEN** 执行 ⑤
 - **THEN** 框架 MUST NOT 在 ⑤ 发起任何 LLM 调用
 
 ---
 
 ### Requirement: 阶段 ④ DecisionList 动作类型简化
 
-**`property_graph` 模式**下，阶段 ④ `judge_relations` 的 DecisionList MUST 限于 3 种动作：`merge`、`create`、`no_op`；`attach_statement` 在该模式 MUST 标记为 deprecated、视为 no-op（保留在动作类型字面量中但不再由管线产生）。merge 决策中 `aliases_to_add` 字段用于让 LLM 贡献额外别名。**`attribute_node` 模式**下，阶段 ④ 走专属 prompt、产出关系具体化决策（建属性节点 + assoc 边），见 `attribute-node-model`（权威）。
+阶段 ④ `judge_relations` 的**概念级**动作 MUST 限于 `merge` / `create` / `no_op`（`attach_statement` 移除）。关系判定 MUST 产出"建 / 复用命题节点 + 连 `关联` 边（必要时连 `互斥`）"的意图，MUST NOT 产出关系 `label`、MUST NOT 按 `relation_model` 分模式。`merge` 决策的 `aliases_to_add` 字段用于让 LLM 贡献别名。
 
-#### Scenario: property_graph 模式不产生 attach_statement
+#### Scenario: 概念动作三选一
 
-- **WHEN** （`property_graph` 模式）阶段 ④ LLM 返回 `action: "attach_statement"`
-- **THEN** write_pipeline MUST 将其视为 no-op（不执行任何图操作），并记录 deprecation 警告日志
+- **WHEN** ④ 判定一个概念
+- **THEN** DecisionList 对该概念 MUST 取 `merge`（已存在节点 X，含 `aliases_to_add`）/ `create`（新概念）/ `no_op`（不入图）之一
 
-#### Scenario: DecisionList 不再使用 initial_statements
+#### Scenario: 关系产命题节点意图、无 label
 
-- **WHEN** （`property_graph` 模式）阶段 ④ LLM 返回 `initial_statements` 字段
-- **THEN** write_pipeline MUST 忽略该字段，不写入 `extensions["statements"]`
-
-#### Scenario: merge 动作含 aliases_to_add
-
-- **WHEN** （`property_graph` 模式）④ 决定一个概念已存在为节点 X
-- **THEN** DecisionList 中 MUST 含一项 `{action: "merge", concept: c, target_id: X_id, aliases_to_add: [...]}`
-- **AND** `aliases_to_add` MUST 包含 LLM 识别的同义词、缩写、变体写法
-
-#### Scenario: create 动作
-
-- **WHEN** （`property_graph` 模式）④ 决定一个概念是新概念
-- **THEN** DecisionList 中 MUST 含一项 `{action: "create", concept: c, edges_to: [anchor_ids]}`
-
-#### Scenario: no_op 动作
-
-- **WHEN** ④ 决定某概念不值得入图（如太宽泛或与现有图无关）
-- **THEN** DecisionList 中 MUST 含一项 `{action: "no_op", concept: c, reason: "..."}`；⑤ 跳过该项
-
-#### Scenario: attribute_node 模式产关系具体化决策
-
-- **WHEN** `attribute_node` 模式执行阶段 ④
-- **THEN** DecisionList MUST 表达"建 / 并属性节点 + 连无类型边"的意图，MUST NOT 含关系 label
+- **WHEN** ④ 判定两节点有关系
+- **THEN** 决策 MUST 表达"建 / 并命题节点 + 连关联边"的意图，MUST NOT 含关系 `label`
 
 ---
 
@@ -201,33 +176,28 @@ Stages ③ and ④ SHALL be implemented as TWO separate LLM calls, not merged in
 
 ### Requirement: 概念提取生成精简自包含描述
 
-阶段 ③ `extract_concepts` 的 prompt MUST 指导 LLM 生成**精简**的自包含描述：仅含定义 + 短叶子属性，控制在 **lean 基线**（**~24 token**；英文约 100 字符，中文按 token 计）。关系语义 MUST NOT 写入 content（由事实边承载）。
+阶段 ③ `extract_concepts` 的 prompt MUST 指导 LLM 生成**精简**的自包含**概念**描述：仅含定义 + 短叶子属性，控制在 **lean 基线**（**~24 token**）。关系语义 MUST NOT 写入概念 `content`——关系由**命题（事实）节点**承载（谓词落其 content）。
 
-#### Scenario: content 精简且不含关系叙述
+#### Scenario: 概念 content 精简且不含关系叙述
 
-- **WHEN** `extract_concepts` 提取概念
-- **THEN** `content` MUST 仅含定义 + 短属性，SHOULD NOT 超过 lean 基线，MUST NOT 含成句关系叙述
+- **WHEN** `extract_concepts` 提取一个概念
+- **THEN** 其 `content` MUST 仅含定义 + 短属性，MUST NOT 含成句关系叙述（关系归命题节点）
 
 ---
 
 ### Requirement: root 关联可选——只挂孤儿
 
-挂接 MUST 仅在新概念**与任何既有概念零事实关联**时，才创建 `__seed_root__ → concept` 层级边（孤儿之家）。有 ≥1 条事实关联的概念 MUST NOT 挂 root（经关联可达）。`__seed_root__` MUST 只产层级边、不参与事实边。
+挂接 MUST 仅在新节点**与任何既有节点零关联**（无任何 `关联` 边）时，才创建 `__seed_root__ → node` 的 `关联` 边（孤儿之家）。有 ≥1 条关联的节点 MUST NOT 挂 root（经关联可达）。`__seed_root__` 是普通组织中心（hub 标记），其出边 MUST 为 `关联`。
 
 #### Scenario: 有关联不挂 root
 
-- **WHEN** 新概念与至少一个既有概念建立了事实边
-- **THEN** 系统 MUST NOT 为它创建 `root→concept` 边
+- **WHEN** 新节点已与至少一个既有节点建立 `关联` 边
+- **THEN** 系统 MUST NOT 为它创建 `root → node` 边
 
 #### Scenario: 零关联挂 root
 
-- **WHEN** 新概念与任何既有概念都无事实关联
-- **THEN** 系统 MUST 创建 `(__seed_root__, concept, kind="hierarchy", "")` 边
-
-#### Scenario: root 只产层级边
-
-- **WHEN** 任何模块为 `__seed_root__` 创建出边
-- **THEN** `kind` MUST 为 `"hierarchy"`，MUST NOT 为事实边
+- **WHEN** 新节点与任何既有节点都无关联
+- **THEN** 系统 MUST 创建 `__seed_root__ → node` 的 `关联` 边
 
 ---
 
@@ -286,3 +256,57 @@ The write pipeline SHALL NOT have a stage analogous to query stage ④ arbitrati
 
 - **WHEN** 审查 write-pipeline spec 和 design.md
 - **THEN** MUST 明确"写流程 ④ 即是写入的仲裁动作"；MUST 不引入独立 ArbitrationPlugin 在写流程中
+
+### Requirement: ingest 输入为结构体，事件 / source 字段不经 LLM
+
+The system SHALL accept ingest input as an `IngestInput` data class with fields `content`、`timestamp`（可选，ISO 8601）、`source`（可选，`SourceData`）、`event_name`（可选）、`metadata`。`content` SHALL 是唯一进入 LLM 概念 / 事实抽取的字段；`timestamp` / `source` / `event_name` MUST 仅由规则消费、MUST NOT 经 LLM。
+
+#### Scenario: 结构体字段分工
+
+- **WHEN** 调用 `ingest(IngestInput(content=..., timestamp=..., source=...))`
+- **THEN** 只有 `content` MUST 进入 LLM 抽取
+- **AND** 事件 `timestamp`、source 切分 MUST 由规则处理、不经 LLM
+
+### Requirement: 每次 ingest 整个输入记为一个事件
+
+每次 `ingest` 调用 SHALL 把整个输入记为**一个事件节点**（`node_class=事件`，`timestamp` = 输入 `timestamp` 或缺省 now），表示"记录此输入"这一**行为**、落用户时间轴。content 内被转述的过去事件 MUST 仍按 `unified-graph-schema`「事件不经 LLM 抽取」规则抽成**带时间属性的事实**，MUST NOT 盖成时间轴事件。
+
+#### Scenario: 一次 ingest 恰一个记录事件
+
+- **WHEN** 调用 `ingest`（无论 content 是否抽出概念 / 事实）
+- **THEN** MUST 恰好创建一个事件节点，`timestamp` 为输入 timestamp（缺省 now）
+- **AND** 即便 content 抽取为零概念 / 事实，该事件节点 MUST 仍入库并随 ⑦ 落盘
+
+#### Scenario: 转述过去事件不成时间轴事件
+
+- **WHEN** content 含"三年前发生 X"这类转述
+- **THEN** X MUST 被抽成带时间属性的**事实**（核心图）
+- **AND** MUST NOT 成为第二个时间轴事件节点
+
+### Requirement: 事件 / source 背书本次抽出的概念 / 事实
+
+图更新（⑤）后，⓪ 建的事件与 source 节点 SHALL 对**本次新建 / 命中的概念 / 事实**连 `事件 → 概念 / 事实`、`source → 概念 / 事实` 的 `关联` 背书边（方向固定，事件 / source 为源端）。载重规则 MUST 不变：核心节点（`node_class ∈ {概念, 事实}`）的 `get_relations` MUST 仍过滤对端为事件的边。
+
+#### Scenario: 背书连边且不破载重
+
+- **WHEN** 一次 ingest 抽出概念 C / 事实 F，⓪ 建了事件 E（及 source S）
+- **THEN** MUST 存在 `E → C` / `E → F`（及 `S → C` / `S → F`）的 `关联` 边
+- **AND** `get_relations(C)`（核心节点）MUST NOT 含 `E → C` 事件边
+- **AND** `get_related_events(C)` MUST 可达 E
+
+#### Scenario: source 规则切分
+
+- **WHEN** `IngestInput.source` 提供多个 chunks
+- **THEN** 每个 chunk MUST 建一个 source 节点（保真、不经 LLM）
+- **AND** 各 source 节点 MUST 对本次抽出的概念 / 事实连关联背书边
+
+### Requirement: WriteContext 携带规则入库产物
+
+`WriteContext` SHALL 额外携带 ⓪ 规则入库的产物：本次事件节点与 source 节点列表，供 ⑤ 背书连边与 ⑦ 落盘引用。此为对既有八个生命周期字段的补充，MUST NOT 移除既有字段。
+
+#### Scenario: ctx 暴露事件 / source 产物
+
+- **WHEN** ⓪ 规则入库完成
+- **THEN** `ctx` MUST 暴露本次事件节点与 source 节点列表
+- **AND** ⑤ MUST 能据此连背书边、⑦ MUST 能据此落盘
+

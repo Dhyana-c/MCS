@@ -5,13 +5,13 @@
 ## Requirements
 ### Requirement: 核心库提供共享结果渲染纯函数
 
-核心库 SHALL 在 `mcs/rendering.py` 提供两个**公开纯函数**，把 MCS 查询/写入结果转为人/LLM 可读文本，供应用层（`mcs_mcp`、`mcs_agent`）复用。这两个函数 MUST NOT 依赖任何应用包或 mcp SDK，仅依赖 `mcs.core.context_renderer` 与 `mcs.entities.graph`（依赖方向 `rendering → core`，无环）。
+核心库 SHALL 在 `mcs/rendering.py` 提供两个**公开纯函数**，把 MCS 查询 / 写入结果转为人 / LLM 可读文本，供应用层（`mcs_mcp`、`mcs_agent`）复用。这两个函数 MUST NOT 依赖任何应用包或 mcp SDK，仅依赖 `mcs.core.context_renderer` 与 `mcs.entities.graph`（依赖方向 `rendering → core`，无环）。
 
 #### Scenario: query 结果渲染
 
-- **WHEN** 调用 `render_query_result(result, relation_model, plugin_manager)`
+- **WHEN** 调用 `render_query_result(result, plugin_manager)`
 - **THEN** `result` 为 `str`（postprocess 已转换）MUST 原样透传
-- **AND** `result` 为 `Subgraph` MUST 经 `ContextRenderer.render_facts(nodes, edges, mode=relation_model)` 渲染并返回文本
+- **AND** `result` 为 `Subgraph` MUST 经 `ContextRenderer.render_facts(nodes, edges)` 渲染并返回文本（关系边 `主 — 宾`，无 `relation_model` 参数）
 - **AND** 其余类型 MUST 兜底 `str(result)`，MUST NOT 返回原始对象 / 内部结构
 
 #### Scenario: ingest 状态摘要

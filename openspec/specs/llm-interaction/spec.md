@@ -42,75 +42,38 @@ The system SHALL define a unified LLM call signature: `call(purpose: str, nodes_
 
 ### Requirement: select_facts 渲染为统一编号的事实条目
 
-`ContextRenderer` SHALL 提供 `render_facts(nodes, edges) -> str`，将节点与事实边按**单一连续编号**（①②③… 跨节点与事实边单调递增、节点在前事实边在后）平铺：节点为 `① name (id=xxx)\n  content`，事实边为 `② 主 —label→ 宾`。框架 MUST 维护「编号 → 节点 / 事实边」映射，供 parser 回查。事实边渲染 MUST 与 token 估算共用同一函数（铁律一）。`select_facts` prompt MUST 指导 LLM 返回选中的事实编号列表。
+`ContextRenderer` SHALL 提供 `render_facts(nodes, edges) -> str`，将节点（概念 / 命题）与关系边（`关联` / `互斥`）按**单一连续编号**（①②③… 跨节点与边单调递增、节点在前边在后）平铺：节点为 `① name (id=xxx)\n  content`，关系边为 `② 主 — 宾`（**无 label**）。框架 MUST 维护「编号 → 节点 / 边」映射供 parser 回查。关系边渲染 MUST 与 token 估算共用同一函数（铁律一）。`select_facts` prompt MUST 指导 LLM 返回选中编号列表。
 
-#### Scenario: 事实边条目格式
+#### Scenario: 关系边条目无 label
 
-- **WHEN** 渲染事实边 `(小明, fact, "喜欢", 苹果)`
-- **THEN** 输出 MUST 为 `② 小明 —喜欢→ 苹果` 格式（带编号）
+- **WHEN** 渲染关联边连 `小明` 与命题节点
+- **THEN** 输出 MUST 为 `小明 — <命题>` 形式，MUST NOT 含 label
 
-#### Scenario: 渲染与估算同口径
+#### Scenario: 估算复用渲染函数
 
-- **WHEN** 估算事实边 token
-- **THEN** MUST 调用渲染事实边的同一函数再计 token，MUST NOT 用近似公式
+- **WHEN** 估算关系边 token
+- **THEN** MUST 调用渲染关系边的同一函数再计 token，MUST NOT 用近似公式
 
-#### Scenario: parser 返回编号列表
+#### Scenario: parser 回查编号
 
-- **WHEN** LLM 返回 `[1, 3, 4]`
-- **THEN** parser MUST 返回 `list[int]`，框架据编号映射回节点 / 事实边
-
----
-
-### Requirement: judge_relations 输出事实边 label
-
-本要求定义 **`property_graph` 模式**（默认）的 `judge_relations` 行为；`attribute_node` 模式见下方「attribute_node 模式 judge_relations 不产 label」。`property_graph` 模式下，`judge_relations` prompt MUST 指导 LLM 为**每条有向关系**输出一个粗粒度 label。Decision 的 `edges_to`（到已有节点）与 `edges_to_names`（到同批新概念）MUST 均为 `list[dict]`，每项含 `target_id`（或 `target_name`）与 `label`。**一条关系 = 一个方向 + 一个 label**：写入时只存一份事实边、两端可达，MUST NOT 自动生成反向 label 副本。
-
-#### Scenario: edges_to / edges_to_names 含 label
-
-- **WHEN** （`property_graph` 模式）`judge_relations` 返回 create 决策
-- **THEN** `edges_to` MUST 为 `[{"target_id": "...", "label": "喜欢"}, ...]`；`edges_to_names` MUST 为 `[{"target_name": "...", "label": "..."}, ...]`
-
-#### Scenario: 一条关系一个方向一个 label
-
-- **WHEN** （`property_graph` 模式）judge_relations 判定 A 对 B 有关系"喜欢"
-- **THEN** MUST 输出一条 `A→B label="喜欢"`（存一份、两端可达）；MUST NOT 自动生成 `B→A` 反向 label 副本
-
-#### Scenario: 反向若是不同关系则为独立事实
-
-- **WHEN** （`property_graph` 模式）A、B 间还存在方向相反、语义不同的关系（如 B 对 A 是"营养来源"）
-- **THEN** 那是**另一条独立事实** `B→A label="营养来源"`（同样存一份）；二者 MAY 并存——同一对节点允许多条方向 / 语义不同的事实边
+- **WHEN** LLM 返回选中编号
+- **THEN** parser MUST 返回 `list[int]`，框架据编号映射回节点 / 边
 
 ---
 
-### Requirement: attribute_node 模式 judge_relations 不产 label
+### Requirement: judge_relations 产命题节点 + 关联边（不产 label）
 
-`attribute_node` 模式下，`judge_relations` SHALL 走专属 prompt（经 `prompt_overrides` 按模式注入或按模式选 purpose）：MUST NOT 输出关系 label；MUST 输出"为关系建 / 并属性节点 + 连无类型边"的决策意图（属性节点 name/content + 端点 id/name）。其 parser MUST 解析为对应决策类型，端点解析沿用 id / 同批 name 双轨。
+`judge_relations` prompt MUST 指导 LLM 把关系判定为**建 / 复用命题（事实）节点 + 连 `关联` 边**（谓词落命题节点 `content`），MUST NOT 产出关系 `label`、MUST NOT 按 `relation_model` 分模式。互斥 MUST 表示为两个事实节点间的 `互斥` 边。Decision 的 `edges_to` / `edges_to_names` MUST NOT 含 `label` 字段。
 
-#### Scenario: attribute_node prompt 不含 label
+#### Scenario: 关系判定不产 label
 
-- **WHEN** `attribute_node` 模式调用 `judge_relations`
-- **THEN** 返回决策 MUST NOT 含关系 label 字段；MUST 表达属性节点与其端点
+- **WHEN** `judge_relations` 判定两节点有关系
+- **THEN** 决策 MUST 表达"建 / 并命题节点 + 连关联边"意图，`edges_to` / `edges_to_names` MUST NOT 含 `label`
 
-#### Scenario: 端点 id / 名称双轨解析
+#### Scenario: 不同方向 / 语义的关系各建命题
 
-- **WHEN** 关系端点为已存在节点或同批新概念
-- **THEN** parser MUST 分别按 id 与按名解析（沿用 `edges_to` / `edges_to_names` 的双轨），但 MUST NOT 携带 label
-
----
-
-### Requirement: attribute_node 模式 assoc 边渲染无 label
-
-`ContextRenderer` SHALL 提供 `render_assoc_edge(edge) -> str`，将无类型关联边渲染为 `主 — 宾`（**无 label**）。`attribute_node` 模式的 `render_facts` MUST 用它平铺关联边条目；token 估算 MUST 复用 `render_assoc_edge` 同一函数（铁律一），MUST NOT 用近似公式。属性节点 MUST 按普通节点渲染（name+content）。
-
-#### Scenario: 关联边条目格式
-
-- **WHEN** 渲染关联边 `(小明, 小明的爱好)`
-- **THEN** 输出 MUST 为 `小明 — 小明的爱好` 形式（带编号，无 label）
-
-#### Scenario: 关联边渲染与估算同口径
-
-- **WHEN** 估算关联边 token
-- **THEN** MUST 调用 `render_assoc_edge` 同一函数再计 token，MUST NOT 用近似公式
+- **WHEN** A 与 B 之间有多种关系
+- **THEN** 每种关系 MUST 各建一个命题节点（各自 content），MUST NOT 用多 label 边表达
 
 ### Requirement: 框架统一序列化节点对象
 

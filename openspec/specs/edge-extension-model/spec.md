@@ -5,7 +5,7 @@ TBD - created by archiving change edge-extension-model. Update Purpose after arc
 ## Requirements
 ### Requirement: 边的可扩展字段模型
 
-系统 SHALL 提供与节点对称的边扩展机制：`Edge` MUST 持有 `extensions: dict[str, Any]`（默认空字典），插件经 `EdgeExtensionInterface` 向其挂载字段。边扩展数据 MUST 随边对象**逐条保真**：SQLite 经 `extensions_json` 列编解码、内存 store 直接持有；**两端反查**（`get_facts` / `get_assoc`）返回的同一边对象 MUST 带完整 `extensions`；**重组**（fanout 合并迁移）与**快照 / 回滚** MUST 保真复制 `extensions`（独立 dict，不共享引用）。未挂任何边扩展时，写入 / 查询 / 渲染 / 守门行为 MUST 与本变更前**逐字一致**。
+系统 SHALL 提供与节点对称的边扩展机制：`Edge` MUST 持有 `extensions: dict[str, Any]`（默认空字典），插件经 `EdgeExtensionInterface` 向其挂载字段。边扩展数据 MUST 随边对象**逐条保真**：SQLite 经 `extensions_json` 列编解码、内存 store 直接持有；**两端反查**（`get_relations`）返回的同一边对象 MUST 带完整 `extensions`；**重组**（fanout 合并迁移）与**快照 / 回滚** MUST 保真复制 `extensions`（独立 dict，不共享引用）。未挂任何边扩展时，写入 / 查询 / 渲染 / 守门行为 MUST 与本变更前**逐字一致**。
 
 #### Scenario: 边持有扩展字段并保真
 
@@ -14,7 +14,7 @@ TBD - created by archiving change edge-extension-model. Update Purpose after arc
 
 #### Scenario: 扩展字段随反查可见
 
-- **WHEN** 边 `A —label→ B` 带 `extensions["activity"]=3`，分别 `get_facts(A)` 与 `get_facts(B)`
+- **WHEN** 关联边连 A 与 B 带 `extensions["activity"]=3`，分别 `get_relations(A)` 与 `get_relations(B)`
 - **THEN** 两端返回的边对象 MUST 都带 `extensions["activity"]==3`
 
 #### Scenario: 重组保真
@@ -52,7 +52,7 @@ TBD - created by archiving change edge-extension-model. Update Purpose after arc
 
 ### Requirement: 字段级渲染可见性
 
-边 / 节点的每个扩展字段 SHALL 自行决定在某 `purpose` 下是否渲染：`render(node/edge, purpose)` 返回片段=可见、返回 `None`=隐藏、MUST NOT 进入渲染文本。边渲染函数 `render_fact_edge` / `render_assoc_edge` MUST 接受 `purpose`（与 `extensions`）参数，使按 purpose 切换可见性可实现；`render_facts` MUST 把其 `purpose` 透传给边渲染。
+边 / 节点的每个扩展字段 SHALL 自行决定在某 `purpose` 下是否渲染：`render(node/edge, purpose)` 返回片段=可见、返回 `None`=隐藏、MUST NOT 进入渲染文本。边渲染函数 MUST 接受 `purpose`（与 `extensions`）参数，使按 purpose 切换可见性可实现；`render_facts` MUST 把其 `purpose` 透传给边渲染。
 
 本要求仅约束**渲染侧**。其与 token 估算的一致性按下条"边渲染 / 估算的查询侧一致性"处理；本要求 MUST NOT 被解读为要求修改守门估算（守门不渲染 / 不估算关系边，见 `plugin-protocol` 可见性契约与本变更 design D3）。
 
@@ -64,18 +64,18 @@ TBD - created by archiving change edge-extension-model. Update Purpose after arc
 #### Scenario: 不同 purpose 可见性不同
 
 - **WHEN** 一个边扩展在 `purpose="select_facts"` 返回片段、在 `purpose="decide_hub"` 返回 `None`
-- **THEN** 框架 MUST 仅在 `select_facts` 渲染时含该片段；`render_fact_edge` / `render_assoc_edge` MUST 据传入的 `purpose` 做此区分
+- **THEN** 框架 MUST 仅在 `select_facts` 渲染时含该片段；边渲染函数 MUST 据传入的 `purpose` 做此区分
 
 ---
 
 ### Requirement: 边渲染 / 估算的查询侧一致性
 
-边的 token 估算 SHALL 与边渲染**同口径**：`estimate_fact_edge` / `estimate_assoc_edge` MUST 委托对应 `render_fact_edge` / `render_assoc_edge` 取文本后估算（**MUST NOT** 为扩展字段另开估算公式 / 路径）；当渲染函数增 `extensions` / `purpose` 参时，估算函数 MUST 透传同参，使可见扩展片段在两侧一致。此一致性服务于**查询侧** token 计数正确性（`render_facts` 渲染事实给 LLM 的真实窗口；及 Phase 2 对查询视图按 `priority` 截断），**不涉及守门铁律一**（守门不估算关系边）。
+边的 token 估算 SHALL 与边渲染**同口径**：估算函数 MUST 委托对应渲染函数取文本后估算（**MUST NOT** 为扩展字段另开估算公式 / 路径）；当渲染函数增 `extensions` / `purpose` 参时，估算函数 MUST 透传同参，使可见扩展片段在两侧一致。此一致性服务于**查询侧** token 计数正确性（`render_facts` 渲染事实给 LLM 的真实窗口；及 Phase 2 对查询视图按 `priority` 截断），**不涉及守门铁律一**（守门不估算关系边）。
 
 #### Scenario: 估算委托渲染、含可见扩展
 
-- **WHEN** 一条边带可见扩展片段（其 `render(edge, purpose)` 返回片段），在该 purpose 下被 `estimate_fact_edge` 估算
-- **THEN** 估算值 MUST 等于含该片段的实际渲染文本的 token 量（经委托 `render_fact_edge` 取得，非独立公式）
+- **WHEN** 一条边带可见扩展片段（其 `render(edge, purpose)` 返回片段），在该 purpose 下被估算
+- **THEN** 估算值 MUST 等于含该片段的实际渲染文本的 token 量（经委托渲染函数取得，非独立公式）
 
 #### Scenario: 隐藏字段不计入
 

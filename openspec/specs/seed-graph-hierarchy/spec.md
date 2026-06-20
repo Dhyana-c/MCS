@@ -1,7 +1,7 @@
 # seed-graph-hierarchy Specification
 
 ## Purpose
-定义种子图层级结构的核心规则：双类型单向边模型（层级边 + 事实边）、有向邻接原语（含事实反查）、导航沿出边下钻、层级骨架由 role 识别、递归 bounding 抗退化。
+定义种子图层级结构的核心规则：统一边模型（关联 / 互斥）、有向邻接原语（含关系反查）、核心 BFS 导航、层级骨架由 hub 标记识别、递归 bounding 抗退化。
 
 ## Requirements
 
@@ -23,64 +23,59 @@
 
 ### Requirement: 全图单向边模型
 
-图中所有边 MUST 为单向边 `source → target`，MUST NOT 存在 `bidirectional` 边类型。边分两类 `kind`：
+图中所有边 MUST 为单向边 `source → target`，MUST NOT 存在 `bidirectional` 边类型。边类型仅 `关联` / `互斥`：
 
-- **层级边** `父→子`：纯下行、无 label，MUST NOT 建立成员到原父的上行边。
-- **事实边** `主→宾`：带非空 label，承载语义关系。
+- **关联** `主 — 宾`：结构基础边，两端可达；承载"事实节点 ↔ 端点""概念间关联""聚类形成的组织中心 ↔ 成员"。
+- **互斥** `事实 ↔ 事实`：当前唯一语义类型。
 
-事实关系 MUST 以**单条带方向 label 的事实边**表达、**两端可达（反查）**，MUST NOT 再落 `a→b` 与 `b→a` 两条对向单向边。边持久化 MUST 在 `save_full` / `load` 后逐条保真（含 `kind` / `label` / `priority`）。
+**无独立"层级 / 事实"边**——关系语义改由**命题（事实）节点**承载（谓词落 content）；组织层级由聚类涌现（关联 + hub 标记）。关系边 MUST 只存一份、两端可达，MUST NOT 落对向副本。边持久化 MUST 在 `save_full` / `load` 后逐条保真（含 `type` / `priority`）。
 
-#### Scenario: 事实关系落单条事实边、两端可达
+#### Scenario: 关系落命题节点 + 关联边、两端可达
 
-- **WHEN** `judge_relations` 为概念 a 与锚点 b 建立语义关系 `a —label→ b`
-- **THEN** 图中 MUST 存在**一条** `kind="fact"` 边；`get_facts(a)` 与 `get_facts(b)` MUST 都能取到它；MUST NOT 存在反向副本 `b→a`
-
-#### Scenario: 层级边为纯下行无上行
-
-- **WHEN** 基于社区 `{b,c}` 为中心 a 选定 hub d
-- **THEN** 图中 MUST 存在下行层级边 `a→d`、`d→b`、`d→c`；MUST NOT 建立上行边 `b→a`、`c→a`
+- **WHEN** `judge_relations` 为概念 a 与 b 建立关系
+- **THEN** MUST 建命题节点（含谓词）+ `a —关联— 命题`、`命题 —关联— b`；`get_relations(a)` 与 `get_relations(b)` 经命题可达；MUST NOT 建带 label 事实边、MUST NOT 落反向副本
 
 #### Scenario: 边持久化保真
 
-- **WHEN** 含层级边与事实边的图经 `save_full` 落库再 `load`
-- **THEN** 加载后的边集合 MUST 与落库前逐条一致（含 `kind` / `label` / `priority`）
+- **WHEN** 含关联 / 互斥边的图 `save_full` 后 `load`
+- **THEN** 加载后的边集合 MUST 与落库前逐条一致（含 `type` / `priority`）
 
 ---
 
 ### Requirement: 单一有向邻接原语
 
-`StoreInterface` MUST 区分两种邻接查询：`get_out_hierarchy(node)` 返回该节点的**层级出边目标**（出邻居，驱动下钻）；`get_facts(node)` 返回该节点作**源或宾**的事实边（**反查**，两端可达）。`add_edge` MUST 带 `kind` 区分边类型，MUST NOT 含 `direction` 参数。
+`StoreInterface` MUST 区分两种邻接查询：`get_out_hierarchy(node)` 返回该节点的**下钻成员**（组织出边目标）；`get_relations(node)` 返回该节点作**任一端**的 `关联` / `互斥` 边（**反查**，两端可达）。`add_edge` MUST 带 `type`，MUST NOT 含 `kind` / `label` / `direction` 参数。
 
-#### Scenario: 层级邻居只含出边目标
+#### Scenario: 下钻邻居只含组织出边目标
 
-- **WHEN** 存在 `a→d`（层级）与 `x→a`（层级）
-- **THEN** `get_out_hierarchy(a)` MUST 含 `d`；MUST NOT 含 `x`
+- **WHEN** 节点 a 作组织中心、下挂成员 d
+- **THEN** `get_out_hierarchy(a)` MUST 含 d
 
-#### Scenario: 事实反查含两端
+#### Scenario: 关系反查含两端
 
-- **WHEN** 存在事实边 `小明 —喜欢→ 苹果`
-- **THEN** `get_facts(小明)` 与 `get_facts(苹果)` MUST 都包含这条事实
+- **WHEN** 存在关联边连 a 与命题 p
+- **THEN** `get_relations(a)` 与 `get_relations(p)` MUST 都包含这条边
 
-#### Scenario: add_edge 带 kind、无方向参数
+#### Scenario: add_edge 带 type、无方向参数
 
-- **WHEN** 调用 `add_edge(a, b, kind="fact", label="喜欢")`
-- **THEN** 仅按 `source→target` 加入；签名 MUST NOT 含 `direction`
+- **WHEN** 调用 `add_edge(a, b, type="关联")`
+- **THEN** 仅按 `source→target` 加入；签名 MUST NOT 含 `kind` / `label` / `direction`
 
 ---
 
 ### Requirement: 自顶向下导航沿全部单向出边
 
-导航 MUST 以**字面实体链接（jieba foothold）**为主入口取得种子；`__seed_root__` 下钻仅作孤儿 / 最后兜底，MUST NOT 作主入口。遍历为**事实 BFS**：每访问一个节点，渲染其**活跃双向视图**（出事实 + 入事实（反查）+ 层级邻居），LLM 选事实，选中事实补入端点。系统 MUST 以 `visited` 防环、以深度封顶；骨架顶点为持久虚拟根 `__seed_root__`。
+导航 MUST 以**字面实体链接（jieba foothold）**为主入口取得种子；`__seed_root__` 下钻仅作孤儿 / 最后兜底。遍历为**核心 BFS**：每访问一个节点，渲染其**活跃双向视图**（该节点的 `关联` 邻居（命题 / 概念，反查）+ 下钻邻居），LLM 选相关命题 / 邻居，选中补入端点。系统 MUST 以 `visited` 防环、以深度封顶；骨架顶点为持久虚拟根 `__seed_root__`。**事件默认不进视图**。
 
 #### Scenario: 主入口为 jieba foothold
 
 - **WHEN** query 含图中某概念的名 / 别名
 - **THEN** 系统 MUST 经 jieba 字面匹配将其定位为种子；`__seed_root__` 下钻 MUST 仅在无任何字面命中时兜底
 
-#### Scenario: 事实参与导航并可反查
+#### Scenario: 关联邻居参与导航并可反查
 
 - **WHEN** 从某节点遍历
-- **THEN** 其出事实与入事实（反查）MUST 都作为可选事实条目供 LLM 选取
+- **THEN** 其关联邻居（命题 / 概念，含反查）MUST 都作为可选条目供 LLM 选取
 
 #### Scenario: visited 防环
 
@@ -89,16 +84,16 @@
 
 ---
 
-### Requirement: 层级骨架由节点 role 识别
+### Requirement: 层级骨架由 hub 标记识别
 
-系统判定"谁是组织中心（hub）"MUST 依据节点的 `role`（`role=="hub"`），MUST NOT 依据边的方向/类型（单向无类型后边不携带层级信息）。被提拔为组织中心的已有概念 MUST 将其 `role` 置为 `"hub"`；hub 渲染给 LLM 时仍与普通概念同构（name+content、无特殊标记）。
+系统判定"谁是组织中心（hub）"MUST 依据节点的 **`hub` 标记**，MUST NOT 依据 `role`（已无 role 分类轴）、MUST NOT 依据边方向 / 类型。被提拔为组织中心的已有概念 / 事实 MUST 打上 `hub` 标记；hub 渲染给 LLM 时仍与普通节点同构（name+content、无特殊标记）。
 
-#### Scenario: 提拔已有概念为 hub
+#### Scenario: 提拔已有节点为 hub
 
-- **WHEN** 裂变选定一个已有子节点作为组织中心
-- **THEN** 该节点 `role` MUST 置为 `"hub"`；其作为骨架中心的身份 MUST 由 role 而非边类型体现
+- **WHEN** 裂变选定一个已有节点作为组织中心
+- **THEN** 该节点 MUST 打 `hub` 标记；其骨架中心身份 MUST 由标记体现，MUST NOT 由 `role` 或边类型体现
 
-#### Scenario: 骨架遍历依据 role
+#### Scenario: 骨架遍历依据 hub 标记
 
 - **WHEN** hub 复用 / 裂变需要枚举图中的 hub
-- **THEN** MUST 以 `role=="hub"` 判定；MUST NOT 依据边方向推断
+- **THEN** MUST 以 `hub` 标记判定；MUST NOT 依据 `role` 或边方向推断

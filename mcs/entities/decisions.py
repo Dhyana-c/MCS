@@ -150,3 +150,32 @@ class SourceData:
     chunks: list[dict[str, Any]] = field(default_factory=list)
     target_ids: list[str] = field(default_factory=list)
     extensions: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class IngestInput:
+    """统一 ``ingest`` 的结构化输入（``str`` 入参经归一化也转成它）。
+
+    宪法 §5.1：一次 ``ingest`` 走完"规则建事件 + source → LLM 抽 content 的概念 / 事实 →
+    事件 / source 背书连边"。本结构把"走 LLM 的正文"与"规则消费的元信息"分清——只有
+    ``content`` 进 LLM；``timestamp`` / ``source`` / ``event_name`` 仅由规则消费、不经 LLM。
+
+    字段分工：
+
+    - ``content``：唯一进入 LLM 概念 / 事实抽取的字段（也是事件节点记录的正文）。
+    - ``timestamp``：记录时间（ISO 8601）；``None`` → 入库时取 now。落事件节点
+      ``extensions.event_meta.timestamp``，供 ``get_related_events`` 时间倒排截断。
+    - ``source``：可选原始资料，按 ``SourceData`` 规则切分为 source 节点（不经 LLM）。
+      统一 ingest 内其背书目标 = 本次抽出的概念 / 事实（``SourceData.target_ids`` 通常留空）。
+    - ``event_name``：事件节点 name；``None`` → 由 content 截断规则派生。
+    - ``metadata``：自由元数据，并入 ``WriteContext.metadata``（与既有 ``**metadata``
+      kwargs 同域，如 doc_id / chunk_id）。
+
+    ``str`` 入参等价于 ``IngestInput(content=text)``（now 时间戳、无 source）。
+    """
+
+    content: str
+    timestamp: str | None = None
+    source: SourceData | None = None
+    event_name: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)

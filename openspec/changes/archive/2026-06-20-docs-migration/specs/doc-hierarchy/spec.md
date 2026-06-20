@@ -1,24 +1,8 @@
-## Purpose
+# Spec Delta: doc-hierarchy（文档体系迁移——对齐统一图模型）
 
-定义文档层级规范与索引体系：三层划分（L1 入口层 / L2 概念层 / L3 规范层）、docs/ 目录结构、README 精简规范、开源必备文档、文档链接完整性。
-## Requirements
-### Requirement: 文档总索引
+> 本 delta 在现有 `doc-hierarchy` 能力上，删除旧模型专属文档需求、更新 docs 目录必需文件清单、补齐统一图模型下的新文档契约。
 
-系统 SHALL 在 `docs/INDEX.md` 提供统一的文档导航入口，覆盖项目中所有文档的定位信息。
-
-#### Scenario: INDEX.md 存在且可导航
-
-- **WHEN** 用户打开 `docs/INDEX.md`
-- **THEN** 文件包含按层级（L1 入口层 / L2 概念层 / L3 规范层）组织的文档索引
-- **AND** 每个条目包含文档名称、路径、一句话描述
-- **AND** 所有路径使用相对链接且链接目标存在
-
-#### Scenario: INDEX.md 涵盖主要文档
-
-- **WHEN** 遍历项目中所有 .md 文档文件
-- **THEN** 每个主要文档在 INDEX.md 中有且仅有一个条目
-- **AND** 条目按所属层级正确归类
-- **AND** stub 文件、`.openspec.yaml` 等辅助文件不需要索引
+## MODIFIED Requirements
 
 ### Requirement: docs 目录结构
 
@@ -35,29 +19,6 @@
 - **WHEN** 检查 `docs/` 目录下所有 .md 文件
 - **THEN** 无文件包含 SHALL/MUST 形式的契约性规范定义
 - **AND** 无文件与 `openspec/specs/` 下的 spec 内容逐字重复
-
-### Requirement: README 精简
-
-根目录 `README.md` SHALL 仅包含项目定位、核心赌注、快速开始、文档导航、评测导航、贡献指南链接、许可证链接。
-
-#### Scenario: README 结构符合开源惯例
-
-- **WHEN** 检查 `README.md` 内容
-- **THEN** 包含以下章节：项目定位、核心赌注、快速开始、文档、评测、贡献、许可证
-- **AND** 不包含架构详解、管线段定义、插件列表等架构详解内容
-- **AND** 不包含评测 CLI 参数、评测架构、输出文件等评测详解内容
-- **AND** 不包含项目结构树、模式配置表、开发状态、依赖列表等
-
-#### Scenario: README 包含文档导航
-
-- **WHEN** 检查 `README.md` "文档"章节
-- **THEN** 链接到 `docs/INDEX.md`
-
-#### Scenario: README 包含开源文档导航
-
-- **WHEN** 检查 `README.md`
-- **THEN** "贡献"章节链接到 `CONTRIBUTING.md`
-- **AND** "许可证"章节链接到 `LICENSE`
 
 ### Requirement: 架构总览文档
 
@@ -82,65 +43,7 @@
 - **THEN** 匹配数为 0
 - **AND** 可找到 `node_class`（4 类节点）、`type`（关联 / 互斥）、`extensions["hub"]` 标记、`get_relations`、载重规则的说明
 
-### Requirement: 已知问题文档
-
-系统 SHALL 在 `docs/known-issues.md` 仅记录未修复的问题。
-
-#### Scenario: 已知问题列表不含已修复项
-
-- **WHEN** 打开 `docs/known-issues.md`
-- **THEN** 所有条目均为未修复的开放问题
-- **AND** 不包含已标记为 [x] 的已修复项
-
-### Requirement: 变更历史索引
-
-系统 SHALL 在根目录 `CHANGELOG.md` 提供变更历史的概览索引。
-
-#### Scenario: CHANGELOG 涵盖所有归档 change
-
-- **WHEN** 打开 `CHANGELOG.md`
-- **THEN** 包含 `openspec/changes/archive/` 下所有归档 change 的条目
-- **AND** 每个条目包含日期、change 名称、简要描述
-
-#### Scenario: CHANGELOG 按时间倒序
-
-- **WHEN** 检查 `CHANGELOG.md` 条目顺序
-- **THEN** 条目按归档日期从新到旧排列
-
-### Requirement: 贡献指南
-
-系统 SHALL 在根目录 `CONTRIBUTING.md` 提供贡献指南。
-
-#### Scenario: CONTRIBUTING.md 包含必要内容
-
-- **WHEN** 打开 `CONTRIBUTING.md`
-- **THEN** 包含环境搭建、开发流程、提交规范
-- **AND** 内容可操作（步骤明确，不空洞）
-
-### Requirement: 许可证
-
-系统 SHALL 在根目录 `LICENSE` 提供开源许可证。
-
-#### Scenario: LICENSE 存在
-
-- **WHEN** 检查根目录
-- **THEN** 存在 `LICENSE` 文件，内容为有效的开源许可证文本
-
-### Requirement: 文档链接完整性
-
-所有文档中的内部链接 SHALL 指向有效目标。
-
-#### Scenario: 无断裂链接
-
-- **WHEN** 检查项目中所有 .md 文件中的相对链接
-- **THEN** 每个链接的目标文件在项目中存在
-- **AND** 迁移后原位置的 stub 文件正确指向新位置
-
-#### Scenario: 迁移后原位置留 stub
-
-- **WHEN** 文档从位置 A 迁移到位置 B
-- **THEN** 位置 A 保留 stub 文件，内容为"本文档已迁至 [B 的相对路径]"
-- **AND** stub 文件不包含过期内容
+## ADDED Requirements
 
 ### Requirement: getting-started.md 上手指南
 
@@ -256,3 +159,16 @@
 - **WHEN** 对应代码已合并到 main
 - **THEN** 文档版本标注为 `v1.0` 或更高，且不含"草稿"/"尚未实现"措辞
 
+## REMOVED Requirements
+
+### Requirement: 核心流程文档
+
+**Reason**: `docs/core-flows.md` 被 `graph-model-design.md` §5（写入 / 查询流程）完全覆盖且更详细更正确；维护两份会造成分歧。该文件随本 change 删除。
+
+**Migration**: 读者参阅 `graph-model-design.md` §5.1（写入管线）与 §5.2（查询管线）。
+
+### Requirement: 技术方案文档
+
+**Reason**: `docs/technical-design.md` 整篇基于旧双模式模型（属性节点 / label 边 / role / relation_model），与统一图模型根本矛盾、无法修补。该文件随本 change 删除。
+
+**Migration**: 读者参阅 `graph-model-design.md`（统一图模型的权威设计）。

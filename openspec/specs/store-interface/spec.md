@@ -7,69 +7,58 @@
 
 ### Requirement: StoreInterface 定义统一存储抽象基类
 
-`StoreInterface` SHALL 提供区分 `kind`、支持事实边 / 关联边两端可达与 priority 排序的边 API：
+`StoreInterface` SHALL 提供基于 `type`、支持关系边两端可达与 priority 排序的边 API：
 
 **边 CRUD：**
-- `add_edge(source_id, target_id, kind="hierarchy", label="", priority=0.0) -> str` — `kind` MUST 为 `"hierarchy"`、`"fact"` 或 `"assoc"`；事实边（`fact`）`label` MUST 非空，层级边（`hierarchy`）与关联边（`assoc`）`label` MUST 为空串
-- `delete_edge(edge_id)` / `update_edge(edge_id, **fields)` — 以**边 `id`** 为键（`add_edge` 返回的 `id`）
-- `get_edges_between(source_id, target_id) -> list[Edge]` — 两节点间**全部**边；**取代旧 `get_edge(source, target)`**——同对节点可有多条 fact 边后单返回语义歧义，故 `get_edge(source, target)` 移除
+- `add_edge(source_id, target_id, type="关联", priority=0.0) -> str` — `type` MUST ∈ 已登记类型（当前 `关联` / `互斥`）；MUST NOT 接受 `kind` / `label` 参数
+- `delete_edge(edge_id)` / `update_edge(edge_id, **fields)` — 以**边 `id`** 为键
+- `get_edges_between(source_id, target_id) -> list[Edge]` — 两节点间全部边
 
-**层级（骨架）查询：**
-- `get_out_hierarchy(node_id) -> list[Node]` — 该节点的层级出边目标（驱动导航下钻）
+**下钻（组织骨架）查询：**
+- `get_out_hierarchy(node_id) -> list[Node]` — 该节点作组织中心时的下钻成员（由聚类涌现的关联 + hub 标记表达，驱动导航下钻）
 
-**事实（双向可达）查询：**
-- `get_facts(node_id, limit=None) -> list[Edge]` — 返回该节点作**源或宾**的事实边（反查，供查询视图）。**Phase 2** 按 `priority` 降序、`limit` 截断 top-K；**Phase 1** `priority` 未用，返回全部（`limit` 仅作可选上限）
-- `get_out_facts(node_id, limit=None) -> list[Edge]` — 仅返回该节点**为源**的事实出边（供 **Phase 2 查询视图估算 / 写入**；fanout 触发口径**不含事实**，见 `subgraph-bounding`「fanout 口径不含事实」）
+**关系（两端可达）查询：**
+- `get_relations(node_id, limit=None) -> list[Edge]` — 返回该节点作**任一端**的 `关联` / `互斥` 边（反查，供查询视图）。**取代 `get_facts` / `get_out_facts` / `get_assoc`**。**载重规则（核心不反查事件）**：当 `node` 为**核心节点**（`node_class ∈ {概念, 事实}`）时，MUST 过滤掉**对端为事件**（`node_class=事件`）的关联边——核心节点取不到事件边；事件节点（`node_class=事件`）侧 `get_relations` 仍可达其连向核心的边。**Phase 2** 在过滤后的边集上按 `priority` 降序、`limit` 截断 top-K；**Phase 1** 返回全部（`limit` 仅作可选上限，载重过滤仍生效）。
 
-**关联（无类型、双向可达）查询（`attribute_node` 模式）：**
-- `get_assoc(node_id, limit=None) -> list[Edge]` — 返回该节点作**任一端**的 `kind="assoc"` 无类型关联边（反查，供 `attribute_node` 模式查询视图）。`property_graph` 模式通常无 assoc 边、返回空
-
-事实边 / 关联边 MUST **只存一份**（`主→宾`），但两端邻接索引 MUST 都能取到它。系统 MUST NOT 为同一边双向对存；MUST NOT 提供 `bidirectional` 边或 `direction` 参数。消费者（QueryEngine、WritePipeline、插件）MUST 依赖 `StoreInterface` 而非具体实现。
+关系边 MUST **只存一份**（`主→宾`），两端邻接索引 MUST 都能取到；MUST NOT 双向对存、MUST NOT 提供 `bidirectional` / `direction` 参数。消费者 MUST 依赖 `StoreInterface` 而非具体实现。
 
 #### Scenario: 消费者依赖统一接口
 
 - **WHEN** `QueryEngine` 或 `WritePipeline` 初始化接收 store 参数
 - **THEN** 参数类型 MUST 为 `StoreInterface`
 
-#### Scenario: get_out_hierarchy 只返回层级出边
+#### Scenario: get_out_hierarchy 只返回下钻成员
 
-- **WHEN** 节点 A 有层级出边到 H、事实边到 C
+- **WHEN** 节点 A 有下钻成员 H、关联边到 C
 - **THEN** `get_out_hierarchy(A)` MUST 只返回 H，MUST NOT 返回 C
 
-#### Scenario: get_facts 反查命中
+#### Scenario: add_edge 用 type、拒绝 kind/label
 
-- **WHEN** 存在事实边 `小明 —喜欢→ 苹果`
-- **THEN** `get_facts(小明)` 与 `get_facts(苹果)` MUST 都包含这条事实
+- **WHEN** 调用 `add_edge(A, B, type="互斥")`
+- **THEN** 系统 MUST 创建一条 `type="互斥"` 边，两端邻接索引都可取到
+- **AND** `add_edge` MUST NOT 接受 `kind` / `label` 参数
 
-#### Scenario: get_out_facts 只含出向事实
+#### Scenario: get_relations 反查命中
 
-- **WHEN** 存在事实边 `小明 —喜欢→ 苹果`
-- **THEN** `get_out_facts(小明)` MUST 含该边、`get_out_facts(苹果)` MUST NOT 含（苹果是宾，仅入向）
+- **WHEN** 存在关联边连 `小明` 与命题"小明喜欢苹果"
+- **THEN** `get_relations(小明)` 与 `get_relations(该命题)` MUST 都包含这条边
 
-#### Scenario: get_facts 反查并保留 priority 口子
+#### Scenario: 关系边只存一份
 
-- **WHEN** 调用 `get_facts(node_id, limit=K)`
-- **THEN** Phase 2 MUST 按 `priority` 降序返回前 K 条；Phase 1 返回该节点全部事实（`limit` 仅作可选上限，不依赖 priority）
+- **WHEN** 写入一条关联 / 互斥边
+- **THEN** 存储 MUST 只含一条边，MUST NOT 含其反向副本
 
-#### Scenario: 事实边只存一份
+#### Scenario: 核心节点不反查事件边
 
-- **WHEN** 写入事实 `小明 —喜欢→ 苹果`
-- **THEN** 存储 MUST 只含一条 `kind="fact"` 边，MUST NOT 含其反向副本
+- **WHEN** 存在 `事件 —关联— 概念` 边（如"用户"概念连着某事件）
+- **THEN** `get_relations("用户")` MUST NOT 返回该事件边（核心不反查事件）
+- **AND** `get_relations(该事件)` MUST 返回该边（事件侧可达核心）
+- **AND** 核心节点的 `priority` 截断 MUST 在排除事件边后的样本上进行
 
 #### Scenario: get_edges_between 返回同对全部边
 
-- **WHEN** 节点 A、B 间有 1 条 hierarchy 边与 2 条不同 label 的 fact 边
-- **THEN** `get_edges_between(A, B)` MUST 返回 3 条；`get_edge(A, B)` MUST 不再提供
-
-#### Scenario: add_edge 接受 assoc kind
-
-- **WHEN** 调用 `add_edge(A, B, kind="assoc")`
-- **THEN** 系统 MUST 创建一条 `kind="assoc"`、`label` 为空串的边，两端邻接索引都可取到
-
-#### Scenario: get_assoc 反查命中
-
-- **WHEN** 存在关联边 `小明 —assoc— 小明的爱好`
-- **THEN** `get_assoc(小明)` 与 `get_assoc(小明的爱好)` MUST 都包含这条边
+- **WHEN** 节点 A、B 间有多条边
+- **THEN** `get_edges_between(A, B)` MUST 返回全部
 
 ---
 
@@ -100,19 +89,19 @@
 
 ---
 
-### Requirement: 边持久化含 kind / label / priority
+### Requirement: 边持久化含 type / priority
 
-边表 schema MUST 含 `id, source_id, target_id, kind, label, priority`，PRIMARY KEY 为 `id`，并在 `source_id`、`target_id` 上建索引以支持两端可达查询。`save_full` / `load` round-trip MUST 逐条保真（含 kind / label / priority）。
+边表 schema MUST 含 `id, source_id, target_id, type, priority`（`type` 取代 `kind` + `label`），PRIMARY KEY 为 `id`，并在 `source_id`、`target_id` 上建索引以支持两端可达查询。`save_full` / `load` round-trip MUST 逐条保真（含 `type` / `priority` / `extensions`）。
 
-#### Scenario: 边表含新列
+#### Scenario: 边表含 type 列
 
 - **WHEN** 建表或落库边
-- **THEN** 边记录 MUST 含 `(id, source_id, target_id, kind, label, priority)`
+- **THEN** 边记录 MUST 含 `(id, source_id, target_id, type, priority)`，MUST NOT 含 `kind` / `label` 列
 
 #### Scenario: round-trip 保真
 
-- **WHEN** 含层级边与事实边的图 `save_full` 后 `load`
-- **THEN** 加载的边集合 MUST 与落库前逐条一致（含 kind / label / priority）
+- **WHEN** 含关联边与互斥边的图 `save_full` 后 `load`
+- **THEN** 加载的边集合 MUST 与落库前逐条一致（含 `type` / `priority`）
 
 ---
 
@@ -179,7 +168,7 @@
 
 #### Scenario: 与 provenance 同表共存
 
-- **WHEN** 写入图摘要且库含 provenance（`relation_model` 等）
+- **WHEN** 写入图摘要且库含 provenance（`schema_version` 等）
 - **THEN** 两者 MUST 同表共存、按 key 区分、互不覆盖
 
 #### Scenario: InMemoryStore 承载 meta

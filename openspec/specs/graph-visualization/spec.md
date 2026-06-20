@@ -5,12 +5,13 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 ## Requirements
 ### Requirement: MemoryStore graph_view 只读原语
 
-`MemoryStore` SHALL 提供只读原语 `graph_view(node_id) -> dict | None`，经单 worker 线程（`_submit`）执行：取焦点节点（`get_node`）、其层级子节点（`get_out_hierarchy`）、其关系边（按 `mcs.query_engine.relation_model` 分支：`property_graph` 取 `get_facts`、`attribute_node` 取 `get_assoc`）、关系边的**另一端节点**、以及当前 `relation_model`，序列化为 `{node, nodes, edges, relation_model}` 返回（`nodes` = 层级子节点 ∪ 关系边端点节点按 id 去重、不含焦点；`edges` = hierarchy 边 `焦点→子` ∪ 关系边）。节点不存在时返回 `None`。**调用方线程 MUST NOT 直接读 `store` / `mcs`**（线程安全铁律：MCS 非线程安全 + SQLite 线程亲和）。
+`MemoryStore` SHALL 提供只读原语 `graph_view(node_id) -> dict | None`，经单 worker 线程（`_submit`）执行：取焦点节点（`get_node`）、其下钻成员（`get_out_hierarchy`）、其关系边（`get_relations`，关联 / 互斥）、关系边的**另一端节点**，序列化为 `{node, nodes, edges}` 返回（`nodes` = 下钻成员 ∪ 关系边端点按 id 去重、不含焦点；`edges` = 下钻边 `焦点→成员` ∪ 关系边）。节点不存在时返回 `None`。**调用方线程 MUST NOT 直接读 `store` / `mcs`**（线程安全铁律）。MUST NOT 再返回 `relation_model` 键。
 
-#### Scenario: 根视图返回焦点、邻居节点、边与 relation_model
+#### Scenario: 根视图返回焦点、邻居节点、边
 
 - **WHEN** 调用 `graph_view("__seed_root__")`
-- **THEN** MUST 返回 dict，其中 `node.id == "__seed_root__"`、`nodes` 为 `get_out_hierarchy("__seed_root__")` 与（若有）关系边端点的并集、`edges` 含 hierarchy 边、且含 `relation_model` 键
+- **THEN** MUST 返回 dict，其中 `node.id == "__seed_root__"`、`nodes` 为下钻成员与（若有）关系边端点的并集、`edges` 含下钻边与关系边
+- **AND** MUST NOT 含 `relation_model` 键
 
 #### Scenario: 节点不存在返回 None
 
@@ -19,58 +20,45 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 
 #### Scenario: 孤立叶子节点邻居与边均为空
 
-- **WHEN** 调用 `graph_view("<既无层级子节点、又无关系边的叶子节点 id>")`
+- **WHEN** 调用 `graph_view("<既无下钻成员、又无关系边的叶子节点 id>")`
 - **THEN** 返回的 `nodes` MUST 为空列表 `[]`，`edges` MUST 为空列表 `[]`
 
-#### Scenario: property_graph 模式取事实边并返回端点节点
+#### Scenario: 关系边取 get_relations
 
-- **WHEN** `relation_model == "property_graph"` 时调用 `graph_view(id)`
-- **THEN** `edges` 中 `kind=="fact"` 的边 MUST 来自 `get_facts(id)`、`label` 原样保留（非空）
-- **AND** 每条 fact 边的另一端节点 MUST 出现在 `nodes` 中
-
-#### Scenario: attribute_node 模式取关联边并返回属性节点
-
-- **WHEN** `relation_model == "attribute_node"` 时调用 `graph_view(id)`
-- **THEN** `edges` 中 `kind=="assoc"` 的边 MUST 来自 `get_assoc(id)`、`label` 为空串
-- **AND** 每条 assoc 边的端点节点（`role=="attribute"` 的属性节点）MUST 出现在 `nodes` 中
+- **WHEN** 调用 `graph_view(id)`
+- **THEN** `edges` 中关系边 MUST 来自 `get_relations(id)`（`type ∈ {关联, 互斥}`，无 label）
 
 #### Scenario: 全程经单 worker 线程
 
 - **WHEN** 在 FastAPI 路由线程调用 `graph_view(id)`
-- **THEN** 实际的 `get_node` / `get_out_hierarchy` / `get_facts` / `get_assoc` 调用 MUST 在 `MemoryStore` 的单 worker 线程内执行，路由线程 MUST NOT 直接触碰 `store` / `mcs` 实例
+- **THEN** 实际的 `get_node` / `get_out_hierarchy` / `get_relations` 调用 MUST 在 `MemoryStore` 的单 worker 线程内执行，路由线程 MUST NOT 直接触碰 `store` / `mcs` 实例
 
 ---
 
 ### Requirement: graph_view 返回结构为 JSON 友好纯 dict
 
-`graph_view` 返回的 `node` 与 `nodes[*]` MUST 为 `{id, name, content, role, degree}`（`degree` = 该节点层级子数 + 关系边度数：`property_graph` 计 fact、`attribute_node` 计 assoc，供热力图热度，int 类型）；`edges[*]` MUST 为 `{id, source, target, kind, label}`（`id` 取 `edge.id`，供前端按 id 去重）；顶层 MUST 含 `relation_model`。所有字段 MUST 为 JSON 可序列化的纯值，MUST NOT 携带 dataclass 实例或内部对象引用。`nodes` MUST 按 id 去重（既为层级子节点又为关系端点的节点只出现一次）。`edges` 中 hierarchy 边 MUST 为 `{source: 焦点.id, target: 层级子.id, kind: "hierarchy", label: ""}`。
+`graph_view` 返回的 `node` 与 `nodes[*]` MUST 为 `{id, name, content, node_class, degree}`（`degree` = 下钻成员数 + 关系边度数，int，供热力图）；`edges[*]` MUST 为 `{id, source, target, type}`（`id` 取 `edge.id`，供前端按 id 去重）。所有字段 MUST 为 JSON 可序列化纯值，MUST NOT 携带 dataclass 实例 / 内部引用。`nodes` MUST 按 id 去重。下钻（组织）边 MUST 为 `{source: 焦点.id, target: 成员.id, type: "关联"}`。MUST NOT 含 `relation_model` / `kind` / `label` / `role` 字段。
 
 #### Scenario: 节点序列化字段
 
-- **WHEN** `graph_view` 返回任一节点（`node` 或 `nodes[*]`）
-- **THEN** MUST 含且仅含 `id` / `name` / `content` / `role` / `degree` 五个键，且值为 JSON 可序列化纯值
-- **AND** `degree` MUST = 该节点层级子数 + 关系边度数（`property_graph` 计 fact、`attribute_node` 计 assoc）
+- **WHEN** 序列化任一节点
+- **THEN** MUST 含且仅含 `id` / `name` / `content` / `node_class` / `degree`，值为 JSON 可序列化纯值
 
-#### Scenario: 边序列化字段与 kind 取值
+#### Scenario: 边序列化字段与 type 取值
 
-- **WHEN** `graph_view` 返回任一 `edges[*]`
-- **THEN** MUST 含且仅含 `id` / `source` / `target` / `kind` / `label` 五个键
-- **AND** `kind` MUST ∈ `{"hierarchy", "fact", "assoc"}`
-
-#### Scenario: 顶层携带 relation_model
-
-- **WHEN** `graph_view` 返回
-- **THEN** 顶层 MUST 含 `relation_model` 键，值为 `"property_graph"` 或 `"attribute_node"`
+- **WHEN** 序列化任一边
+- **THEN** MUST 含且仅含 `id` / `source` / `target` / `type`
+- **AND** `type` MUST ∈ `{"关联", "互斥"}`（下钻边为 `"关联"`）；MUST NOT 含 `kind` / `label`
 
 #### Scenario: nodes 按 id 去重
 
-- **WHEN** 某节点既是焦点节点的层级子节点、又是其关系边端点
+- **WHEN** 某节点既是焦点节点的下钻成员、又是其关系边端点
 - **THEN** 该节点在 `nodes` 中 MUST 只出现一次
 
-#### Scenario: hierarchy 边由后端给出
+#### Scenario: 下钻边由后端给出
 
-- **WHEN** 焦点节点有层级子节点
-- **THEN** `edges` MUST 含对应 hierarchy 边，其 `source` 为焦点 `id`、`target` 为该层级子节点 `id`、`kind == "hierarchy"`、`label == ""`
+- **WHEN** 焦点节点有下钻成员
+- **THEN** `edges` MUST 含对应下钻边，其 `source` 为焦点 `id`、`target` 为该成员 `id`、`type == "关联"`
 
 ---
 
@@ -103,16 +91,16 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 
 ### Requirement: graph.html 默认渲染根子图并支持点击下钻
 
-`static/graph.html` SHALL 经 Cytoscape.js 在打开时默认拉取 `__seed_root__` 子图（`GET /graph/expand`）渲染；点击 `role != "attribute"` 的节点时触发 `GET /graph/expand?node_id=<该节点>`，把返回的 `nodes` 与 `edges` **增量并入**图（按 id 去重）；返回 `nodes` 与 `edges` 均空的节点标为叶子（**首次点击后**判定并缓存，后续不再展开）；`role=="attribute"` 的属性节点不可下钻（仅作关系端点显示，点击前可据 `role` 预判、不发请求）；关系边按 `relation_model` 渲染（`property_graph` 事实边带 label、`attribute_node` 关联边无 label），hierarchy 边以区分样式渲染。前端 MUST NOT 自造边，仅渲染后端返回的 `edges`。
+`static/graph.html` SHALL 经 Cytoscape.js 在打开时默认拉取 `__seed_root__` 子图（`GET /graph/expand`）渲染；点击**可下钻节点**（`node_class ∈ {概念, 事实}`）时触发 `GET /graph/expand?node_id=<该节点>`，把返回的 `nodes` 与 `edges` **增量并入**（按 id 去重）；返回空的节点标为叶子（首次点击后缓存）；**叶子节点（`node_class ∈ {事件, source}`）不可下钻**（仅作端点显示，点击前可据 `node_class` 预判、不发请求）；关系边按 `type` 渲染（`关联` / `互斥`，**无 label**），下钻（组织）边以区分样式渲染。前端 MUST NOT 自造边，仅渲染后端返回的 `edges`。
 
 #### Scenario: 默认加载根子图
 
 - **WHEN** 打开 `graph.html`
 - **THEN** MUST 自动请求 `GET /graph/expand`（缺省根）并渲染 `__seed_root__` 及其 `nodes` / `edges`
 
-#### Scenario: 点击非 attribute 节点触发下钻并入
+#### Scenario: 点击可下钻节点增量并入
 
-- **WHEN** 点击一个 `role != "attribute"` 的节点
+- **WHEN** 点击一个 `node_class ∈ {概念, 事实}` 的节点
 - **THEN** MUST 请求该节点的 `/graph/expand`，并把返回的新 `nodes` / `edges` 并入图（返回空则据下一 scenario 标为叶子）
 
 #### Scenario: 按 id 去重不重复并入
@@ -126,16 +114,15 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 - **THEN** MUST 将该节点标记为叶子样式
 - **AND** 该节点被标记为叶子后，后续点击 MUST NOT 再次发起 `/graph/expand` 请求
 
-#### Scenario: attribute 节点不可下钻
+#### Scenario: 叶子节点不可下钻
 
-- **WHEN** 点击 `role == "attribute"` 的属性节点
-- **THEN** MUST NOT 发起下钻请求（仅作关系端点显示）
+- **WHEN** 节点 `node_class ∈ {事件, source}`
+- **THEN** MUST NOT 对其发下钻请求（仅作端点显示）
 
-#### Scenario: 边按 kind 与 relation_model 渲染
+#### Scenario: 边按 type 渲染
 
-- **WHEN** `relation_model == "property_graph"`
-- **THEN** `kind=="fact"` 边 MUST 渲染为带 label 的连线、`kind=="hierarchy"` 边以区分样式（如实线）渲染
-- **AND** 当 `relation_model == "attribute_node"` 时 `kind=="assoc"` 边 MUST 渲染为无 label 的连线
+- **WHEN** 渲染关系边
+- **THEN** MUST 按 `type`（`关联` / `互斥`）渲染、无 label；下钻边以区分样式渲染
 
 ---
 

@@ -37,17 +37,17 @@ The system SHALL modify stage ① (前置插件链) to use `PluginType.PREPROCES
 
 ### Requirement: query 默认返回 Subgraph
 
-`QueryEngine.query()` SHALL 默认返回 `Subgraph`（`nodes` + `edges`），复用 `core/graph.py` 既有 `Subgraph` 定义。`edges` MUST 仅含被选中的**关系边**、MUST NOT 含层级边：**`property_graph` 模式**为事实边（`kind="fact"`），**`attribute_node` 模式**为无类型关联边（`kind="assoc"`）。期望 `List[Node]` 的后置插件 MUST 经兼容层接收 `subgraph.nodes`；合成自然语言仍由后置插件可选提供。
+`QueryEngine.query()` SHALL 默认返回 `Subgraph`（`nodes` + `edges`）。`edges` MUST 仅含被选中的关系边（`关联` / `互斥`），MUST NOT 含由聚类涌现的层级（组织）边，MUST NOT 按 `relation_model` 分模式。期望 `List[Node]` 的后置插件 MUST 经兼容层接收 `subgraph.nodes`。
 
 #### Scenario: 返回 Subgraph
 
 - **WHEN** 后置处理链为空
-- **THEN** `query()` MUST 返回 `Subgraph`，`nodes` 为累积节点，`edges` 为选中的关系边
+- **THEN** `query()` MUST 返回 `Subgraph`，`nodes` 为累积节点，`edges` 为选中的 `关联` / `互斥` 边
 
-#### Scenario: edges 只含关系边、不含层级边
+#### Scenario: edges 不含层级（组织）边
 
 - **WHEN** 检查返回的 `Subgraph.edges`
-- **THEN** `property_graph` 模式所有边 `kind` MUST 为 `"fact"`；`attribute_node` 模式 MUST 为 `"assoc"`；两模式 MUST NOT 含层级边
+- **THEN** MUST 仅含 `关联` / `互斥` 边，MUST NOT 含聚类形成的"组织中心 → 成员"层级边
 
 #### Scenario: 后置插件兼容 List[Node]
 
@@ -55,25 +55,6 @@ The system SHALL modify stage ① (前置插件链) to use `PluginType.PREPROCES
 - **THEN** 框架 MUST 从 `Subgraph.nodes` 提取节点列表传入
 
 ---
-
-### Requirement: attribute_node 模式活跃视图取关联边
-
-`attribute_node` 模式下，阶段 ③ 事实 BFS 构建活跃视图时 SHALL 以 `get_assoc(node)` 取代 `get_facts(node)`：视图 = {层级邻居 + 关联边 + 关联端点（含属性节点）}。`select_facts` 选中关联边后，其端点 MUST 补入 `accumulated`。遍历的其余机制（visited、安全阀、分层分批、批量 + 逐节点回退、未选中可重发现）MUST 与 `property_graph` 模式一致。`property_graph` 模式仍用 `get_facts`（见「语义理解 Loop 使用 select_facts 筛选候选」）。
-
-#### Scenario: 活跃视图取 assoc
-
-- **WHEN** `attribute_node` 模式 BFS 访问节点 A
-- **THEN** 框架 MUST 用 `get_assoc(A)` 构建视图（含属性节点端点），MUST NOT 依赖 `get_facts(A)`
-
-#### Scenario: 选中关联边补入端点
-
-- **WHEN** `attribute_node` 模式 LLM 选中一条关联边 `(A, B)` 而 A 或 B 未被直接选中
-- **THEN** 框架 MUST 把 A、B 加入 `accumulated`
-
-#### Scenario: 遍历机制与 property_graph 一致
-
-- **WHEN** `attribute_node` 模式遍历
-- **THEN** visited / 安全阀 / 分层分批 / 批量回退行为 MUST 与 `property_graph` 模式逐项一致，仅关系边来源不同
 
 ### Requirement: 多轮驻留节点跳过种子定位
 
@@ -125,17 +106,17 @@ The system SHALL accept an optional `existing_context` parameter on `query()`. W
 
 ### Requirement: entity-anchored 检索，否定由 LLM 现推
 
-事实检索 MUST 以**实体为锚**——找出该实体作**任一端**的事实，MUST NOT 按 query 中的谓词过滤边。否定 / 极性问题 MUST 由 LLM 在检索回的**正面 label 事实**上现推，MUST NOT 以"边的缺失"作否定依据（开放世界，缺边 ≠ 否定）。
+检索 MUST 以**实体为锚**——找出该实体经 `关联` 连到的**命题节点**，MUST NOT 按 query 中的谓词过滤。否定 / 极性问题 MUST 由 LLM 在检索回的命题上现推，MUST NOT 以"命题缺失"作否定依据（开放世界，缺命题 ≠ 否定）。
 
-#### Scenario: 极性问题靠矛盾正面事实
+#### Scenario: 极性问题靠矛盾命题
 
-- **WHEN** 问"小明是否讨厌苹果"，图中有 `小明 —喜欢→ 苹果`、无"讨厌"边
-- **THEN** 框架 MUST 检索到"喜欢"事实，由 LLM 据"喜欢 ⊥ 讨厌"答"不讨厌"；MUST NOT 因"无讨厌边"直接下结论
+- **WHEN** 问"小明是否讨厌苹果"，图中有命题"小明喜欢苹果"经关联连小明与苹果、无"讨厌"命题
+- **THEN** 框架 MUST 检索到"喜欢"命题，由 LLM 据"喜欢 ⊥ 讨厌"答"不讨厌"；MUST NOT 因"无讨厌命题"直接下结论
 
 #### Scenario: 不按谓词过滤
 
-- **WHEN** query 谓词在图中不存在为边
-- **THEN** 检索 MUST 仍返回相关实体间的事实（让 LLM 判读），MUST NOT 返回空
+- **WHEN** query 谓词在图中无对应命题
+- **THEN** 检索 MUST 仍返回相关实体间的命题（让 LLM 判读），MUST NOT 返回空
 
 ---
 
@@ -256,22 +237,22 @@ Stage ③ SHALL enforce safety valves: `max_rounds` (BFS rounds / hops) and `max
 
 ### Requirement: 语义理解 Loop 使用 select_facts 筛选候选
 
-阶段 ③ MUST 以**事实 BFS** 进行：每访问一个节点，渲染其**活跃双向视图**（{出事实 + 入事实（反查）+ 层级邻居}），以 `purpose=select_facts` 让 LLM **选事实**（节点 / 事实边作为统一编号的事实条目）。视图收敛分两层：**Phase 2** 按 `priority` 排序、截断到 ≤ T；**Phase 1 不截断**——配置 T 远小于真实窗口，超 T 仍落在窗口内，入边反查返回全部 / 宽松上限。遍历 MUST 按层级分批（每层 {节点 + 子节点 + 连接事实} 由不变量保证 ≤ T）；多个层级包富余时 MAY 合并进一次 LLM 调用（总 token ≤ 预算）。原 `select_nodes`（只选节点、不浮现事实）SHALL 被 `select_facts` 取代。
+阶段 ③ MUST 以**核心 BFS** 进行：每访问一个节点，渲染其**活跃双向视图**（{该节点的 `关联` 邻居（命题 / 概念，两端可达、反查）+ 层级邻居}），以 `purpose=select_facts` 让 LLM 选相关命题 / 邻居。视图收敛：**Phase 2** 按 `priority` 截断 ≤ T；**Phase 1 不截断**。遍历 MUST 按层级分批（不变量保证每层 ≤ T）。**事件默认不进视图**（核心不反查事件），需出处时走按需 `事实 → 事件` 定向查。
 
 #### Scenario: 每节点渲染活跃双向视图
 
 - **WHEN** BFS 访问节点 A
-- **THEN** 框架 MUST 渲染 A 的出事实 + 入事实 + 层级邻居供选择（Phase 2 按 priority 截断 ≤ T；Phase 1 不截断）
+- **THEN** 框架 MUST 渲染 A 的 `关联` 邻居（命题 / 概念）+ 层级邻居供选择，MUST NOT 默认带入连向 A 的事件
 
 #### Scenario: 按层分批、富余合并
 
 - **WHEN** 多个待扩展节点的层级包合计 ≤ 预算
 - **THEN** 框架 MUST 合并为一次 LLM 调用；超预算则按层切分
 
-#### Scenario: 选中事实补入端点
+#### Scenario: 选中补入端点
 
-- **WHEN** LLM 选中一条事实 `(A, label, B)` 而 A 或 B 未被直接选中
-- **THEN** 框架 MUST 把 A、B 加入 `accumulated`
+- **WHEN** LLM 选中一条命题 / 关联而其端点未被直接选中
+- **THEN** 框架 MUST 把端点加入 `accumulated`
 
 #### Scenario: 未选中邻居可被后续轮次重新发现
 

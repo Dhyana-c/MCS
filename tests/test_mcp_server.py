@@ -266,7 +266,7 @@ async def test_smoke_list_tools_and_call(server: MCPServer):
 
     tools = await mcp_server.list_tools()
     names = {t.name for t in tools}
-    assert names == {"query", "ingest", "ingest_event"}
+    assert names == {"query", "ingest"}
 
     q = await mcp_server.call_tool("query", {"query": "x"})
     assert "N" in _content_text(q)

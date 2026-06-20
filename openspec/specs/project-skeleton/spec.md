@@ -76,7 +76,7 @@ The system SHALL provide skeleton implementations of all core engine modules lis
 #### Scenario: Node 和 Edge dataclass 定义
 
 - **WHEN** 加载 `mcs.entities.graph`
-- **THEN** 存在 `Node` dataclass（字段 `id, name, content, role, extensions`）和 `Edge` dataclass（字段 `source_id, target_id, direction`）
+- **THEN** 存在 `Node` dataclass（字段 `id, name, content, node_class, extensions`）和 `Edge` dataclass（字段 `source_id, target_id, id, type, priority, extensions`）
 
 #### Scenario: GraphStore 类骨架存在
 

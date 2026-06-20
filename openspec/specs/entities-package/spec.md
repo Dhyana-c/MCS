@@ -20,12 +20,14 @@ The system SHALL maintain a dedicated `mcs.entities` package that holds all pure
 
 ### Requirement: 实体模块内容
 
-The system SHALL expose the pure data models in `mcs.entities`. `Edge` SHALL gain an `extensions: dict[str, Any]` field (default empty dict), 与 `Node.extensions` 对称，供 `EdgeExtensionInterface` 插件挂载字段；其余实体字段不变。
+The system SHALL expose the pure data models in `mcs.entities`. `Edge` SHALL 以 `type`（**取代 `kind` + `label`**）承载结构 / 语义类别（当前仅 `关联` / `互斥`），保留 `priority`、`extensions`（`extensions` 与 `Node.extensions` 对称，供 `EdgeExtensionInterface` 插件挂字段）。`Node` SHALL 增 `node_class`（`概念` / `事实` / `事件` / `source`）作为节点分类轴；`hub` 降为标记（存于 `extensions`，不作为 role / 节点类）。
 
 #### Scenario: graph 模块导出图数据类
 
 - **WHEN** 加载 `mcs.entities.graph`
-- **THEN** 存在 `Node` dataclass（字段 `id, name, content, role, extensions`）、`Edge` dataclass（字段 `source_id, target_id, id, kind, label, priority, extensions`）、`Subgraph` dataclass（字段 `focus_id, nodes, edges`）
+- **THEN** 存在 `Node` dataclass（字段 `id, name, content, node_class, extensions`）、`Edge` dataclass（字段 `source_id, target_id, id, type, priority, extensions`）、`Subgraph` dataclass（字段 `focus_id, nodes, edges`）
+- **AND** `Edge` MUST NOT 有 `kind` / `label` 字段；`type` MUST ∈ 已登记类型（当前 `关联` / `互斥`）
+- **AND** `Node` MUST NOT 以 `role` 作分类轴；`hub` MUST 仅为标记
 
 #### Scenario: Edge.extensions 默认空字典
 

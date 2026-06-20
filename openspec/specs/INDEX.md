@@ -6,14 +6,13 @@
 
 | Capability | 关注 |
 |------------|------|
-| [query-pipeline](query-pipeline/spec.md) | 读流程 5 段管线（前置→种子定位→语义 Loop→仲裁→后置），默认返回 `List[Node]` |
+| [query-pipeline](query-pipeline/spec.md) | 读流程 5 段管线（前置→种子定位→语义 Loop→仲裁→后置），默认返回 `Subgraph` |
 | [write-pipeline](write-pipeline/spec.md) | 写流程 7 段管线（前置→关联定位→提取→判定→更新→压缩→落盘） |
-| [store-interface](store-interface/spec.md) | 统一存储接口（StoreInterface ABC + InMemoryStore + SQLiteStore） |
+| [store-interface](store-interface/spec.md) | 统一存储接口（StoreInterface ABC + InMemoryStore + SQLiteStore），边 API 基于 `type`（关联/互斥），`get_relations` 统一反查 |
 | [llm-interaction](llm-interaction/spec.md) | LLM 调用统一模式（`purpose` + `nodes_in` + `free_args`），杜绝厂商 SDK 直接调用 |
 | [subgraph-bounding](subgraph-bounding/spec.md) | 最大上下文子图不变量：邻域容量约束、token 估计精度、LLM 语义归纳、一进多出聚类、hub 复用 |
-| [seed-graph-hierarchy](seed-graph-hierarchy/spec.md) | 种子图层级结构：全图单向边模型、导航沿出边下钻、递归 bounding 抗退化 |
-| [dual-edge-model](dual-edge-model/spec.md) | 全图两类边模型（层级边 + 事实边），事实边带 label / priority、两端反查 |
-| [attribute-node-model](attribute-node-model/spec.md) | 属性节点关系模型（`relation_model="attribute_node"`）：关系具体化为属性节点 + 无类型关联边 |
+| [seed-graph-hierarchy](seed-graph-hierarchy/spec.md) | 种子图层级结构：统一边模型（关联/互斥）、核心 BFS 导航、hub 标记识别、递归 bounding 抗退化 |
+| [unified-graph-schema](unified-graph-schema/spec.md) | 统一图模型核心契约：4 类节点（概念/事实/事件/source）、边仅关联/互斥、谓词落点、核心/事件双层、守门挂在改图操作上 |
 
 ## 插件体系
 
@@ -50,7 +49,7 @@
 |------------|------|
 | [auto-persistence](auto-persistence/spec.md) | 写入后自动持久化，auto_persist 配置开关 |
 | [merge-content-compaction](merge-content-compaction/spec.md) | merge 后 content 超阈值自动压缩重写 |
-| [store-provenance](store-provenance/spec.md) | 存储库建库出处（relation_model / schema_version / 扩展名集）记录与打开时校验补列 |
+| [store-provenance](store-provenance/spec.md) | 存储库建库出处（schema_version / 扩展名集）记录与打开时补列 |
 | [graph-summary](graph-summary/spec.md) | 图级主题摘要（图级 meta 存储 + GraphSummaryPlugin 归纳），注入 agent system prompt 供路由判断 |
 
 ## 评测
@@ -81,7 +80,7 @@
 | [result-rendering](result-rendering/spec.md) | 核心库共享结果渲染纯函数（`mcs/rendering.py`），供 `mcs_mcp` / `mcs_agent` 复用，杜绝跨应用私有引用 |
 | [mcp-server](mcp-server/spec.md) | MCP（stdio）server（顶层包 `mcs_mcp`），从 YAML 配置 build MCS 并服务 ingest / query 工具 |
 | [memory-agent](memory-agent/spec.md) | 基于 MCS 的记忆 agent（独立 `mcs_agent` 包）：单线程 MCS 包装 + 5 导航工具（learn/search/associate/reason/recall）+ ReAct loop + FastAPI + 前端 |
-| [graph-visualization](graph-visualization/spec.md) | 记忆图谱只读可视化：`MemoryStore.graph_view` 只读原语（relation_model 感知）+ `GET /graph/expand` JSON 端点 + `graph.html` 默认渲染根子图 + 点击下钻 |
+| [graph-visualization](graph-visualization/spec.md) | 记忆图谱只读可视化：`MemoryStore.graph_view` 只读原语 + `GET /graph/expand` JSON 端点 + `graph.html` 默认渲染根子图 + 点击下钻 |
 
 ## 研究型
 
