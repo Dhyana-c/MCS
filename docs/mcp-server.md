@@ -50,6 +50,10 @@ mcs-mcp --config /path/to/mcs.yaml
 | `query` | `query: str` | 相关节点与关系边的**可读文本**（`Subgraph` 经 `render_facts` 渲染；若 postprocess 已转字符串则透传） |
 | `ingest` | `text: str` | **状态摘要**：抽取概念数 / 新增合并节点数 / 是否落盘（不报边计数、不回原始对象） |
 
+> 仅这两个工具经 `@mcp_server.tool()` 注册（与 `mcp-server` spec「含且仅含 query 与 ingest」一致）。
+> 事件 / source 不再有独立工具——`ingest` 每次摄入即自动记一个时间轴事件（可选 source 切分），
+> 见 [architecture.md](architecture.md) 写入 ⓪ 段。
+
 ## 接入 Claude Desktop
 
 在 Claude Desktop 配置文件（macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`；

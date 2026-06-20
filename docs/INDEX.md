@@ -17,14 +17,17 @@
 
 | 文档 | 路径 | 说明 |
 |------|------|------|
-| 架构总览 | [architecture.md](architecture.md) | 系统定位、双层结构、核心不变量、插件体系、目录结构 |
-| 核心流程 | [core-flows.md](core-flows.md) | 写入管线（7 段）、查询管线（5 段）、图演化（聚类裂变/hub 复用） |
-| 技术方案 | [technical-design.md](technical-design.md) | 完整的机制设计文档（双层结构、边语义、社区合并、激活扩散等） |
-| 图模型设计（目标） | [graph-model-design.md](graph-model-design.md) | 统一图模型目标设计：4 类节点（概念/事实/事件/source）、谓词落点、边仅 `关联`·`互斥`、核心·事件双层。**目标设计，尚未实现**，见 change `unified-graph-schema` |
-| 已知问题 | [known-issues.md](known-issues.md) | 未修复的开放问题 |
-| 常见问题 | [faq.md](faq.md) | 常见问题与解答 |
+| 上手指南 | [getting-started.md](getting-started.md) | 5 分钟跑通：安装 → 写入 → 查询 → 持久化 → MCP → Agent |
+| 架构总览 | [architecture.md](architecture.md) | 系统定位、4 类节点 / 2 类边、双层结构、读写管线、插件体系、目录结构 |
+| 图模型设计 | [graph-model-design.md](graph-model-design.md) | **完整、权威**的图模型与核心算法设计（v1.0，已实现） |
+| 插件体系 | [plugin-system.md](plugin-system.md) | 14 类 PluginType、接口签名、注册机制、生命周期、自定义插件开发 |
+| API 参考 | [api-reference.md](api-reference.md) | MCS 公开方法、核心数据类、Builder / 工厂、MCP 工具 |
 | 配置文件 | [configuration.md](configuration.md) | YAML 配置加载（preset 叠加、`${VAR}` 插值、import-path 插件、受信输入） |
-| MCP Server | [mcp-server.md](mcp-server.md) | MCP（stdio）server：`query`/`ingest` 工具、Claude Desktop 接入、串行化与受信须知 |
+| MCP Server | [mcp-server.md](mcp-server.md) | MCP（stdio）server：`query` / `ingest` 工具、Claude Desktop 接入 |
+| 记忆 Agent | [memory-agent.md](memory-agent.md) | ReAct loop、5 导航工具、单线程封装、FastAPI 后端、启动方式 |
+| 评测 | [evaluation.md](evaluation.md) | 评测框架结构、multihop-rag 指标、extraction_quality、运行方式 |
+| 常见问题 | [faq.md](faq.md) | FAQ |
+| 已知问题 | [known-issues.md](known-issues.md) | 未修复的开放问题 |
 
 ## L3 规范层
 
@@ -35,18 +38,18 @@
 | 架构索引 | [openspec/specs/architecture.md](../openspec/specs/architecture.md) | 指向各 capability spec 的导航索引 |
 | Spec 索引 | [openspec/specs/INDEX.md](../openspec/specs/INDEX.md) | 按能力域分组的 spec 导航 |
 
-### Capability Specs
+### Capability Specs（节选）
 
 | Capability | 路径 | 关注 |
 |------------|------|------|
+| unified-graph-schema | [spec](../openspec/specs/unified-graph-schema/spec.md) | 统一图模型机制契约 |
 | store-interface | [spec](../openspec/specs/store-interface/spec.md) | 统一存储接口 |
-| query-pipeline | [spec](../openspec/specs/query-pipeline/spec.md) | 读流程 5 段管线 |
-| write-pipeline | [spec](../openspec/specs/write-pipeline/spec.md) | 写流程 7 段管线 |
+| query-pipeline | [spec](../openspec/specs/query-pipeline/spec.md) | 读流程管线 |
+| write-pipeline | [spec](../openspec/specs/write-pipeline/spec.md) | 写流程管线 |
 | mcs-builder | [spec](../openspec/specs/mcs-builder/spec.md) | MCS 实例构建契约 |
 | plugin-protocol | [spec](../openspec/specs/plugin-protocol/spec.md) | 插件接口与链语义 |
-| llm-interaction | [spec](../openspec/specs/llm-interaction/spec.md) | LLM 调用统一模式 |
 | subgraph-bounding | [spec](../openspec/specs/subgraph-bounding/spec.md) | 最大上下文子图不变量 |
-| project-skeleton | [spec](../openspec/specs/project-skeleton/spec.md) | 项目目录结构 |
+| doc-hierarchy | [spec](../openspec/specs/doc-hierarchy/spec.md) | 文档层级规范与索引体系 |
 
 > 完整列表见 [openspec/specs/INDEX.md](../openspec/specs/INDEX.md)。
 
@@ -54,5 +57,6 @@
 
 | 文档 | 路径 | 说明 |
 |------|------|------|
+| 评测总览 | [evaluation.md](evaluation.md) | 评测框架结构与指标定义 |
 | 评测入口 | [bench/README.md](../bench/README.md) | 评测框架目录结构与类型导航 |
 | MultiHop-RAG | [bench/multihop_rag/README.md](../bench/multihop_rag/README.md) | 文档级多跳检索评测说明 |

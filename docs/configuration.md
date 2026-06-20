@@ -26,7 +26,6 @@ preset: knowledge_graph
 # preset 工厂参数（短名：deepseek / claude / ollama）；工厂内部映射为插件名（如 deepseek_llm）
 write_llm: deepseek
 read_llm: deepseek
-relation_model: property_graph   # property_graph 默认 / attribute_node
 
 # 秘密走环境变量插值（${VAR}），不进文件
 plugin_configs:
@@ -40,8 +39,8 @@ token_budget: 8000
 max_rounds: 5
 ```
 
-> **陷阱一（preset 参数键不二次叠加）**：有 `preset` 时 `write_llm` / `read_llm` /
-> `relation_model` **仅作工厂参数消费**。工厂产出插件名（如 `deepseek_llm`），文件里写的
+> **陷阱一（preset 参数键不二次叠加）**：有 `preset` 时 `write_llm` / `read_llm`
+> **仅作工厂参数消费**。工厂产出插件名（如 `deepseek_llm`），文件里写的
 > 短名（`deepseek`）**不会**再覆盖回去——否则 builder 找不到名为 `deepseek` 的 LLM 插件。
 > 故此处写 `deepseek` 是给工厂的短名，最终 `config.write_llm == "deepseek_llm"`。
 
@@ -49,11 +48,11 @@ max_rounds: 5
 
 | 字段类型 | 规则 |
 |---------|------|
-| 标量（`token_budget` / `max_rounds` / `max_accumulated_nodes` / `auto_persist` / `attribute_content_max` / `mode`） | 直接覆盖 |
+| 标量（`token_budget` / `max_rounds` / `max_accumulated_nodes` / `auto_persist` / `mode`） | 直接覆盖 |
 | `shared_plugins` / `write_plugins` / `read_plugins` | **显式给出则替换**；未给出则保留 preset 的 |
 | `plugin_configs` | 按插件名**两层深合并**（preset 的 `model` 与文件的 `api_key` 共存，非整体替换） |
 | `prompt_overrides` | 按 purpose 合并；`parser` 为 import-path 串时解析为 `Callable` |
-| `relation_model` / `write_llm` / `read_llm` | 有 preset 时已被工厂消费、不再叠加；**无 preset** 时是原始字段 |
+| `write_llm` / `read_llm` | 有 preset 时已被工厂消费、不再叠加；**无 preset** 时是原始字段 |
 
 ### plugin_configs 深合并示例
 
@@ -164,5 +163,8 @@ plugin_configs:
 
 ## provenance 白捡
 
-`from_file` build 出的库，开库自动走已有出处校验：YAML 指定的 `relation_model` 与已建库
-不符时，`SQLiteStore.initialize` 抛 `StoreProvenanceError` 拒绝（防混库静默损坏）。
+`from_file` build 出的库，开库自动走出处校验。统一图模型为**单一模型**，已删除
+`relation_model` 维度——**无硬拒条件**：出处仅跟踪 `schema_version` 与已挂扩展名集。
+
+- 旧库 / 空库无出处 → 按当前配置补写 provenance 放行（真旧库另记 WARNING）；
+- 扩展名集变化 → 记 WARNING、刷新为当前集、放行（合法迁移：新字段取默认、旧 orphan 字段忽略）。

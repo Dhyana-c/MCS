@@ -171,9 +171,9 @@ mcs-mcp                          # 或 python -m mcs_mcp
 | 文档 | 说明 |
 |------|------|
 | [文档索引](docs/INDEX.md) | 所有文档的统一导航入口 |
+| [上手指南](docs/getting-started.md) | 5 分钟跑通：安装 → 写入 → 查询 → MCP → Agent |
 | [架构总览](docs/architecture.md) | 系统定位、双层结构、核心不变量、插件体系 |
-| [核心流程](docs/core-flows.md) | 写入管线（7 段）、查询管线（5 段）、图演化 |
-| [技术方案](docs/technical-design.md) | 完整的机制设计文档 |
+| [图模型设计](docs/graph-model-design.md) | 完整、权威的图模型与核心算法设计 |
 | [常见问题](docs/faq.md) | FAQ |
 
 ## 评测

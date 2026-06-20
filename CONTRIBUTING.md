@@ -75,9 +75,9 @@ examples/           # 使用示例
 
 ## 文档
 
+- [文档索引](docs/INDEX.md) — 所有文档的统一导航入口
 - [架构总览](docs/architecture.md) — 系统设计
-- [核心流程](docs/core-flows.md) — 读写管线
-- [技术方案](docs/technical-design.md) — 完整机制设计
+- [图模型设计](docs/graph-model-design.md) — 完整、权威的图模型与核心算法设计
 - [Spec 索引](openspec/specs/INDEX.md) — 契约规范
 
 ## 问题反馈
