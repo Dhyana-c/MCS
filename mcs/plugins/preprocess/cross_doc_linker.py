@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
-from mcs.entities.graph import Edge, Node
+from mcs.entities.graph import CLASS_CONCEPT, EDGE_ASSOC, Edge, Node
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore
@@ -193,10 +193,10 @@ def apply_cross_doc_links(
         if graph.get_edges_between(candidate.target_id, candidate.source_id):
             continue
 
-        # Add fact edge (single directed, dual-indexed)
+        # Add cross-document association edge (统一模型：关联边，无 label)
         graph.add_edge(
             candidate.source_id, candidate.target_id,
-            kind="fact", label="跨文档关联",
+            type=EDGE_ASSOC,
         )
         edges = graph.get_edges_between(candidate.source_id, candidate.target_id)
         if edges:
@@ -264,7 +264,7 @@ def load_graph_from_db(db_path: str) -> GraphStore:
     conn = sqlite3.connect(db_path)
     try:
         for row in conn.execute(
-            "SELECT id, name, content, role, extensions_json FROM nodes"
+            "SELECT id, name, content, node_class, extensions_json FROM nodes"
         ):
             ext_raw = json.loads(row[4]) if row[4] else {}
             graph.add_node(
@@ -272,32 +272,22 @@ def load_graph_from_db(db_path: str) -> GraphStore:
                     id=row[0],
                     name=row[1],
                     content=row[2] or "",
-                    role=row[3] or "concept",
+                    node_class=row[3] or CLASS_CONCEPT,
                     extensions=ext_raw,
                 )
             )
-        # 直接构造 Edge 保留原 id（镜像 SQLiteStore.load）——不走 add_edge 以免
-        # 重新 mint uuid，使载入图的边 id 与 DB 主键一致。
+        # 用公开 add_edge + edge_id 保留 DB 原始边 id——不再直接操作 store 内部
+        # 属性（_nodes / _edges / _assoc_*）。悬空边由 add_edge 的节点存在性守门跳过。
         for row in conn.execute(
-            "SELECT id, source_id, target_id, kind, label, priority FROM edges"
+            "SELECT id, source_id, target_id, type, priority FROM edges"
         ):
-            eid, src, tgt = row[0], row[1], row[2]
-            if src not in graph._nodes or tgt not in graph._nodes:
-                continue  # 跳过悬空边（与旧 add_edge 守门一致）
-            edge = Edge(
-                id=eid,
-                source_id=src,
-                target_id=tgt,
-                kind=row[3] or "hierarchy",
-                label=row[4] or "",
-                priority=row[5] if row[5] is not None else 0.0,
+            graph.add_edge(
+                row[1],
+                row[2],
+                type=row[3] or EDGE_ASSOC,
+                priority=row[4] if row[4] is not None else 0.0,
+                edge_id=row[0],
             )
-            graph._edges[eid] = edge
-            if edge.kind == "hierarchy":
-                graph._hierarchy_out.setdefault(src, set()).add(tgt)
-            else:
-                graph._fact_by_node.setdefault(src, set()).add(eid)
-                graph._fact_by_node.setdefault(tgt, set()).add(eid)
     finally:
         conn.close()
     return graph
@@ -324,15 +314,14 @@ def persist_new_edges(db_path: str, new_edges: list[Edge]) -> int:
     try:
         before = conn.total_changes
         conn.executemany(
-            "INSERT OR IGNORE INTO edges (id, source_id, target_id, kind, label, priority) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO edges (id, source_id, target_id, type, priority) "
+            "VALUES (?, ?, ?, ?, ?)",
             [
                 (
                     e.id,
                     e.source_id,
                     e.target_id,
-                    getattr(e, "kind", "hierarchy"),
-                    getattr(e, "label", ""),
+                    getattr(e, "type", EDGE_ASSOC),
                     getattr(e, "priority", 0.0),
                 )
                 for e in new_edges

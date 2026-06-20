@@ -1,10 +1,8 @@
-"""MemoryStore.graph_view 只读可视化原语测试（FakeMCS，不依赖真实 MCS / LLM）。
+"""MemoryStore.graph_view 只读可视化原语测试（统一图模型，FakeMCS）。
 
-覆盖（对应 tasks 2.1–2.5）：根视图 / 节点不存在→None / 孤立叶子空；
-property_graph 取 facts（带 label、端点入 nodes）；attribute_node 取 assoc
-（无 label、属性节点入 nodes）；纯 dict 字段与 kind 取值 / nodes 按 id 去重 /
-hierarchy 边契约；两模式关系边互斥；悬空关系边保留边但跳过端点；线程安全
-（读方法经 _submit 单 worker 线程，执行线程 != 调用方）。
+覆盖：根视图 / 节点不存在→None / 孤立叶子空；关系边（关联/互斥）端点入 nodes；
+纯 dict 字段（node_class/hub/type，无 kind/label/relation_model）/ nodes 按 id 去重 /
+下钻关联边契约；悬空关系边保留边但跳过端点；线程安全（读经 _submit 单 worker 线程）。
 """
 
 from __future__ import annotations
@@ -12,34 +10,38 @@ from __future__ import annotations
 import json
 import threading
 
-from mcs.entities.graph import Edge, Node
+from mcs.entities.graph import EDGE_ASSOC, EDGE_MUTEX, Edge, Node
 from mcs_agent.memory import MemoryStore
 
 
-# === Fake store / query_engine / mcs（与 test_agent_memory 同构，本地隔离） ===
+# === Fake store / query_engine / mcs ===
 
 
 def _n(
     nid: str,
     name: str | None = None,
-    role: str = "concept",
+    node_class: str = "概念",
     content: str | None = None,
+    hub: bool = False,
 ) -> Node:
     """构造 Node（content 默认=name）。"""
     nm = name if name is not None else nid
-    return Node(id=nid, name=nm, content=content if content is not None else nm, role=role)
+    ext = {"hub": True} if hub else {}
+    return Node(
+        id=nid, name=nm, content=content if content is not None else nm,
+        node_class=node_class, extensions=ext,
+    )
 
 
 class FakeStore:
-    """内存图：节点 dict + 三类边 list；读方法记录执行线程 id（线程安全断言用）。"""
+    """内存图：节点 dict + 下钻边 + 关系边 list；读方法记录执行线程 id。"""
 
     def __init__(self) -> None:
         self.nodes: dict[str, Node] = {}
-        self.hierarchy: list[Edge] = []
-        self.facts: list[Edge] = []
-        self.assocs: list[Edge] = []
+        self.hierarchy: list[Edge] = []   # 下钻成员（关联出边）
+        self.relations: list[Edge] = []   # 关系边（关联 / 互斥）
         self.read_threads: set[int] = set()
-        self.get_node_counts: dict[str, int] = {}  # 按 id 计 get_node 调用次数（E1 去重断言）
+        self.get_node_counts: dict[str, int] = {}
 
     def add_node(self, n: Node) -> None:
         self.nodes[n.id] = n
@@ -57,62 +59,56 @@ class FakeStore:
             if e.source_id == nid and e.target_id in self.nodes
         ]
 
-    def get_facts(self, nid: str, limit: int | None = None) -> list[Edge]:
+    def get_relations(self, nid: str, limit: int | None = None) -> list[Edge]:
         self.read_threads.add(threading.get_ident())
-        es = [e for e in self.facts if e.source_id == nid or e.target_id == nid]
-        return es[:limit] if limit else es
-
-    def get_assoc(self, nid: str, limit: int | None = None) -> list[Edge]:
-        self.read_threads.add(threading.get_ident())
-        es = [e for e in self.assocs if e.source_id == nid or e.target_id == nid]
+        es = [e for e in self.relations if e.source_id == nid or e.target_id == nid]
         return es[:limit] if limit else es
 
 
 class FakeQueryEngine:
-    def __init__(self, relation_model: str = "property_graph") -> None:
-        self.relation_model = relation_model
+    pass
 
 
 class FakeMCS:
     def __init__(self, store: FakeStore, qe: FakeQueryEngine) -> None:
         self.store = store
         self.query_engine = qe
+        self.read_manager = None
 
 
-def _make(store: FakeStore, qe: FakeQueryEngine) -> MemoryStore:
-    return MemoryStore(lambda: FakeMCS(store, qe))
+def _make(store: FakeStore, qe: FakeQueryEngine | None = None) -> MemoryStore:
+    return MemoryStore(lambda: FakeMCS(store, qe or FakeQueryEngine()))
 
 
-# === 2.1 根视图 / 节点不存在 / 孤立叶子 ===
+# === 根视图 / 节点不存在 / 孤立叶子 ===
 
 
-def test_root_view_focus_nodes_edges_relation_model():
+def test_root_view_focus_nodes_edges():
     store = FakeStore()
-    store.add_node(_n("__seed_root__", name="根", role="hub"))
+    store.add_node(_n("__seed_root__", name="根", hub=True))
     store.add_node(_n("c1", "概念甲"))
     store.add_node(_n("c2", "概念乙"))
     store.add_node(_n("f1", "事实端点"))
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c1", kind="hierarchy"))
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c2", kind="hierarchy"))
-    store.facts.append(Edge(source_id="__seed_root__", target_id="f1", kind="fact", label="关联"))
-    ms = _make(store, FakeQueryEngine("property_graph"))
+    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
+    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c2", type=EDGE_ASSOC))
+    store.relations.append(Edge(source_id="__seed_root__", target_id="f1", type=EDGE_ASSOC))
+    ms = _make(store)
     try:
         out = ms.graph_view("__seed_root__")
         assert out is not None
         assert out["node"]["id"] == "__seed_root__"
-        assert out["node"]["role"] == "hub"
-        assert out["relation_model"] == "property_graph"
-        # 邻居 = 层级子 ∪ 关系端点
+        assert out["node"]["hub"] is True
+        assert "relation_model" not in out  # 统一模型已删
+        # 邻居 = 下钻成员 ∪ 关系端点
         assert {n["id"] for n in out["nodes"]} == {"c1", "c2", "f1"}
-        kinds = [e["kind"] for e in out["edges"]]
-        assert kinds.count("hierarchy") == 2
-        assert kinds.count("fact") == 1
+        types = [e["type"] for e in out["edges"]]
+        assert types.count("关联") == 3  # 2 下钻 + 1 关系
     finally:
         ms.shutdown()
 
 
 def test_node_not_found_returns_none():
-    ms = _make(FakeStore(), FakeQueryEngine())
+    ms = _make(FakeStore())
     try:
         assert ms.graph_view("ghost") is None  # 不抛异常
     finally:
@@ -121,10 +117,10 @@ def test_node_not_found_returns_none():
 
 def test_isolated_leaf_empty_nodes_and_edges():
     store = FakeStore()
-    store.add_node(_n("__seed_root__", role="hub"))
+    store.add_node(_n("__seed_root__", hub=True))
     store.add_node(_n("leaf"))
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="leaf", kind="hierarchy"))
-    ms = _make(store, FakeQueryEngine())
+    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="leaf", type=EDGE_ASSOC))
+    ms = _make(store)
     try:
         out = ms.graph_view("leaf")
         assert out is not None
@@ -135,166 +131,90 @@ def test_isolated_leaf_empty_nodes_and_edges():
         ms.shutdown()
 
 
-# === 2.2 property_graph 事实边（带 label、端点入 nodes；双向端点） ===
+# === 关系边（关联/互斥）端点入 nodes；双向端点 ===
 
 
-def test_property_graph_fact_edge_with_label_and_endpoint():
+def test_relation_edge_endpoint_in_nodes():
     store = FakeStore()
     store.add_node(_n("a"))
     store.add_node(_n("b"))
-    store.facts.append(Edge(source_id="a", target_id="b", kind="fact", label="rel"))
-    ms = _make(store, FakeQueryEngine("property_graph"))
+    store.relations.append(Edge(source_id="a", target_id="b", type=EDGE_ASSOC))
+    ms = _make(store)
     try:
         out = ms.graph_view("a")
-        facts = [e for e in out["edges"] if e["kind"] == "fact"]
-        assert len(facts) == 1
-        assert facts[0]["label"] == "rel"  # 非空
-        assert facts[0]["source"] == "a" and facts[0]["target"] == "b"
+        rels = [e for e in out["edges"] if e["type"] == "关联"]
+        assert len(rels) == 1
+        assert rels[0]["source"] == "a" and rels[0]["target"] == "b"
         assert "b" in {n["id"] for n in out["nodes"]}  # 另一端入 nodes
     finally:
         ms.shutdown()
 
 
-def test_property_graph_fact_edge_reverse_endpoint():
-    """焦点为 fact 边的宾，另一端（源）也应入 nodes。"""
+def test_relation_edge_reverse_endpoint():
+    """焦点为关系边的宾，另一端（源）也应入 nodes（反查、双向可达）。"""
     store = FakeStore()
     store.add_node(_n("a"))
     store.add_node(_n("b"))
-    store.facts.append(Edge(source_id="a", target_id="b", kind="fact", label="causes"))
-    ms = _make(store, FakeQueryEngine("property_graph"))
+    store.relations.append(Edge(source_id="a", target_id="b", type=EDGE_MUTEX))
+    ms = _make(store)
     try:
         out = ms.graph_view("b")
-        facts = [e for e in out["edges"] if e["kind"] == "fact"]
-        assert len(facts) == 1
-        assert facts[0]["label"] == "causes"
+        rels = [e for e in out["edges"] if e["type"] == "互斥"]
+        assert len(rels) == 1
         assert "a" in {n["id"] for n in out["nodes"]}  # 反查：另一端 a
     finally:
         ms.shutdown()
 
 
-# === 2.3 attribute_node 关联边（无 label、属性节点入 nodes；两模式互斥） ===
+# === 纯 dict 字段 / type 取值 / 去重 / 下钻边契约 ===
 
 
-def test_attribute_node_assoc_edge_no_label_attribute_endpoint():
+def test_dict_fields_types_dedup_and_drill_contract():
     store = FakeStore()
-    store.add_node(_n("c", role="concept"))
-    store.add_node(_n("attr", role="attribute", content="某属性说法"))
-    store.assocs.append(Edge(source_id="c", target_id="attr", kind="assoc", label=""))
-    ms = _make(store, FakeQueryEngine("attribute_node"))
-    try:
-        out = ms.graph_view("c")
-        assert out["relation_model"] == "attribute_node"
-        assocs = [e for e in out["edges"] if e["kind"] == "assoc"]
-        assert len(assocs) == 1
-        assert assocs[0]["label"] == ""  # 无 label
-        attr_nodes = [n for n in out["nodes"] if n["id"] == "attr"]
-        assert len(attr_nodes) == 1
-        assert attr_nodes[0]["role"] == "attribute"  # attribute 节点序列化进 nodes
-    finally:
-        ms.shutdown()
-
-
-def test_property_graph_excludes_assoc_edges():
-    store = FakeStore()
-    store.add_node(_n("a"))
-    store.add_node(_n("b"))
-    store.facts.append(Edge(source_id="a", target_id="b", kind="fact", label="r"))
-    store.assocs.append(Edge(source_id="a", target_id="b", kind="assoc", label=""))
-    ms = _make(store, FakeQueryEngine("property_graph"))
-    try:
-        out = ms.graph_view("a")
-        kinds = {e["kind"] for e in out["edges"]}
-        assert "fact" in kinds
-        assert "assoc" not in kinds  # property_graph 不取 assoc
-    finally:
-        ms.shutdown()
-
-
-def test_attribute_node_excludes_fact_edges():
-    store = FakeStore()
-    store.add_node(_n("a"))
-    store.add_node(_n("b"))
-    store.facts.append(Edge(source_id="a", target_id="b", kind="fact", label="r"))
-    store.assocs.append(Edge(source_id="a", target_id="b", kind="assoc", label=""))
-    ms = _make(store, FakeQueryEngine("attribute_node"))
-    try:
-        out = ms.graph_view("a")
-        kinds = {e["kind"] for e in out["edges"]}
-        assert "assoc" in kinds
-        assert "fact" not in kinds  # attribute_node 不取 fact
-    finally:
-        ms.shutdown()
-
-
-# === 2.4 纯 dict 字段 / kind 取值 / 去重 / hierarchy 边契约 ===
-
-
-def test_dict_fields_kinds_dedup_and_hierarchy_contract():
-    store = FakeStore()
-    store.add_node(_n("__seed_root__", role="hub"))
-    store.add_node(_n("c1"))  # 既是层级子、又是 fact 端点（测去重）
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c1", kind="hierarchy"))
-    store.facts.append(Edge(source_id="__seed_root__", target_id="c1", kind="fact", label="r"))
-    ms = _make(store, FakeQueryEngine("property_graph"))
+    store.add_node(_n("__seed_root__", hub=True))
+    store.add_node(_n("c1"))  # 既是下钻成员、又是关系端点（测去重）
+    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
+    store.relations.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
+    ms = _make(store)
     try:
         out = ms.graph_view("__seed_root__")
-        # node / nodes[*] 含五键（含 degree 热力度数）
-        assert set(out["node"].keys()) == {"id", "name", "content", "role", "degree"}
+        # node / nodes[*] 含六键（含 degree 热力度数）
+        assert set(out["node"].keys()) == {"id", "name", "content", "node_class", "hub", "degree"}
         for n in out["nodes"]:
-            assert set(n.keys()) == {"id", "name", "content", "role", "degree"}
-        # degree = 层级子数 + 关系边度数：root = 1 子 + 1 fact = 2；c1 = 0 子 + 1 fact = 1
+            assert set(n.keys()) == {"id", "name", "content", "node_class", "hub", "degree"}
+        # degree = 下钻子数 + 关系边度数：root = 1 子 + 1 关系 = 2；c1 = 0 子 + 1 关系 = 1
         assert out["node"]["degree"] == 2
         c1 = next(n for n in out["nodes"] if n["id"] == "c1")
         assert c1["degree"] == 1
-        # edges[*] 恰五键、kind 合法
+        # edges[*] 恰四键、type 合法
         for e in out["edges"]:
-            assert set(e.keys()) == {"id", "source", "target", "kind", "label"}
-            assert e["kind"] in {"hierarchy", "fact", "assoc"}
-        assert "relation_model" in out
-        # nodes 按 id 去重：c1 既层级子又 fact 端点 → 只一份
+            assert set(e.keys()) == {"id", "source", "target", "type"}
+            assert e["type"] in {"关联", "互斥"}
+        assert "relation_model" not in out
+        # nodes 按 id 去重：c1 既下钻成员又关系端点 → 只一份
         assert sum(1 for n in out["nodes"] if n["id"] == "c1") == 1
-        # hierarchy 边契约
-        hier = [e for e in out["edges"] if e["kind"] == "hierarchy"]
-        assert len(hier) == 1
-        assert hier[0]["source"] == "__seed_root__"
-        assert hier[0]["target"] == "c1"
-        assert hier[0]["label"] == ""
+        # 下钻边契约（root→c1）
+        drill = [e for e in out["edges"] if e["source"] == "__seed_root__" and e["target"] == "c1"]
+        assert drill
         # 纯 JSON 可序列化（不含 dataclass / 内部对象）
         json.dumps(out)
     finally:
         ms.shutdown()
 
 
-def test_degree_attribute_node_counts_assoc():
-    """attribute_node 模式：degree 计层级子 + assoc 边度数（不计 fact）。"""
-    store = FakeStore()
-    store.add_node(_n("c", role="concept"))
-    store.add_node(_n("attr1", role="attribute"))
-    store.add_node(_n("attr2", role="attribute"))
-    store.assocs.append(Edge(source_id="c", target_id="attr1", kind="assoc"))
-    store.assocs.append(Edge(source_id="c", target_id="attr2", kind="assoc"))
-    ms = _make(store, FakeQueryEngine("attribute_node"))
-    try:
-        out = ms.graph_view("c")
-        # c = 0 子 + 2 assoc = 2
-        assert out["node"]["degree"] == 2
-    finally:
-        ms.shutdown()
-
-
-# === 边界：悬空关系边（task 1.3） ===
+# === 边界：悬空关系边 ===
 
 
 def test_dangling_relation_edge_kept_without_endpoint():
     store = FakeStore()
     store.add_node(_n("a"))
-    store.facts.append(Edge(source_id="a", target_id="ghost", kind="fact", label="r"))
-    ms = _make(store, FakeQueryEngine("property_graph"))
+    store.relations.append(Edge(source_id="a", target_id="ghost", type=EDGE_ASSOC))
+    ms = _make(store)
     try:
         out = ms.graph_view("a")
-        facts = [e for e in out["edges"] if e["kind"] == "fact"]
-        assert len(facts) == 1  # 边仍保留
-        assert facts[0]["target"] == "ghost"
+        rels = [e for e in out["edges"] if e["type"] == "关联"]
+        assert len(rels) == 1  # 边仍保留
+        assert rels[0]["target"] == "ghost"
         assert "ghost" not in {n["id"] for n in out["nodes"]}  # 悬空端点不崩、不入 nodes
         assert out["nodes"] == []
     finally:
@@ -305,16 +225,15 @@ def test_dangling_endpoint_queried_once_across_edges():
     """多条关系边指向同一悬空端点：get_node 对该端点只查一次（E1 去重），边仍全保留。"""
     store = FakeStore()
     store.add_node(_n("a"))
-    # 三条 fact 边都指向不存在的 ghost（悬空）
-    store.facts.append(Edge(source_id="a", target_id="ghost", kind="fact", label="r1"))
-    store.facts.append(Edge(source_id="a", target_id="ghost", kind="fact", label="r2"))
-    store.facts.append(Edge(source_id="a", target_id="ghost", kind="fact", label="r3"))
-    ms = _make(store, FakeQueryEngine("property_graph"))
+    # 三条关系边都指向不存在的 ghost（悬空）
+    store.relations.append(Edge(source_id="a", target_id="ghost", type=EDGE_ASSOC))
+    store.relations.append(Edge(source_id="a", target_id="ghost", type=EDGE_MUTEX))
+    store.relations.append(Edge(source_id="ghost", target_id="a", type=EDGE_ASSOC))
+    ms = _make(store)
     try:
         out = ms.graph_view("a")
         # 三条悬空边都保留进 edges
-        facts = [e for e in out["edges"] if e["kind"] == "fact"]
-        assert len(facts) == 3
+        assert len(out["edges"]) == 3
         # 但 ghost 端点只 get_node 一次（去重），不入 nodes
         assert store.get_node_counts.get("ghost", 0) == 1
         assert "ghost" not in {n["id"] for n in out["nodes"]}
@@ -322,15 +241,15 @@ def test_dangling_endpoint_queried_once_across_edges():
         ms.shutdown()
 
 
-# === 2.5 线程安全：读方法经单 worker 线程，执行线程 != 调用方 ===
+# === 线程安全：读方法经单 worker 线程，执行线程 != 调用方 ===
 
 
 def test_reads_run_in_single_worker_thread_not_caller():
     store = FakeStore()
-    store.add_node(_n("__seed_root__", role="hub"))
+    store.add_node(_n("__seed_root__", hub=True))
     store.add_node(_n("c1"))
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c1", kind="hierarchy"))
-    ms = _make(store, FakeQueryEngine())
+    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
+    ms = _make(store)
     try:
         ms.graph_view("__seed_root__")
         assert store.read_threads, "expected store read calls to be recorded"
@@ -338,5 +257,28 @@ def test_reads_run_in_single_worker_thread_not_caller():
         for tid in store.read_threads:
             assert tid != main_tid, "store reads MUST run off the caller thread"
         assert len(store.read_threads) == 1  # 全部经同一个 worker 线程（max_workers=1）
+    finally:
+        ms.shutdown()
+
+
+# === node_class 值透传（非默认类）===
+
+
+def test_node_class_value_passed_through():
+    """graph_view 原样透传 node_class 值（事件/事实/source，不止 keys 存在）。
+
+    现有断言只检 ``node_class`` 键存在；此处验证其**值**逐字透传，且非默认类
+    （事件）节点无邻居时 nodes 空、不崩。载重规则不在此测——本文件用 FakeStore，
+    其 ``get_relations`` 不做载重过滤；载重由真实 store 在
+    ``test_unified_graph_schema.test_get_relations_*`` 覆盖。
+    """
+    store = FakeStore()
+    store.add_node(_n("e", node_class="事件"))
+    ms = _make(store)
+    try:
+        out = ms.graph_view("e")
+        assert out is not None
+        assert out["node"]["node_class"] == "事件"
+        assert out["nodes"] == []  # 事件节点无邻居、不崩
     finally:
         ms.shutdown()

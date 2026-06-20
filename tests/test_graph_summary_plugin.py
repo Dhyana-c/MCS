@@ -16,15 +16,15 @@ _SEED_ROOT = "__seed_root__"
 
 def _store_with_hubs(*hubs: Node) -> InMemoryStore:
     store = InMemoryStore()
-    store.add_node(Node(id=_SEED_ROOT, name=_SEED_ROOT, content="", role="hub"))
+    store.add_node(Node(id=_SEED_ROOT, name=_SEED_ROOT, content="", extensions={"hub": True}))
     for h in hubs:
         store.add_node(h)
-        store.add_edge(_SEED_ROOT, h.id, kind="hierarchy")
+        store.add_edge(_SEED_ROOT, h.id, type="关联")
     return store
 
 
 def _concept(nid: str = "c1") -> Node:
-    return Node(id=nid, name=nid, content="某概念", role="concept")
+    return Node(id=nid, name=nid, content="某概念", node_class="概念")
 
 
 def _mock_llm(return_value="图主题摘要", raises: Exception | None = None):
@@ -49,8 +49,9 @@ def test_should_run_true_when_concept_present():
 
 
 def test_should_run_false_when_no_concept():
-    hub = Node(id="h1", name="h", content="", role="hub")
-    assert GraphSummaryPlugin().should_run([hub], InMemoryStore()) is False
+    """非概念节点（事件 / source）不触发；hub 标记的节点本身仍是概念类、会触发。"""
+    event = Node(id="e1", name="事件", content="", node_class="事件")
+    assert GraphSummaryPlugin().should_run([event], InMemoryStore()) is False
 
 
 def test_should_run_false_when_empty():
@@ -61,7 +62,7 @@ def test_should_run_false_when_empty():
 
 
 def test_run_summarizes_and_writes_meta():
-    hub = Node(id="h1", name="机器学习", content="ML 基础", role="hub")
+    hub = Node(id="h1", name="机器学习", content="ML 基础", extensions={"hub": True})
     store = _store_with_hubs(hub)
     caller, calls = _mock_llm("这张图关于机器学习基础")
     GraphSummaryPlugin().run([_concept()], store, caller)
@@ -75,7 +76,7 @@ def test_run_summarizes_and_writes_meta():
 
 
 def test_run_max_tokens_config():
-    hub = Node(id="h1", name="h", content="", role="hub")
+    hub = Node(id="h1", name="h", content="", extensions={"hub": True})
     store = _store_with_hubs(hub)
     caller, calls = _mock_llm()
     GraphSummaryPlugin({"max_tokens": 500}).run([_concept()], store, caller)
@@ -86,7 +87,7 @@ def test_run_max_tokens_config():
 
 
 def test_run_llm_failure_isolated_keeps_old_summary():
-    hub = Node(id="h1", name="h", content="", role="hub")
+    hub = Node(id="h1", name="h", content="", extensions={"hub": True})
     store = _store_with_hubs(hub)
     store.set_graph_meta("graph_summary", "旧摘要")
     caller, _ = _mock_llm(raises=RuntimeError("llm down"))
@@ -99,7 +100,7 @@ def test_run_llm_failure_isolated_keeps_old_summary():
 
 def test_run_empty_graph_no_call_no_raise():
     store = InMemoryStore()
-    store.add_node(Node(id=_SEED_ROOT, name=_SEED_ROOT, content="", role="hub"))
+    store.add_node(Node(id=_SEED_ROOT, name=_SEED_ROOT, content="", extensions={"hub": True}))
     caller, calls = _mock_llm()
     GraphSummaryPlugin().run([_concept()], store, caller)  # 不抛
     assert calls == []  # root 无层级子 → 不调 llm
@@ -110,7 +111,7 @@ def test_run_empty_graph_no_call_no_raise():
 
 
 def test_run_non_string_return_not_written():
-    hub = Node(id="h1", name="h", content="", role="hub")
+    hub = Node(id="h1", name="h", content="", extensions={"hub": True})
     store = _store_with_hubs(hub)
     caller, _ = _mock_llm(return_value=123)
     GraphSummaryPlugin().run([_concept()], store, caller)
@@ -118,7 +119,7 @@ def test_run_non_string_return_not_written():
 
 
 def test_run_empty_string_return_not_written():
-    hub = Node(id="h1", name="h", content="", role="hub")
+    hub = Node(id="h1", name="h", content="", extensions={"hub": True})
     store = _store_with_hubs(hub)
     caller, _ = _mock_llm(return_value="   ")
     GraphSummaryPlugin().run([_concept()], store, caller)

@@ -46,7 +46,7 @@ class UnknownActionError(MCSError):
     def __init__(self, action: str) -> None:
         super().__init__(
             f"Unknown decision action: {action!r}. "
-            f"Expected one of: merge / create / attach_statement / no_op"
+            f"Expected one of: merge / create / no_op"
         )
         self.action = action
 
@@ -55,8 +55,7 @@ class InvalidDecisionError(MCSError):
     """当 Decision 的必填字段缺失时抛出。
 
     与 ``UnknownActionError``（action 字符串本身未知）区分开：此异常表示
-    action 合法但其载荷不完整，例如 merge / attach_statement 缺 ``target_id``、
-    create 缺 ``concept``。
+    action 合法但其载荷不完整，例如 merge 缺 ``target_id``、create 缺 ``concept``。
     """
 
 

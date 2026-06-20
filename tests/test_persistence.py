@@ -57,9 +57,9 @@ def test_save_full_reflects_edge_deletion(tmp_path):
     store, _st, _pm = _storage_with_source_tracking(db)
     store.add_node(Node(id="a", name="A", content=""))
     store.add_node(Node(id="b", name="B", content=""))
-    store.add_edge("a", "b")
+    ab = store.add_edge("a", "b")
     store.save()              # 增量存：a、b、边 a-b
-    store.delete_edge("a", "b")     # 内存删边
+    store.delete_edge(ab)     # 内存删边（按边 id 删）
     store.save_full()        # 全量重建应反映删除
 
     store2 = SQLiteStore({"path": db})
@@ -67,7 +67,7 @@ def test_save_full_reflects_edge_deletion(tmp_path):
     store2.load()
     assert store2.get_node("a") is not None
     assert store2.get_node("b") is not None
-    assert store2.get_edge("a", "b") is None  # 边已不在持久存储
+    assert store2.get_edges_between("a", "b") == []  # 边已不在持久存储
 
 
 def test_incremental_save_does_not_delete_edge(tmp_path):
@@ -76,15 +76,15 @@ def test_incremental_save_does_not_delete_edge(tmp_path):
     store, _st, _pm = _storage_with_source_tracking(db)
     store.add_node(Node(id="a", name="A", content=""))
     store.add_node(Node(id="b", name="B", content=""))
-    store.add_edge("a", "b")
+    ab = store.add_edge("a", "b")
     store.save()
-    store.delete_edge("a", "b")
+    store.delete_edge(ab)
     store.save()             # 增量再存：不会删除旧边
 
     store2 = SQLiteStore({"path": db})
     store2.initialize()
     store2.load()
-    assert store2.get_edge("a", "b") is not None  # 旧边仍在 → 故需 save_full
+    assert store2.get_edges_between("a", "b") != []  # 旧边仍在 → 故需 save_full
 
 
 def test_flush_changes_persists_seed_root_incrementally(tmp_path):
@@ -96,7 +96,7 @@ def test_flush_changes_persists_seed_root_incrementally(tmp_path):
     db = str(tmp_path / "root.db")
     store = SQLiteStore({"path": db})
     store.initialize()
-    store.add_node(Node(id="__seed_root__", name="__seed_root__", content="", role="hub"))
+    store.add_node(Node(id="__seed_root__", name="__seed_root__", content="", extensions={"hub": True}))
     store.add_node(Node(id="c1", name="C1", content="概念一"))
     store.add_node(Node(id="c2", name="C2", content="概念二"))
     store.add_edge("__seed_root__", "c1")
@@ -108,9 +108,9 @@ def test_flush_changes_persists_seed_root_incrementally(tmp_path):
     store2.initialize()
     store2.load()
     root = store2.get_node("__seed_root__")
-    assert root is not None and root.role == "hub"
-    assert store2.get_edge("__seed_root__", "c1") is not None
-    assert store2.get_edge("__seed_root__", "c2") is not None
+    assert root is not None and root.hub is True
+    assert store2.get_edges_between("__seed_root__", "c1") != []
+    assert store2.get_edges_between("__seed_root__", "c2") != []
 
 
 def test_flush_changes_reflects_edge_deletion_incrementally(tmp_path):
@@ -120,10 +120,10 @@ def test_flush_changes_reflects_edge_deletion_incrementally(tmp_path):
     store.initialize()
     for nid in ("__seed_root__", "c1", "hub1"):
         store.add_node(Node(id=nid, name=nid, content=""))
-    store.add_edge("__seed_root__", "c1")
+    root_c1 = store.add_edge("__seed_root__", "c1")
     store.flush_changes()
     # 重挂：删 root→c1，新增 root→hub1 与 hub1→c1
-    store.delete_edge("__seed_root__", "c1")
+    store.delete_edge(root_c1)
     store.add_edge("__seed_root__", "hub1")
     store.add_edge("hub1", "c1")
     store.flush_changes()
@@ -132,9 +132,9 @@ def test_flush_changes_reflects_edge_deletion_incrementally(tmp_path):
     store2 = SQLiteStore({"path": db})
     store2.initialize()
     store2.load()
-    assert store2.get_edge("__seed_root__", "c1") is None  # 旧边已被增量删除
-    assert store2.get_edge("__seed_root__", "hub1") is not None
-    assert store2.get_edge("hub1", "c1") is not None
+    assert store2.get_edges_between("__seed_root__", "c1") == []  # 旧边已被增量删除
+    assert store2.get_edges_between("__seed_root__", "hub1") != []
+    assert store2.get_edges_between("hub1", "c1") != []
 
 
 def test_flush_changes_reflects_node_deletion_incrementally(tmp_path):
@@ -154,7 +154,7 @@ def test_flush_changes_reflects_node_deletion_incrementally(tmp_path):
     store2.initialize()
     store2.load()
     assert store2.get_node("b") is None
-    assert store2.get_edge("a", "b") is None
+    assert store2.get_edges_between("a", "b") == []
 
 
 def test_reorg_rollback_no_duplicate_edges_after_flush(tmp_path):
@@ -171,16 +171,16 @@ def test_reorg_rollback_no_duplicate_edges_after_flush(tmp_path):
     store.initialize()
     for nid in ["a", "b", "c", "d"]:
         store.add_node(Node(id=nid, name=nid, content=nid))
-    store.add_edge("a", "b", kind="fact", label="likes")
-    store.add_edge("a", "c", kind="hierarchy")
-    store.add_edge("a", "d", kind="hierarchy")
+    store.add_edge("a", "b")
+    store.add_edge("a", "c", type="关联")
+    store.add_edge("a", "d", type="关联")
     store.flush_changes()  # 模拟上一轮 ingest 增量落盘（3 条边）
 
     plugin = FanoutReducerPlugin()
     snap = store.snapshot()
     # 模拟一次中途修改后被判定失败、需回滚的 reorg：
-    store.add_node(Node(id="hub", name="hub", content="hub", role="hub"))
-    store.add_edge("hub", "b", kind="hierarchy")
+    store.add_node(Node(id="hub", name="hub", content="hub", extensions={"hub": True}))
+    store.add_edge("hub", "b", type="关联")
     ac_id = next(e.id for e in store.get_edges_between("a", "c"))
     store.delete_edge(ac_id)
     plugin._rollback_reorg(store, snap)
@@ -197,27 +197,26 @@ def test_reorg_rollback_no_duplicate_edges_after_flush(tmp_path):
     store2.initialize()
     store2.load()
     assert len(store2.get_all_edges()) == 3, "回滚后 DB 出现重复边"
-    assert len(store2.get_facts("a")) == 1
+    assert len(store2.get_relations("a")) == 3  # a→b/c/d 三条关联边（统一模型）
     assert len(store2.get_edges_between("a", "c")) == 1
     assert store2.get_node("hub") is None
 
 
 def test_store_snapshot_restore_roundtrip_preserves_edge_ids(tmp_path):
-    """snapshot/restore round-trip 保留边 id 与 label（InMemory + SQLite 同契约）。"""
+    """snapshot/restore round-trip 保留边 id 与 type（InMemory + SQLite 同契约）。"""
     for store in (InMemoryStore(), SQLiteStore({"path": str(tmp_path / "snap.db")})):
         if isinstance(store, SQLiteStore):
             store.initialize()
         store.add_node(Node(id="a", name="A", content="A"))
         store.add_node(Node(id="b", name="B", content="B"))
-        fid = store.add_edge("a", "b", kind="fact", label="喜欢")
+        fid = store.add_edge("a", "b")
         snap = store.snapshot()
         store.delete_edge(fid)
-        store.add_edge("a", "b", kind="fact", label="讨厌")
+        store.add_edge("a", "b")
         store.restore(snap)
-        facts = store.get_facts("a")
+        facts = store.get_relations("a")
         assert len(facts) == 1
         assert facts[0].id == fid
-        assert facts[0].label == "喜欢"
 
 
 def _full_pipeline(db_path: str, mock_llm):
@@ -365,9 +364,9 @@ def test_load_tolerates_legacy_stringified_source(tmp_path):
         }
     }
     store.conn.execute(
-        "INSERT OR REPLACE INTO nodes (id, name, content, role, extensions_json) "
+        "INSERT OR REPLACE INTO nodes (id, name, content, node_class, extensions_json) "
         "VALUES (?, ?, ?, ?, ?)",
-        ("old1", "Old", "c", "concept", json.dumps(legacy)),
+        ("old1", "Old", "c", "概念", json.dumps(legacy)),
     )
     store.commit()
 
@@ -478,3 +477,36 @@ def test_failed_persist_not_marked_and_retried(tmp_path, mock_llm):
         "SELECT * FROM document_chunks WHERE doc_id='D1' AND chunk_id='0'"
     ).fetchone()
     assert row2 is not None
+
+
+# ─── snapshot extensions 深拷贝（F：嵌套 mutation 回滚）───────────────────────
+
+
+def test_snapshot_restore_isolates_nested_extensions_in_memory():
+    """snapshot extensions 深拷贝：裂变期间原地改嵌套结构后回滚，快照不被污染。
+
+    浅拷贝（``dict(...)``）会因嵌套 list 共享引用而回滚失败——aliases 列表被原地
+    append 后，快照里的同一列表也变，restore 回不去。深拷贝隔离引用、彻底回滚。
+    """
+    store = InMemoryStore()
+    store.add_node(
+        Node(id="a", name="A", content="", extensions={"alias_index": {"aliases": ["x"]}})
+    )
+    snap = store.snapshot()
+    # 模拟裂变期间原地 mutate 当前节点 extensions 的嵌套结构
+    store.get_node("a").extensions["alias_index"]["aliases"].append("y")
+    store.restore(snap)
+    assert store.get_node("a").extensions["alias_index"]["aliases"] == ["x"]
+
+
+def test_snapshot_restore_isolates_nested_extensions_sqlite(tmp_path):
+    """SQLiteStore 同构：snapshot 深拷贝隔离嵌套结构（含变更跟踪集还原）。"""
+    store = SQLiteStore({"path": str(tmp_path / "g.db")})
+    store.initialize()
+    store.add_node(
+        Node(id="a", name="A", content="", extensions={"alias_index": {"aliases": ["x"]}})
+    )
+    snap = store.snapshot()
+    store.get_node("a").extensions["alias_index"]["aliases"].append("y")
+    store.restore(snap)
+    assert store.get_node("a").extensions["alias_index"]["aliases"] == ["x"]

@@ -1,4 +1,4 @@
-"""WritePipeline._apply_decisions 测试：4 种 action 类型 + 错误处理。"""
+"""WritePipeline._apply_decisions 测试：3 种 action 类型 + 错误处理。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from mcs.core.store import StoreInterface
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
 from mcs.entities.decisions import ConceptDraft, Decision
-from mcs.entities.graph import Node
+from mcs.entities.graph import CLASS_CONCEPT, CLASS_FACT, EDGE_MUTEX, Node
 
 
 def _make_pipeline(store: StoreInterface, mock_llm) -> WritePipeline:
@@ -42,8 +42,8 @@ def test_create_adds_node_with_edges(empty_graph, mock_llm):
                 action="create",
                 concept=concept,
                 edges_to=[
-                    {"target_id": "anchor1", "label": "相关"},
-                    {"target_id": "anchor2", "label": "相关"},
+                    {"target_id": "anchor1"},
+                    {"target_id": "anchor2"},
                 ],
             )
         ]
@@ -52,7 +52,7 @@ def test_create_adds_node_with_edges(empty_graph, mock_llm):
     new_node = changed[0]
     assert new_node.name == "新概念"
     # 两个锚点都应该是新节点的事实邻居（事实边两端可达）。
-    fact_targets = {e.target_id for e in empty_graph.get_facts(new_node.id)}
+    fact_targets = {e.target_id for e in empty_graph.get_relations(new_node.id)}
     assert fact_targets == {"anchor1", "anchor2"}
 
 
@@ -65,8 +65,8 @@ def test_create_links_intra_batch_via_edges_to_names(empty_graph, mock_llm):
                 action="create",
                 concept=ConceptDraft(name="苹果公司", content=""),
                 edges_to_names=[
-                    {"target_name": "iPhone", "label": "生产"},
-                    {"target_name": "乔布斯", "label": "创立"},
+                    {"target_name": "iPhone"},
+                    {"target_name": "乔布斯"},
                 ],
             ),
             Decision(action="create", concept=ConceptDraft(name="iPhone", content="")),
@@ -75,7 +75,7 @@ def test_create_links_intra_batch_via_edges_to_names(empty_graph, mock_llm):
     )
     assert [c.name for c in changed] == ["苹果公司", "iPhone", "乔布斯"]
     apple = next(n for n in empty_graph.get_all_nodes() if n.name == "苹果公司")
-    fact_targets = {n.name for e in empty_graph.get_facts(apple.id)
+    fact_targets = {n.name for e in empty_graph.get_relations(apple.id)
                     for n in empty_graph.get_all_nodes()
                     if n.id == e.target_id}
     assert fact_targets == {"iPhone", "乔布斯"}
@@ -90,16 +90,16 @@ def test_edges_to_names_skips_unknown_and_self(empty_graph, mock_llm):
                 action="create",
                 concept=ConceptDraft(name="A", content=""),
                 edges_to_names=[
-                    {"target_name": "A", "label": "自环"},
-                    {"target_name": "不存在", "label": "相关"},
-                    {"target_name": "B", "label": "相关"},
+                    {"target_name": "A"},
+                    {"target_name": "不存在"},
+                    {"target_name": "B"},
                 ],
             ),
             Decision(action="create", concept=ConceptDraft(name="B", content="")),
         ]
     )
     a = next(n for n in empty_graph.get_all_nodes() if n.name == "A")
-    fact_targets = {n.name for e in empty_graph.get_facts(a.id)
+    fact_targets = {n.name for e in empty_graph.get_relations(a.id)
                     for n in empty_graph.get_all_nodes()
                     if n.id == e.target_id}
     assert fact_targets == {"B"}
@@ -120,32 +120,13 @@ def test_edges_to_names_can_link_to_merged_target(empty_graph, mock_llm):
             Decision(
                 action="create",
                 concept=ConceptDraft(name="神经网络", content=""),
-                edges_to_names=[{"target_name": "DL", "label": "相关"}],
+                edges_to_names=[{"target_name": "DL"}],
             ),
         ]
     )
     nn = next(n for n in empty_graph.get_all_nodes() if n.name == "神经网络")
-    fact_targets = {e.target_id for e in empty_graph.get_facts(nn.id)}
+    fact_targets = {e.target_id for e in empty_graph.get_relations(nn.id)}
     assert "t1" in fact_targets
-
-
-def test_create_with_initial_statements_ignored(empty_graph, mock_llm):
-    """initial_statements 已废弃，create 时不再写入 extensions。"""
-    wp = _make_pipeline(empty_graph, mock_llm)
-    concept = ConceptDraft(name="C", content="some content")
-    changed = wp._apply_decisions(
-        [
-            Decision(
-                action="create",
-                concept=concept,
-                edges_to=[],
-                initial_statements=["s1", "s2"],
-            )
-        ]
-    )
-    node = changed[0]
-    assert node.content == "some content"
-    assert "statements" not in node.extensions
 
 
 def test_merge_does_not_add_node(empty_graph, mock_llm):
@@ -225,14 +206,13 @@ def test_merge_without_target_id_raises(empty_graph, mock_llm):
         )
 
 
-def test_sanitize_drops_targetless_merge_and_attach(empty_graph, mock_llm):
-    """LLM 偶发的 target_id=null 的 merge/attach 应被清洗丢弃，
+def test_sanitize_drops_targetless_merge(empty_graph, mock_llm):
+    """LLM 偶发的 target_id=null 的 merge 应被清洗丢弃，
 
     使整次摄入不再因单个坏决策崩溃；create 等正常决策保留。
     """
     wp = _make_pipeline(empty_graph, mock_llm)
     decisions = [
-        Decision(action="attach_statement", target_id=None, statement="坏"),
         Decision(
             action="merge",
             concept=ConceptDraft(name="X", content=""),
@@ -246,32 +226,6 @@ def test_sanitize_drops_targetless_merge_and_attach(empty_graph, mock_llm):
     changed = wp._apply_decisions(cleaned)
     assert len(changed) == 1
     assert changed[0].name == "好"
-
-
-def test_attach_statement_is_noop(empty_graph, mock_llm):
-    """attach_statement 已废弃，现为 no-op，不修改目标节点。"""
-    attr_node = Node(id="attr1", name="X的爱好", content="原始内容", role="attribute")
-    empty_graph.add_node(attr_node)
-
-    wp = _make_pipeline(empty_graph, mock_llm)
-    wp._apply_decisions(
-        [
-            Decision(
-                action="attach_statement",
-                target_id="attr1",
-                statement="说法1",
-            ),
-            Decision(
-                action="attach_statement",
-                target_id="attr1",
-                statement="说法2",
-            ),
-        ]
-    )
-    # attach_statement 为 no-op，content 不变，无 statements
-    node = empty_graph.get_node("attr1")
-    assert node.content == "原始内容"
-    assert "statements" not in node.extensions
 
 
 def test_no_op_changes_nothing(empty_graph, mock_llm):
@@ -303,3 +257,115 @@ def test_multiple_decisions_apply_in_order(empty_graph, mock_llm):
     )
     assert [c.name for c in changed] == ["A", "B", "C"]
     assert len(empty_graph.get_all_nodes()) == 3
+
+
+# ─── 事实节点 + 互斥边 ────────────────────────────────────────────────────
+
+
+def test_create_fact_node(empty_graph, mock_llm):
+    """Decision(node_class=事实) 创建 node_class=="事实" 的事实节点。"""
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="苹果创立了NeXT", content="苹果创立了NeXT", node_class=CLASS_FACT),
+                node_class=CLASS_FACT,
+            )
+        ]
+    )
+    assert len(changed) == 1
+    assert changed[0].node_class == CLASS_FACT
+
+
+def test_create_concept_node_default(empty_graph, mock_llm):
+    """不设 node_class 时默认创建概念节点（向后兼容）。"""
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [Decision(action="create", concept=ConceptDraft(name="概念A", content=""))]
+    )
+    assert len(changed) == 1
+    assert changed[0].node_class == CLASS_CONCEPT
+
+
+def test_mutex_edge_created_between_facts(empty_graph, mock_llm):
+    """Decision(mutex_with=[id]) 在两个事实间创建互斥边。"""
+    fact1 = Node(id="f1", name="地球是平的", content="地球是平的", node_class=CLASS_FACT)
+    empty_graph.add_node(fact1)
+
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="地球是圆的", content="地球是圆的", node_class=CLASS_FACT),
+                node_class=CLASS_FACT,
+                mutex_with=["f1"],
+            )
+        ]
+    )
+    assert len(changed) == 1
+    new_fact = changed[0]
+    # 新事实 → f1 应有互斥边
+    mutex_edges = [e for e in empty_graph.get_relations(new_fact.id) if e.type == EDGE_MUTEX]
+    assert len(mutex_edges) >= 1
+    # 互斥边的另一端应是 f1
+    assert any(
+        (e.source_id == "f1" or e.target_id == "f1") for e in mutex_edges
+    )
+
+
+def test_mutex_with_names_resolved_in_batch(empty_graph, mock_llm):
+    """同批两个事实用 mutex_with_names 互连互斥边。"""
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="事实A", content="A说法", node_class=CLASS_FACT),
+                node_class=CLASS_FACT,
+                mutex_with_names=["事实B"],
+            ),
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="事实B", content="B说法", node_class=CLASS_FACT),
+                node_class=CLASS_FACT,
+                mutex_with_names=["事实A"],
+            ),
+        ]
+    )
+    assert len(changed) == 2
+    fact_a = next(n for n in changed if n.name == "事实A")
+    fact_b = next(n for n in changed if n.name == "事实B")
+    # A→B 或 B→A 应有互斥边（store 层无序对去重，可能只一条）
+    mutex = [e for e in empty_graph.get_relations(fact_a.id) if e.type == EDGE_MUTEX]
+    assert len(mutex) >= 1
+
+
+def test_concept_mutex_rejected(empty_graph, mock_llm):
+    """概念间的 mutex_with 被拒绝——互斥边两端必须为事实（宪法"互斥恒为事实↔事实"）。
+
+    store 层 add_edge(type=互斥) 校验两端 node_class==事实，概念间互斥抛 ValueError。
+    _apply_decisions 中概念 mutex_with 应被静默跳过（不建边），而非让异常冒泡。
+    """
+    concept1 = Node(id="c1", name="苹果", content="", node_class=CLASS_CONCEPT)
+    empty_graph.add_node(concept1)
+
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="橙子", content=""),
+                node_class=CLASS_CONCEPT,
+                mutex_with=["c1"],
+            )
+        ]
+    )
+    assert len(changed) == 1
+    # 概念间不建互斥边——store 层校验拒绝，_apply_decisions 中 add_edge 抛 ValueError
+    # 应被静默跳过而非冒泡（概念 mutex_with 是 LLM 误判，不应崩管线）
+    # 验证：概念节点无互斥边
+    new_concept = changed[0]
+    mutex_edges = [e for e in empty_graph.get_relations(new_concept.id) if e.type == EDGE_MUTEX]
+    assert len(mutex_edges) == 0

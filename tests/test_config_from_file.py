@@ -54,13 +54,13 @@ def test_scalar_override(tmp_path):
 preset: knowledge_graph
 token_budget: 999
 max_rounds: 7
-attribute_content_max: 300
+max_accumulated_nodes: 300
 """,
     )
     cfg = MCSConfig.from_file(path)
     assert cfg.token_budget == 999
     assert cfg.max_rounds == 7
-    assert cfg.attribute_content_max == 300
+    assert cfg.max_accumulated_nodes == 300
 
 
 def test_plugin_configs_deep_merge(tmp_path):
@@ -148,7 +148,7 @@ prompt_overrides:
 
 
 def test_no_preset_raw_fields(tmp_path):
-    # 无 preset：write_llm / read_llm / relation_model 是原始字段（写插件名）
+    # 无 preset：write_llm / read_llm 是原始字段（写插件名）
     path = _write(
         tmp_path,
         """
@@ -164,7 +164,7 @@ token_budget: 4096
     assert cfg.read_llm == "my:CustomLLM"
     assert cfg.shared_plugins == ["my:CustomSummary"]
     assert cfg.token_budget == 4096
-    assert cfg.relation_model == "property_graph"  # 默认
+    assert not hasattr(cfg, "relation_model")  # 统一模型已删除该字段
 
 
 def test_env_expansion_integration(tmp_path, monkeypatch):
@@ -203,15 +203,16 @@ def test_unknown_preset_raises(tmp_path):
         MCSConfig.from_file(path)
 
 
-def test_invalid_relation_model_no_preset_raises(tmp_path):
+def test_unknown_field_ignored_no_preset(tmp_path):
+    """统一模型已删 relation_model：未知 YAML 键被忽略、不抛错。"""
     path = _write(
         tmp_path,
         """
 relation_model: bogus_model
 """,
     )
-    with pytest.raises(ValueError, match="relation_model"):
-        MCSConfig.from_file(path)
+    cfg = MCSConfig.from_file(path)  # 不抛
+    assert not hasattr(cfg, "relation_model")
 
 
 def test_missing_pyyaml_reports_install_hint(tmp_path, monkeypatch):

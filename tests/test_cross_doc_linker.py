@@ -24,7 +24,7 @@ def _node(node_id: str, name: str, doc_id: str, aliases=None) -> Node:
     ext = {"source_tracking": {"sources": [{"doc_id": doc_id}]}}
     if aliases:
         ext["alias_index"] = {"aliases": aliases}
-    return Node(id=node_id, name=name, content="", role="concept", extensions=ext)
+    return Node(id=node_id, name=name, content="", node_class="概念", extensions=ext)
 
 
 def _graph(*nodes: Node) -> GraphStore:
@@ -97,24 +97,23 @@ def _make_db(path, nodes, edges=()):
     conn = sqlite3.connect(path)
     conn.execute(
         "CREATE TABLE nodes (id TEXT PRIMARY KEY, name TEXT NOT NULL, "
-        "content TEXT, role TEXT DEFAULT 'concept', extensions_json TEXT)"
+        "content TEXT, node_class TEXT DEFAULT '概念', extensions_json TEXT)"
     )
     conn.execute(
         "CREATE TABLE edges (id TEXT PRIMARY KEY, "
         "source_id TEXT NOT NULL, target_id TEXT NOT NULL, "
-        "kind TEXT NOT NULL DEFAULT 'hierarchy', "
-        "label TEXT NOT NULL DEFAULT '', priority REAL NOT NULL DEFAULT 0.0)"
+        "type TEXT NOT NULL DEFAULT '关联', priority REAL NOT NULL DEFAULT 0.0)"
     )
     for n in nodes:
         conn.execute(
-            "INSERT INTO nodes (id, name, content, role, extensions_json) "
+            "INSERT INTO nodes (id, name, content, node_class, extensions_json) "
             "VALUES (?, ?, ?, ?, ?)",
-            (n.id, n.name, n.content, n.role, json.dumps(n.extensions)),
+            (n.id, n.name, n.content, n.node_class, json.dumps(n.extensions)),
         )
     for s, t in edges:
         conn.execute(
-            "INSERT INTO edges (id, source_id, target_id, kind, label) VALUES (?, ?, ?, ?, ?)",
-            (f"e_{s}_{t}", s, t, "hierarchy", ""),
+            "INSERT INTO edges (id, source_id, target_id, type) VALUES (?, ?, ?, ?)",
+            (f"e_{s}_{t}", s, t, "关联"),
         )
     conn.commit()
     conn.close()

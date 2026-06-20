@@ -107,7 +107,7 @@ def test_normal_hub_created_when_not_overbroad():
     )
     hub = fr._create_hub_from_community(comm, g, [])
     assert hub is not None
-    assert hub.role == "hub"
+    assert hub.hub is True
 
 
 def test_similar_hub_deduplication():
@@ -117,7 +117,7 @@ def test_similar_hub_deduplication():
         id="existing_hub",
         name="Medical Hub",
         content="Medical and healthcare information cluster",
-        role="hub",
+        extensions={"hub": True},
     )
     g.add_node(existing)
 
@@ -138,7 +138,7 @@ def test_dissimilar_hub_not_deduplicated():
         id="sports_hub",
         name="Sports Hub",
         content="Sports and athletics information",
-        role="hub",
+        extensions={"hub": True},
     )
     g.add_node(existing)
 
@@ -156,7 +156,7 @@ def test_max_reorg_warning_logged(mock_llm, caplog):
     g = GraphStore()
     concepts = []
     for i in range(20):
-        n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400, role="concept")
+        n = Node(id=f"c{i}", name=f"c{i}", content="a" * 400)
         g.add_node(n)
         concepts.append(n)
 

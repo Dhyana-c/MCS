@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from mcs.core.query_engine import QueryEngine
     from mcs.core.store import StoreInterface
     from mcs.core.write_pipeline import WritePipeline
+    from mcs.entities.decisions import EventData, SourceData
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,14 @@ class MCS:
         """执行写入管线。返回最终的 WriteContext。"""
         return self.write_pipeline.ingest(text, **metadata)
 
+    def ingest_event(self, event_data: "EventData") -> Any:
+        """事件规则入库（不经 LLM）。创建事件节点并连背书边。"""
+        return self.write_pipeline.ingest_event(event_data)
+
+    def ingest_source(self, source_data: "SourceData") -> Any:
+        """Source 规则入库（不经 LLM）。按类型切分存入 source 节点。"""
+        return self.write_pipeline.ingest_source(source_data)
+
     def query(
         self,
         text: str,
@@ -66,6 +75,48 @@ class MCS:
         后处理插件可将其转换为其他类型（如自然语言字符串）。
         """
         return self.query_engine.query(text, existing_context=existing_context)
+
+    # === 维护 ===
+
+    def run_maintenance(self, force: bool = False) -> list[str]:
+        """执行后台维护扫描（去重 / 压缩 / 摘要等）。
+
+        遍历两个 PluginManager 中所有 ``MAINTENANCE`` 类型插件，
+        仅执行 ``should_run()`` 返回 True 的那些。当 ``force=True``
+        时忽略 ``should_run()`` 全部执行。
+
+        返回实际执行的插件名称列表。
+
+        触发时机建议：
+        - 写入后（ingest/ingest_event/ingest_source 返回后）
+        - 定时器（外部调度器控制频率和算力预算）
+        - 手动（force=True 强制全扫）
+
+        维护插件的算力预算由插件自身控制（如 DedupMaintenance
+        通过 token_budget 参数守门；FanoutReducerPlugin 由
+        should_run 判断是否触发）。
+        """
+        from mcs.core.plugin import PluginType
+
+        ran: list[str] = []
+        seen_names: set[str] = set()
+
+        for manager in (self.write_manager, self.read_manager):
+            for plugin in manager.get_all(PluginType.MAINTENANCE):
+                if plugin.get_name() in seen_names:
+                    continue
+                seen_names.add(plugin.get_name())
+                if force or plugin.should_run():
+                    try:
+                        plugin.execute(store=self.store)
+                        ran.append(plugin.get_name())
+                    except Exception:
+                        logger.warning(
+                            "维护插件 %s 执行失败",
+                            plugin.get_name(),
+                            exc_info=True,
+                        )
+        return ran
 
     # === 插件注册/注销 ===
 

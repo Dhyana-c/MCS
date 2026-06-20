@@ -2,7 +2,7 @@
 """Analyze decision patterns in judge_relations output.
 
 This script loads the graph and analyzes:
-1. Decision action distribution (merge vs create vs attach_statement vs no_op)
+1. Decision action distribution (merge vs create vs no_op)
 2. Cross-document connectivity patterns
 3. Edge density per node
 """

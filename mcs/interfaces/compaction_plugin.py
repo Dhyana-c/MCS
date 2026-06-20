@@ -26,8 +26,7 @@ class CompactionPluginInterface(Plugin):
     should_run 负责检查不变量（包括 root 和受影响节点的一跳邻域
     是否超预算），run 负责执行压缩/裂变。
 
-    示例：FanoutReducer（将溢出节点折叠为枢纽）、
-    CommunityMerger（合并稠密区域）、SummaryRegen（刷新摘要）。
+    示例：FanoutReducer（将溢出节点折叠为枢纽）、SummaryRegen（刷新摘要）。
     """
 
     def get_type(self) -> PluginType:

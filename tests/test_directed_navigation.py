@@ -7,9 +7,8 @@ from __future__ import annotations
 
 from conftest import init_plugin_manager
 
-from mcs.entities.graph import Node
+from mcs.entities.graph import Node, SEED_ROOT_ID
 from mcs.plugins.entry.hub_fallback import HubFallbackEntryPlugin
-from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
 from mcs.stores.in_memory import InMemoryStore
 
 GraphStore = InMemoryStore
@@ -18,8 +17,8 @@ GraphStore = InMemoryStore
 def test_navigate_follows_all_out_edges(mock_llm):
     """_navigate 沿所有出边下钻，包括语义出边（双向边拆成的两条单向边）。"""
     g = GraphStore()
-    root = Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub")
-    hub_a = Node(id="hub_a", name="Hub A", content="desc A", role="hub")
+    root = Node(id=SEED_ROOT_ID, name="__seed_root__", content="", extensions={"hub": True})
+    hub_a = Node(id="hub_a", name="Hub A", content="desc A", extensions={"hub": True})
     leaf_b = Node(id="leaf_b", name="Leaf B", content="content B")
     semantic_c = Node(id="semantic_c", name="Semantic C", content="peer")
 
@@ -58,8 +57,8 @@ def test_navigate_follows_all_out_edges(mock_llm):
 def test_navigate_does_not_come_back_via_uplink(mock_llm):
     """单向边拓扑下，visited 集合保证每个节点只检视一次、不会成环。"""
     g = GraphStore()
-    root = Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub")
-    a = Node(id="a", name="A", content="parent", role="hub")
+    root = Node(id=SEED_ROOT_ID, name="__seed_root__", content="", extensions={"hub": True})
+    a = Node(id="a", name="A", content="parent", extensions={"hub": True})
     b = Node(id="b", name="B", content="member")
 
     for n in [root, a, b]:
@@ -98,9 +97,9 @@ def test_navigate_does_not_come_back_via_uplink(mock_llm):
 def test_navigate_from_root_does_not_revisit_ancestors(mock_llm):
     """从持久根下钻时，visited 集合保证祖先不会被重复检视。"""
     g = GraphStore()
-    root = Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub")
-    hub1 = Node(id="hub1", name="Hub1", content="hub 1", role="hub")
-    hub2 = Node(id="hub2", name="Hub2", content="hub 2", role="hub")
+    root = Node(id=SEED_ROOT_ID, name="__seed_root__", content="", extensions={"hub": True})
+    hub1 = Node(id="hub1", name="Hub1", content="hub 1", extensions={"hub": True})
+    hub2 = Node(id="hub2", name="Hub2", content="hub 2", extensions={"hub": True})
     leaf1 = Node(id="leaf1", name="Leaf1", content="leaf under hub1")
     leaf2 = Node(id="leaf2", name="Leaf2", content="leaf under hub2")
 
@@ -139,7 +138,7 @@ def test_navigate_from_root_does_not_revisit_ancestors(mock_llm):
 def test_whole_circle_marked_visited(mock_llm):
     """每层整圈候选入 visited，后续层不会重复检视。"""
     g = GraphStore()
-    root = Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub")
+    root = Node(id=SEED_ROOT_ID, name="__seed_root__", content="", extensions={"hub": True})
     c1 = Node(id="c1", name="C1", content="child 1")
     c2 = Node(id="c2", name="C2", content="child 2")
     c3 = Node(id="c3", name="C3", content="child 3")

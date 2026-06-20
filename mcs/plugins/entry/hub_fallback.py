@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.plugin import PluginType
+from mcs.entities.graph import SEED_ROOT_ID
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 
 if TYPE_CHECKING:
@@ -62,8 +63,6 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
         if self.store is None:
             return []
         # 优先：从持久虚拟根自顶向下导航（其(递归)子节点即兜底种子）
-        from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
-
         root = self.store.get_node(SEED_ROOT_ID)
         if root is not None:
             children = self.store.get_out_hierarchy(root.id)
@@ -72,8 +71,8 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
             landed = [n for n in self._navigate(query, [root]) if n.id != root.id]
             # 导航失败（只剩根）则回退为根的直接子节点；绝不把合成根当种子
             return (landed or children)[: self.max_seeds]
-        # 回退：无持久根时用 role==hub 的旧行为
-        hubs = [n for n in self.store.get_all_nodes() if n.role == "hub"]
+        # 回退：无持久根时用 hub 标记节点的旧行为
+        hubs = [n for n in self.store.get_all_nodes() if n.hub]
         if not hubs:
             return []
         if self.llm is None or not self.use_llm_navigation:

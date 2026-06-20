@@ -136,27 +136,25 @@ class ContextRenderer:
 
         return "\n".join(lines)
 
-    # === 事实渲染（select_facts purpose） ===
+    # === 关系边渲染（select_facts purpose） ===
 
     def render_facts(
         self,
         nodes: list[Node],
         edges: list[Edge],
         purpose: str = "select_facts",
-        mode: str = "property_graph",
     ) -> str:
-        """将节点 + 关系边统一编号平铺为事实/关联条目（purpose=select_facts）。
+        """将节点 + 关系边统一编号平铺为条目（purpose=select_facts）。
 
         节点在前、关系边在后，单一连续编号（1. 2. 3. … 跨类型单调递增）。
-        关系边渲染随 ``mode``：``property_graph`` 用 ``主 —label→ 宾``（事实边）、
-        ``attribute_node`` 用 ``主 — 宾``（无 label 关联边）。与 TokenBudget 估算共用
-        此格式（铁律一，口径随模式）。
+        关系边统一渲染为 ``主 — 宾``（``关联`` / ``互斥`` 同形，**无 label**；
+        边的 ``type`` 是结构标记、不计 token、不进渲染文本——见铁律一）。与
+        TokenBudget 估算共用此格式（铁律一，估算 == 渲染）。
 
         Args:
             nodes: 候选节点列表
-            edges: 候选关系边列表（property_graph 为 fact、attribute_node 为 assoc）
+            edges: 候选关系边列表（关联 / 互斥）
             purpose: LLM 目的（默认 select_facts）
-            mode: 关系表示模式（默认 property_graph；渲染器不持 config、由调用方传）
 
         Returns:
             渲染文本，含编号 → 节点/关系边映射
@@ -184,66 +182,34 @@ class ContextRenderer:
                 lines.append(f"{idx}.{full[1:]}")
             idx += 1
 
-        # 关系边条目（按 mode：property_graph 渲染事实边、attribute_node 渲染关联边）
-        render_edge = (
-            ContextRenderer.render_assoc_edge
-            if mode == "attribute_node"
-            else ContextRenderer.render_fact_edge
-        )
+        # 关系边条目（统一 主 — 宾，无 label；type 不计 token）
         edge_extensions = self._get_edge_extensions()
         for edge in edges:
-            rendered = render_edge(edge, node_map, edge_extensions, purpose)
+            rendered = ContextRenderer.render_relation_edge(
+                edge, node_map, edge_extensions, purpose
+            )
             lines.append(f"{idx}. {rendered}")
             idx += 1
 
         return "\n".join(lines)
 
     @staticmethod
-    def render_fact_edge(
+    def render_relation_edge(
         edge: Edge,
         node_map: dict[str, Node] | None = None,
         extensions: list[EdgeExtensionInterface] | None = None,
         purpose: str = "select_facts",
     ) -> str:
-        """渲染单条事实边为 `主 —label→ 宾` 格式。
+        """渲染单条关系边为 ``主 — 宾`` 格式（**无 label**，``关联`` / ``互斥`` 同形）。
 
-        用于 token 估算（查询侧一致性）和 render_facts 内部。
-        与 render_facts 中的事实边条目格式完全一致。
+        用于 token 估算（查询侧一致性：估算 == 渲染）和 ``render_facts`` 内部。
+        边的 ``type`` 是结构标记、MUST NOT 计 token、MUST NOT 进渲染文本（铁律一）。
 
         Args:
-            edge: 事实边
+            edge: 关系边（关联 / 互斥）
             node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
             extensions: 边扩展插件列表（``render(edge, purpose)`` 非 None 的片段追加到边文本）
             purpose: LLM 目的（默认 ``select_facts``；按 purpose 切换边扩展可见性）
-        """
-        label = getattr(edge, "label", "") or ""
-        if node_map:
-            src_name = node_map[edge.source_id].name if edge.source_id in node_map else edge.source_id
-            tgt_name = node_map[edge.target_id].name if edge.target_id in node_map else edge.target_id
-        else:
-            src_name = edge.source_id
-            tgt_name = edge.target_id
-        parts = [f"{src_name} —{label}→ {tgt_name}"]
-        ContextRenderer._append_edge_extension_parts(parts, edge, extensions, purpose)
-        return "\n".join(parts)
-
-    @staticmethod
-    def render_assoc_edge(
-        edge: Edge,
-        node_map: dict[str, Node] | None = None,
-        extensions: list[EdgeExtensionInterface] | None = None,
-        purpose: str = "select_facts",
-    ) -> str:
-        """渲染单条无类型关联边为 `主 — 宾` 格式（**无 label**）。
-
-        用于 token 估算（查询侧一致性）和 ``attribute_node`` 模式的 ``render_facts`` 内部。
-        与 ``render_facts`` 中关联边条目格式完全一致。
-
-        Args:
-            edge: 关联边（kind="assoc"）
-            node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
-            extensions: 边扩展插件列表（可见片段追加到边文本）
-            purpose: LLM 目的（默认 ``select_facts``；按 purpose 切换可见性）
         """
         if node_map:
             src_name = node_map[edge.source_id].name if edge.source_id in node_map else edge.source_id

@@ -17,13 +17,32 @@ if TYPE_CHECKING:
 class TokenBudget:
     """子图操作的 token 预算。
 
-    常规设置为 ``T ≈ W / 2``，其中 W 是 LLM 上下文窗口。第一阶段默认值：8000。
+    上下文窗口划分：``W = S + T + R``（§4.1）。
+
+    - **W**：LLM 上下文窗口总大小。
+    - **S**：系统窗口（系统提示 + 指令），固定开销。
+    - **T**：查询窗口——不变量阈值，任意节点活跃视图 ≤ T。
+    - **R**：结果窗口（模型写回结果的空间），默认 ``R = T``。
+
+    常规设置 ``T ≈ (W - S) / 2``（因为 ``R = T`` 默认）。
+    第一阶段默认值：W=16000, S=0, T=8000, R=8000。
     """
 
     def __init__(
-        self, max_tokens: int, counter: Callable[[str], int] | None = None
+        self,
+        max_tokens: int,
+        counter: Callable[[str], int] | None = None,
+        *,
+        window_size: int | None = None,
+        system_window: int = 0,
+        result_window: int | None = None,
     ):
+        # 向后兼容：max_tokens 即 T
         self.T = max_tokens
+        # W = S + T + R；默认 R = T，W = S + 2T
+        self.S = system_window
+        self.R = result_window if result_window is not None else self.T
+        self.W = window_size if window_size is not None else self.S + self.T + self.R
         # 可选注入真分词器的 count 函数 (text)->int；None 时用经验式估计
         self._counter = counter
 
@@ -92,52 +111,28 @@ class TokenBudget:
         """合并操作的预算（2T = 完整窗口）。"""
         return self.T * 2
 
-    def estimate_fact_edge(
+    def estimate_relation_edge(
         self,
         edge: Edge,
         node_map: dict[str, Node] | None = None,
         extensions: list | None = None,
         purpose: str = "select_facts",
     ) -> int:
-        """估算单条事实边的渲染 token（查询侧一致性：与 render_fact_edge 同口径）。
+        """估算单条关系边的渲染 token（查询侧一致性：与 render_relation_edge 同口径）。
 
-        委托 ``render_fact_edge`` 取文本后估算（**不另开估算公式 / 路径**），随渲染签名
-        透传 ``extensions`` / ``purpose``，使可见扩展片段在渲染 / 估算两侧一致。
+        委托 ``render_relation_edge`` 取文本后估算（**不另开估算公式 / 路径**），随渲染签名
+        透传 ``extensions`` / ``purpose``，使可见扩展片段在渲染 / 估算两侧一致。边的
+        ``type`` 是结构标记、不计 token（与渲染逐字一致，铁律一）。
 
         Args:
-            edge: 事实边
+            edge: 关系边（关联 / 互斥）
             node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
             extensions: 边扩展插件列表（可见片段计入估算）
             purpose: LLM 目的（默认 ``select_facts``；按 purpose 切换可见性）
         """
         from mcs.core.context_renderer import ContextRenderer
 
-        rendered = ContextRenderer.render_fact_edge(
-            edge, node_map, extensions, purpose
-        )
-        return self.estimate(rendered)
-
-    def estimate_assoc_edge(
-        self,
-        edge: Edge,
-        node_map: dict[str, Node] | None = None,
-        extensions: list | None = None,
-        purpose: str = "select_facts",
-    ) -> int:
-        """估算单条无类型关联边的渲染 token（查询侧一致性：与 render_assoc_edge 同口径）。
-
-        委托 ``render_assoc_edge`` 取文本后估算（**不另开估算公式 / 路径**），随渲染签名
-        透传 ``extensions`` / ``purpose``。
-
-        Args:
-            edge: 关联边（kind="assoc"）
-            node_map: 可选的 node_id→Node 映射（用于取 name；无则显示 id）
-            extensions: 边扩展插件列表（可见片段计入估算）
-            purpose: LLM 目的（默认 ``select_facts``）
-        """
-        from mcs.core.context_renderer import ContextRenderer
-
-        rendered = ContextRenderer.render_assoc_edge(
+        rendered = ContextRenderer.render_relation_edge(
             edge, node_map, extensions, purpose
         )
         return self.estimate(rendered)
@@ -146,16 +141,15 @@ class TokenBudget:
         self,
         node: Node,
         out_hierarchy: list[Node],
-        out_facts: list[Edge],
-        in_facts: list[Edge] | None = None,
+        out_edges: list[Edge],
+        in_edges: list[Edge] | None = None,
         node_map: dict[str, Node] | None = None,
-        mode: str = "property_graph",
     ) -> int:
         """估算节点的活跃双向视图 token。
 
-        视图 = 中心节点 + 层级邻居 + 出关系边 + 入关系边（反查）。关系边口径随 ``mode``：
-        ``property_graph`` 为事实边（``主 —label→ 宾``）、``attribute_node`` 为关联边
-        （``主 — 宾``）。Phase 1 不截断，返回全部估算值。
+        视图 = 中心节点 + 层级邻居 + 出关系边 + 入关系边（反查）。统一模型下关系边
+        渲染 ``主 — 宾``（``关联`` / ``互斥`` 同形、无 label、type 不计 token）。Phase 1
+        不截断，返回全部估算值。
 
         估算口径 == 渲染口径（铁律一）：关系边经 ``node_map`` 取 **name** 渲染，与
         ``render_facts`` 一致（MUST NOT 用 id，否则 uuid 远长于 name、严重高估）。
@@ -163,26 +157,20 @@ class TokenBudget:
         Args:
             node: 中心节点
             out_hierarchy: 层级子节点列表
-            out_facts: 出关系边列表（property_graph 为 fact、attribute_node 为 assoc）
-            in_facts: 入关系边列表（可选，Phase 1 通常不截断）
+            out_edges: 出关系边列表（关联 / 互斥）
+            in_edges: 入关系边列表（可选，Phase 1 通常不截断）
             node_map: id→Node 映射（取关系边端点 name）。None 时由中心+层级子节点
                 构建；Phase 2 接预算时应传入与渲染相同的完整视图 node_map。
-            mode: 关系表示模式（默认 property_graph）
         """
         if node_map is None:
             node_map = {node.id: node}
             for child in out_hierarchy:
                 node_map[child.id] = child
-        est_edge = (
-            self.estimate_assoc_edge
-            if mode == "attribute_node"
-            else self.estimate_fact_edge
-        )
         total = self.estimate_node(node)
         for child in out_hierarchy:
             total += self.estimate_node(child)
-        for edge in out_facts:
-            total += est_edge(edge, node_map)
-        for edge in (in_facts or []):
-            total += est_edge(edge, node_map)
+        for edge in out_edges:
+            total += self.estimate_relation_edge(edge, node_map)
+        for edge in (in_edges or []):
+            total += self.estimate_relation_edge(edge, node_map)
         return total

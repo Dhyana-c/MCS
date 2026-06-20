@@ -1,29 +1,34 @@
 """写入管道 ④⑤ 和提示共享的 DecisionList 数据结构。
 
-参见 openspec/specs/write-pipeline/spec.md "DecisionList 至少支持四种 action"
-和 openspec/specs/phase1-defaults/spec.md "DecisionList 派发四种 action"。
+参见 openspec/specs/write-pipeline/spec.md "DecisionList 至少支持三种 action"
+和 openspec/specs/phase1-defaults/spec.md "DecisionList 派发三种 action"。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
-ActionType = Literal["merge", "create", "create_attribute", "attach_statement", "no_op"]
+from mcs.entities.graph import CLASS_CONCEPT, CLASS_EVENT, CLASS_SOURCE
+
+ActionType = Literal["merge", "create", "no_op"]
 
 
 @dataclass
 class ConceptDraft:
-    """从文本中提取的一个概念（写入阶段 ③ 输出）。
+    """从文本中提取的一个概念或事实（写入阶段 ③ 输出）。
 
     ``relation_hints`` 是 LLM 在提取过程中识别的自然语言关系短语列表
     （例如"属于机器学习"、"由小明发明"），用于阶段 ④ 判断概念间的边连接。
-    不再转化为 statements——所有关系信息直接包含在 content 中。
+
+    ``node_class`` 区分概念与事实：概念是名词性实体，事实是含谓词的命题陈述。
+    默认为 ``CLASS_CONCEPT``（向后兼容）。
     """
 
     name: str
     content: str
     relation_hints: list[str] = field(default_factory=list)
+    node_class: str = CLASS_CONCEPT  # 概念 / 事实
 
 
 @dataclass
@@ -31,37 +36,34 @@ class Decision:
     """DecisionList 中的一个动作（写入阶段 ④ 输出，⑤ 输入）。
 
     字段有效性取决于 ``action``：
-      - merge:             concept, target_id
-      - create:            concept, [edges_to], [edges_to_names]
-      - create_attribute:  attr_name/attr_content + [assoc_to]/[assoc_to_names]
-                           （attribute_node 模式：建属性节点 + 无类型关联边，**无 label**）
-      - attach_statement:  [DEPRECATED] 现为 no-op
-      - no_op:             concept, reason
+      - merge:  concept, target_id
+      - create: concept, [edges_to], [edges_to_names], [node_class]
+      - no_op:  concept, reason
 
-    ``edges_to`` 是到**已存在节点**的锚点列表（每项含 target_id + label）；
-    ``edges_to_names`` 是到**同一批新概念**的概念名列表（每项含 target_name + label）——
+    ``edges_to`` 是到**已存在节点**的锚点列表（每项含 target_id）；
+    ``edges_to_names`` 是到**同一批新概念**的概念名列表（每项含 target_name）——
     写入阶段 ⑤ 在新节点全部建好后按名解析成边，弥补"同次摄入的兄弟概念之间无法用
-    id 互连"的缺口。一条关系 = 一个方向 + 一个 label，不自动镜像反向。
+    id 互连"的缺口。统一模型下这些边为 ``关联`` 边（无 label、无 kind；开放谓词
+    落事实节点 content）。一条关系 = 一个方向，不自动镜像反向。
 
-    ``assoc_to`` / ``assoc_to_names`` 是 ``create_attribute`` 的端点（**无 label**）：
-    前者到已存在节点（含 ``target_id``），后者到同批新概念（含 ``target_name``）。
-    纯字面值（不值得建节点的值）内联进 ``attr_content``、不另列端点。
+    ``node_class`` 决定 create 时新建节点的类型：概念（默认）或事实。
+    事实节点的谓词语义落 content，可被事件背书、可与其他事实互斥。
+
+    ``mutex_with`` 是与**已有事实节点**互斥的 id 列表（阶段 ⑤ 第一遍后创建互斥边）。
+    ``mutex_with_names`` 是与**同批新事实**互斥的概念名列表（第二遍按名解析后创建互斥边）。
+    互斥仅适用于事实 ↔ 事实，概念间 mutex_with 被忽略。
     """
 
     action: ActionType
     concept: ConceptDraft | None = None
     target_id: str | None = None
-    edges_to: list[dict] = field(default_factory=list)  # [{"target_id": str, "label": str}, ...]
-    edges_to_names: list[dict] = field(default_factory=list)  # [{"target_name": str, "label": str}, ...]
-    # attribute_node 模式：关系具体化为属性节点 + 无类型关联边（无 label）
-    attr_name: str | None = None  # 属性节点短名（如"小明的爱好"）
-    attr_content: str | None = None  # 关系说法（单一当前值；超上限由 ⑤ LLM 压缩）
-    assoc_to: list[dict] = field(default_factory=list)  # [{"target_id": str}, ...] 已存在节点端点
-    assoc_to_names: list[dict] = field(default_factory=list)  # [{"target_name": str}, ...] 同批新概念端点
-    initial_statements: list[str] = field(default_factory=list)  # DEPRECATED: 不再使用
-    statement: str | None = None  # DEPRECATED: 不再使用
+    edges_to: list[dict] = field(default_factory=list)  # [{"target_id": str}, ...]
+    edges_to_names: list[dict] = field(default_factory=list)  # [{"target_name": str}, ...]
     aliases_to_add: list[str] = field(default_factory=list)
     reason: str | None = None
+    node_class: str = CLASS_CONCEPT  # create 时：概念 / 事实
+    mutex_with: list[str] = field(default_factory=list)  # 已有事实 id（互斥边）
+    mutex_with_names: list[str] = field(default_factory=list)  # 同批新事实名（互斥边）
 
 
 DecisionList = list[Decision]
@@ -99,3 +101,52 @@ class MultiHubDecision:
     communities: list[Community] = field(default_factory=list)
     unassigned_ids: list[str] = field(default_factory=list)
     reason: str = ""
+
+
+@dataclass
+class EventData:
+    """事件规则入库的结构化输入（不经 LLM）。
+
+    宪法 D5：事件按既定结构直接存，不经 LLM。系统创建 ``CLASS_EVENT`` 节点
+    并对 ``target_ids`` 中每个 id 创建 ``事件 → 目标`` 的 ``EDGE_ASSOC`` 边
+    （背书·提及，方向固定；核心不反查——载重规则已在 store 层落实）。
+
+    Extensions 约定（写入 ``node.extensions["event_meta"]``）：
+
+    - ``timestamp``: ISO 8601 字符串，事件发生时间。用于 ``get_related_events``
+      的时间倒排截断（§3 双层）。必填。
+    - ``targets``: list[str]，背书目标节点 id 列表（= target_ids 的冗余存储，
+      方便查询侧直接读取，不进活跃视图 token 口径）。
+    - 其余字段由调用方自定义（如 session_id / user_id 等），不限制。
+    """
+
+    name: str
+    content: str
+    timestamp: str | None = None  # ISO 8601
+    target_ids: list[str] = field(default_factory=list)
+    extensions: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SourceData:
+    """Source 规则入库的结构化输入（不经 LLM）。
+
+    宪法 D5：source 按类型切分分类、保真存入、不经 LLM。系统创建
+    ``CLASS_SOURCE`` 节点，并对 ``target_ids`` 中每个 id 创建
+    ``source → 目标`` 的 ``EDGE_ASSOC`` 关联边。
+
+    Extensions 约定（写入 ``node.extensions["source_meta"]``）：
+
+    - ``source_type``: str，资料类型标识（文件/网页/段落/对话记录等），
+      由扩展名/格式/来源等规则判定。必填。
+    - ``chunk``: dict，当前 chunk 的元信息（chunk_index / chunk_id 等）。
+      单 chunk source 的 chunk 为空 dict。
+    - ``targets``: list[str]，关联目标节点 id 列表（= target_ids 的冗余存储）。
+    - 其余字段由调用方自定义（如 doc_id / file_path / url 等），不限制。
+    """
+
+    name: str
+    source_type: str = ""  # 文件/网页/段落/对话记录
+    chunks: list[dict[str, Any]] = field(default_factory=list)
+    target_ids: list[str] = field(default_factory=list)
+    extensions: dict[str, Any] = field(default_factory=dict)

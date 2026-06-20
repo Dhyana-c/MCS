@@ -96,3 +96,40 @@ def test_check_subgraph_uses_node_estimate():
     nodes.append(Node(id="big", name="big", content="y" * 400))
     # 加一个大节点后应超预算
     assert b.check_subgraph(nodes) is False
+
+
+# ─── W = S + T + R 预算划分 ───────────────────────────────────────────────
+
+
+def test_default_R_equals_T():
+    """默认 R = T（结果窗口等于查询窗口）。"""
+    b = TokenBudget(8000)
+    assert b.T == 8000
+    assert b.R == 8000
+    assert b.S == 0
+    assert b.W == 16000  # S + T + R = 0 + 8000 + 8000
+
+
+def test_custom_window_partition():
+    """自定义窗口划分：W = S + T + R。"""
+    b = TokenBudget(6000, system_window=2000, result_window=6000)
+    assert b.T == 6000
+    assert b.S == 2000
+    assert b.R == 6000
+    assert b.W == 14000  # 2000 + 6000 + 6000
+
+
+def test_explicit_window_size():
+    """显式指定 W（覆盖默认计算）。"""
+    b = TokenBudget(8000, window_size=20000, system_window=4000, result_window=8000)
+    assert b.W == 20000
+    assert b.T == 8000
+    assert b.S == 4000
+    assert b.R == 8000
+
+
+def test_backward_compatible_max_tokens():
+    """旧代码 TokenBudget(8000) 仍然工作：T=8000, W=16000, R=8000。"""
+    b = TokenBudget(8000)
+    assert b.T == 8000
+    assert b.W == b.S + b.T + b.R

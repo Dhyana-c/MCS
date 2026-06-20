@@ -5,7 +5,8 @@
 ``rendering → core``，无环），MUST NOT 依赖任何应用包或 mcp SDK。
 
 - ``render_query_result``：``mcs.query`` 结果（``str`` 透传 / ``Subgraph`` 经
-  ``ContextRenderer.render_facts`` / 兜底 ``str()``）。
+  ``ContextRenderer.render_facts`` 渲染（关系边 ``主 — 宾``，无 ``relation_model``
+  参数）/ 兜底 ``str()``）。
 - ``format_ingest_status``：``WriteContext`` 简明状态摘要（概念 / 节点计数 + persisted，
   不报边计数）。
 
@@ -28,13 +29,13 @@ __all__ = ["render_query_result", "format_ingest_status"]
 
 
 def render_query_result(
-    result: Any, relation_model: str, plugin_manager: PluginManager | None
+    result: Any, plugin_manager: PluginManager | None
 ) -> str:
     """把 ``mcs.query`` 的结果渲染为 LLM 可读文本。
 
     - 结果为 ``str``（postprocess 已转换）→ 原样透传；
     - 结果为 ``Subgraph``（nodes + edges）→ ``ContextRenderer.render_facts`` 渲染
-      （``mode=relation_model``，与 store 同模式）；
+      （关系边渲染为 ``主 — 宾``，无 label）；
     - 其余 → ``str(result)`` 兜底（不返回原始对象 / 内部结构）。
     """
     if isinstance(result, str):
@@ -42,7 +43,7 @@ def render_query_result(
     if isinstance(result, Subgraph):
         renderer = ContextRenderer(plugin_manager)
         return renderer.render_facts(
-            list(result.nodes), list(result.edges), mode=relation_model
+            list(result.nodes), list(result.edges)
         )
     return str(result)
 

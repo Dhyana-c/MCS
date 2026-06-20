@@ -18,6 +18,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from mcs.core.plugin import PluginType
+from mcs.entities.graph import CLASS_CONCEPT, CORE_NODE_CLASSES
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 
 if TYPE_CHECKING:
@@ -62,9 +63,10 @@ class GraphSummaryPlugin(CompactionPluginInterface):
     # === CompactionPluginInterface ===
 
     def should_run(self, changed_nodes: list[Node], store: StoreInterface) -> bool:
-        # 本次 ingest 产生新概念（role="concept"）→ 需刷新图摘要
+        # 本次 ingest 产生核心节点（概念或事实）→ 需刷新图摘要
         return any(
-            getattr(n, "role", "concept") == "concept" for n in changed_nodes
+            getattr(n, "node_class", CLASS_CONCEPT) in CORE_NODE_CLASSES
+            for n in changed_nodes
         )
 
     def run(

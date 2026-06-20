@@ -1,4 +1,4 @@
-"""基于 SQLite 的持久化图存储。
+"""基于 SQLite 的持久化图存储（统一图模型）。
 
 ``SQLiteStore`` 是 ``StoreInterface`` 的 SQLite 实现，
 直接在 SQLite 上做图操作，持久化钩子写入 SQLite 数据库。
@@ -7,43 +7,61 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import sqlite3
 import uuid
+import warnings
+from dataclasses import replace as dc_replace
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.store import StoreInterface
+from mcs.entities.graph import (
+    ALLOWED_EDGE_TYPES,
+    CLASS_CONCEPT,
+    CLASS_EVENT,
+    CLASS_FACT,
+    CORE_NODE_CLASSES,
+    EDGE_ASSOC,
+    EDGE_MUTEX,
+    Edge,
+    Node,
+    Subgraph,
+    validate_node_class,
+)
+from mcs.interfaces.priority_scorer import DefaultPriorityScorer
 
 if TYPE_CHECKING:
     from mcs.core.token_budget import TokenBudget
-    from mcs.entities.graph import Edge, Node, Subgraph
 
 logger = logging.getLogger(__name__)
 
 # 存储库 schema 版本（随库持久化，便于未来迁移判别）。
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 class StoreProvenanceError(RuntimeError):
-    """库出处（``relation_model`` 等）与当前配置不一致，拒绝打开以防混库静默损坏。
+    """库出处（schema 版本等）与当前不兼容时抛出。
 
-    宪法：不同 ``relation_model`` 混库为未定义行为，故 ``relation_model`` 不一致是
-    开库唯一的硬拒条件。扩展集变化只告警放行（合法迁移），不抛本异常。
+    统一图模型已删除 ``relation_model`` 维度（单一模型），原"relation_model 不一致
+    硬拒"随之移除。本异常类型保留：① 向后兼容既有 import；② 供未来 schema 版本 /
+    扩展集不兼容时复用。当前 ``_validate_or_write_provenance`` 不再抛它（扩展集变化
+    仅告警放行）。
     """
 
 
 class SQLiteStore(StoreInterface):
-    """基于 SQLite 的持久化图存储。
+    """基于 SQLite 的持久化图存储（统一图模型）。
 
     Phase 1 的图操作仍是内存中的；此存储通过显式的
     ``save()`` / ``load()`` 调用持久化快照。
 
     内部索引（与 InMemoryStore 同结构）：
       - _edges: edge_id -> Edge（主存储）
-      - _hierarchy_out: source_id -> set[target_id]（层级出边邻接）
-      - _fact_by_node: node_id -> set[edge_id]（事实边两端索引）
       - _assoc_by_node: node_id -> set[edge_id]（关联边两端索引）
+      - _mutex_by_node: node_id -> set[edge_id]（互斥边两端索引）
+      - _assoc_out: source_id -> set[target_id]（关联出边邻接）
 
     初始化时需调用 ``initialize()`` 设置数据库连接和可选的
     模式扩展插件列表。
@@ -58,16 +76,14 @@ class SQLiteStore(StoreInterface):
         self._node_extensions: dict[str, Any] = {}
         # name -> EdgeExtensionInterface 插件，用于边 extensions 的保真编解码（与节点同构）
         self._edge_extensions: dict[str, Any] = {}
-        # 建库出处（relation_model）；开库校验据此拒绝混库。默认 property_graph
-        self._relation_model: str = "property_graph"
         # 派生优先级打分器（seam，Phase 1 持有但不在 chokepoint 调用，留 Phase 2 接线）
         self._priority_scorer: Any = None
         # 内存图数据
         self._nodes: dict[str, Node] = {}
         self._edges: dict[str, Edge] = {}  # edge_id -> Edge
-        self._hierarchy_out: dict[str, set[str]] = {}  # source_id -> {target_id}
-        self._fact_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}
-        self._assoc_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}（关联边）
+        self._assoc_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}（关联，两端）
+        self._mutex_by_node: dict[str, set[str]] = {}  # node_id -> {edge_id}（互斥，两端）
+        self._assoc_out: dict[str, set[str]] = {}  # source_id -> {target_id}（关联出边）
         # 增量持久化的变更跟踪
         self._dirty_nodes: set[str] = set()
         self._deleted_nodes: set[str] = set()
@@ -82,14 +98,12 @@ class SQLiteStore(StoreInterface):
         schema_extensions: list | None = None,
         node_extensions: dict[str, Any] | None = None,
         edge_extensions: dict[str, Any] | None = None,
-        relation_model: str | None = None,
         priority_scorer: Any = None,
     ) -> None:
-        """设置数据库连接和模式扩展，并在任何读写前完成出处校验 + 旧库补列。
+        """设置数据库连接和模式扩展，并在任何读写前完成出处校验。
 
-        ``relation_model`` 不一致 MUST 抛 ``StoreProvenanceError`` 拒绝（防混库）；
-        扩展集变化仅告警放行；旧库无出处时按当前配置补写放行；旧库缺
-        ``extensions_json`` 列时 ``ALTER TABLE`` 补齐（保证放行后可写）。
+        统一图模型已删除 ``relation_model``（单一模型），出处仅跟踪
+        ``schema_version`` 与扩展名集；扩展名集变化仅告警放行（合法迁移）。
         ``priority_scorer`` 为派生优先级 seam（Phase 1 持有但不在 chokepoint 调用）。
         """
         if conn is not None:
@@ -99,16 +113,12 @@ class SQLiteStore(StoreInterface):
         self._schema_extensions = schema_extensions or []
         self._node_extensions = node_extensions or {}
         self._edge_extensions = edge_extensions or {}
-        self._relation_model = relation_model or "property_graph"
         if priority_scorer is not None:
             self._priority_scorer = priority_scorer
         elif self._priority_scorer is None:
-            from mcs.interfaces.priority_scorer import DefaultPriorityScorer
-
             self._priority_scorer = DefaultPriorityScorer()
         self._create_tables(self._schema_extensions)
-        # 任何读写前：补齐旧库附加列 + 校验 / 补写出处（D5）
-        self._ensure_edges_extensions_column()
+        # 任何读写前：校验 / 补写出处（扩展集变化告警放行）
         self._validate_or_write_provenance()
 
     def shutdown(self) -> None:
@@ -120,10 +130,11 @@ class SQLiteStore(StoreInterface):
     # === 节点 CRUD ===
 
     def add_node(self, node: Node) -> str:
+        validate_node_class(node.node_class)
         self._nodes[node.id] = node
-        self._hierarchy_out.setdefault(node.id, set())
-        self._fact_by_node.setdefault(node.id, set())
         self._assoc_by_node.setdefault(node.id, set())
+        self._mutex_by_node.setdefault(node.id, set())
+        self._assoc_out.setdefault(node.id, set())
         self._track_node_dirty(node.id)
         return node.id
 
@@ -135,6 +146,8 @@ class SQLiteStore(StoreInterface):
         if node is None:
             return
         for key, value in (updates or {}).items():
+            if key == "node_class":
+                validate_node_class(value)
             if hasattr(node, key):
                 setattr(node, key, value)
         self._track_node_dirty(node_id)
@@ -142,37 +155,15 @@ class SQLiteStore(StoreInterface):
     def delete_node(self, node_id: str) -> None:
         if node_id not in self._nodes:
             return
-        # 收集并删除所有关联边
+        # 收集并删除所有触及该节点的边（关联 + 互斥，任一端）
         edge_ids_to_remove: set[str] = set()
-        # 层级出边
-        for target_id in list(self._hierarchy_out.get(node_id, set())):
-            for e in self._edges.values():
-                if (
-                    e.source_id == node_id
-                    and e.target_id == target_id
-                    and e.kind == "hierarchy"
-                ):
-                    edge_ids_to_remove.add(e.id)
-        # 事实边
-        edge_ids_to_remove |= set(self._fact_by_node.get(node_id, set()))
-        # 关联边
         edge_ids_to_remove |= set(self._assoc_by_node.get(node_id, set()))
-        # 层级入边（其他人指向该节点）
-        for other_id, targets in self._hierarchy_out.items():
-            if node_id in targets and other_id != node_id:
-                for e in self._edges.values():
-                    if (
-                        e.source_id == other_id
-                        and e.target_id == node_id
-                        and e.kind == "hierarchy"
-                    ):
-                        edge_ids_to_remove.add(e.id)
-
+        edge_ids_to_remove |= set(self._mutex_by_node.get(node_id, set()))
         for eid in edge_ids_to_remove:
             self._remove_edge_by_id(eid)
-        self._hierarchy_out.pop(node_id, None)
-        self._fact_by_node.pop(node_id, None)
         self._assoc_by_node.pop(node_id, None)
+        self._mutex_by_node.pop(node_id, None)
+        self._assoc_out.pop(node_id, None)
         self._nodes.pop(node_id, None)
         self._track_node_deleted(node_id)
 
@@ -182,87 +173,91 @@ class SQLiteStore(StoreInterface):
         self,
         source_id: str,
         target_id: str,
-        kind: str = "hierarchy",
-        label: str = "",
+        type: str = EDGE_ASSOC,
         priority: float = 0.0,
         extensions: dict | None = None,
+        edge_id: str | None = None,
     ) -> str:
+        if type not in ALLOWED_EDGE_TYPES:
+            raise ValueError(
+                f"unknown edge type={type!r}; expected one of {sorted(ALLOWED_EDGE_TYPES)}"
+            )
         if source_id == target_id:
             return ""
         if source_id not in self._nodes or target_id not in self._nodes:
             return ""
+        # 宪法：互斥边两端 MUST 均为事实节点（互斥恒为事实↔事实）
+        if type == EDGE_MUTEX:
+            src = self._nodes.get(source_id)
+            tgt = self._nodes.get(target_id)
+            if src is not None and src.node_class != CLASS_FACT:
+                raise ValueError(
+                    f"互斥边 source 节点 {source_id!r} 的 node_class={src.node_class!r}，"
+                    f"期望 '{CLASS_FACT}'（互斥仅事实↔事实）"
+                )
+            if tgt is not None and tgt.node_class != CLASS_FACT:
+                raise ValueError(
+                    f"互斥边 target 节点 {target_id!r} 的 node_class={tgt.node_class!r}，"
+                    f"期望 '{CLASS_FACT}'（互斥仅事实↔事实）"
+                )
 
-        from mcs.entities.graph import Edge
-
-        # 层级边去重：同一对节点只允许一条 hierarchy 边
-        if kind == "hierarchy":
-            for e in self._edges.values():
-                if e.source_id == source_id and e.target_id == target_id and e.kind == "hierarchy":
-                    return e.id
-
-        # 事实边去重：同一对节点间**同 label** 的事实只存一份（"一条事实只存一份"）。
-        # 多篇文档断言同一命题时返回已有边，避免重复事实边累积（频率权重留 Phase 2）。
-        # 走 _fact_by_node 索引只扫该端点的事实边，避免全表扫描。
-        if kind == "fact":
-            for eid in self._fact_by_node.get(source_id, ()):
-                e = self._edges.get(eid)
-                if (
-                    e is not None
-                    and e.source_id == source_id
-                    and e.target_id == target_id
-                    and e.label == label
-                ):
-                    return e.id
-
-        # 关联边去重：同一对节点 (source, target) 的 assoc 边只存一份（无 label 可区分）。
-        if kind == "assoc":
-            for eid in self._assoc_by_node.get(source_id, ()):
-                e = self._edges.get(eid)
-                if (
-                    e is not None
-                    and e.source_id == source_id
-                    and e.target_id == target_id
-                    and e.kind == "assoc"
-                ):
-                    return e.id
+        existing = self._find_existing_edge(source_id, target_id, type)
+        if existing is not None:
+            return existing.id
 
         edge = Edge(
             source_id=source_id,
             target_id=target_id,
-            id=str(uuid.uuid4()),
-            kind=kind,
-            label=label,
+            id=edge_id or str(uuid.uuid4()),
+            type=type,
             priority=priority,
             extensions=dict(extensions) if extensions else {},
         )
         self._edges[edge.id] = edge
 
-        if kind == "hierarchy":
-            self._hierarchy_out.setdefault(source_id, set()).add(target_id)
-        elif kind == "fact":
-            # fact 边：两端索引
-            self._fact_by_node.setdefault(source_id, set()).add(edge.id)
-            self._fact_by_node.setdefault(target_id, set()).add(edge.id)
-        else:
-            # assoc 边：两端索引（与 fact 物理隔离，各自独立索引）
+        if type == EDGE_ASSOC:
             self._assoc_by_node.setdefault(source_id, set()).add(edge.id)
             self._assoc_by_node.setdefault(target_id, set()).add(edge.id)
+            self._assoc_out.setdefault(source_id, set()).add(target_id)
+        else:  # 互斥
+            self._mutex_by_node.setdefault(source_id, set()).add(edge.id)
+            self._mutex_by_node.setdefault(target_id, set()).add(edge.id)
 
         self._track_edge_dirty(edge.id)
         return edge.id
+
+    def _find_existing_edge(
+        self, source_id: str, target_id: str, type: str
+    ) -> Edge | None:
+        """同 (source, target, type) 去重；互斥按无序对 {s,t} 去重。"""
+        if type == EDGE_MUTEX:
+            for eid in self._mutex_by_node.get(source_id, set()):
+                e = self._edges.get(eid)
+                if e is not None and {e.source_id, e.target_id} == {source_id, target_id}:
+                    return e
+            return None
+        for eid in self._assoc_by_node.get(source_id, set()):
+            e = self._edges.get(eid)
+            if (
+                e is not None
+                and e.source_id == source_id
+                and e.target_id == target_id
+                and e.type == EDGE_ASSOC
+            ):
+                return e
+        return None
 
     def delete_edge(self, edge_id_or_source: str, target_id: str | None = None) -> None:
         """按边 id 删除。向后兼容：delete_edge(source, target) 走旧路径。"""
         if target_id is not None:
             # 旧签名 delete_edge(source_id, target_id) — deprecated
-            import warnings
             warnings.warn(
                 "delete_edge(source, target) is deprecated; use delete_edge(edge_id)",
                 DeprecationWarning,
                 stacklevel=2,
             )
             for e in self.get_edges_between(edge_id_or_source, target_id):
-                if e.kind == "hierarchy":
+                if e.type == EDGE_ASSOC:
                     self._remove_edge_by_id(e.id)
                     return
         else:
@@ -280,33 +275,39 @@ class SQLiteStore(StoreInterface):
     # === 层级（骨架）查询 ===
 
     def get_out_hierarchy(self, node_id: str) -> list[Node]:
-        target_ids = self._hierarchy_out.get(node_id, set())
+        """下钻成员 = 该节点作 source 的关联出边目标（聚类涌现的组织层级）。"""
+        target_ids = self._assoc_out.get(node_id, set())
         return [self._nodes[i] for i in target_ids if i in self._nodes]
 
-    # === 事实（双向可达）查询 ===
+    # === 关系（双向可达）查询 ===
 
-    def get_facts(self, node_id: str, limit: int | None = None) -> list[Edge]:
-        edge_ids = self._fact_by_node.get(node_id, set())
-        facts = [self._edges[eid] for eid in edge_ids if eid in self._edges]
+    def get_relations(self, node_id: str, limit: int | None = None) -> list[Edge]:
+        """该节点作任一端的 关联 / 互斥 边（反查，双向可达）。
+
+        核心节点（概念 / 事实）过滤对端为事件的关联边（载重规则）。
+        """
+        node = self._nodes.get(node_id)
+        if node is None:
+            return []
+        is_core = node.node_class in CORE_NODE_CLASSES
+
+        edge_ids = self._assoc_by_node.get(node_id, set()) | self._mutex_by_node.get(
+            node_id, set()
+        )
+        result: list[Edge] = []
+        for eid in edge_ids:
+            edge = self._edges.get(eid)
+            if edge is None:
+                continue
+            if is_core and edge.type == EDGE_ASSOC:
+                other_id = edge.target_id if edge.source_id == node_id else edge.source_id
+                other = self._nodes.get(other_id)
+                if other is not None and other.node_class == CLASS_EVENT:
+                    continue
+            result.append(edge)
         if limit is not None:
-            facts = facts[:limit]
-        return facts
-
-    def get_out_facts(
-        self, node_id: str, limit: int | None = None
-    ) -> list[Edge]:
-        edge_ids = self._fact_by_node.get(node_id, set())
-        out = [
-            self._edges[eid]
-            for eid in edge_ids
-            if eid in self._edges and self._edges[eid].source_id == node_id
-        ]
-        return out[:limit] if limit is not None else out
-
-    def get_assoc(self, node_id: str, limit: int | None = None) -> list[Edge]:
-        edge_ids = self._assoc_by_node.get(node_id, set())
-        assoc = [self._edges[eid] for eid in edge_ids if eid in self._edges]
-        return assoc[:limit] if limit is not None else assoc
+            result = result[:limit]
+        return result
 
     def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:
         return [
@@ -315,13 +316,38 @@ class SQLiteStore(StoreInterface):
             if e.source_id == source_id and e.target_id == target_id
         ]
 
+    # === 定向查事件（绕载重规则）===
+
+    def get_related_events(self, node_id: str, limit: int | None = None) -> list[Node]:
+        """定向查事件：利用关联边索引高效查找，时间倒排 + limit 截断。
+
+        覆写基类的全量扫描默认实现——SQLiteStore 有 ``_assoc_by_node`` 索引，
+        直接从 target 侧查 source 为事件的关联边。
+        """
+        node = self._nodes.get(node_id)
+        if node is None:
+            return []
+        events: list[Node] = []
+        for eid in self._assoc_by_node.get(node_id, set()):
+            edge = self._edges.get(eid)
+            if edge is None or edge.type != EDGE_ASSOC:
+                continue
+            # 事件 → node_id（target 侧）
+            if edge.target_id == node_id:
+                source = self._nodes.get(edge.source_id)
+                if source is not None and source.node_class == CLASS_EVENT:
+                    events.append(source)
+        # 时间倒排
+        events.sort(key=lambda n: (n.extensions or {}).get("event_meta", {}).get("timestamp", ""), reverse=True)
+        if limit is not None:
+            events = events[:limit]
+        return events
+
     # === 子图 / 全量查询 ===
 
     def get_subgraph(
         self, node_id: str, token_budget: TokenBudget | None = None
     ) -> Subgraph:
-        from mcs.entities.graph import Subgraph
-
         sub = Subgraph(focus_id=node_id)
         focus = self._nodes.get(node_id)
         if focus is None:
@@ -337,7 +363,7 @@ class SQLiteStore(StoreInterface):
         while frontier:
             next_frontier: list[str] = []
             for current in frontier:
-                for neighbor_id in self._hierarchy_out.get(current, set()):
+                for neighbor_id in self._assoc_out.get(current, set()):
                     if neighbor_id in visited:
                         continue
                     neighbor = self._nodes.get(neighbor_id)
@@ -351,7 +377,7 @@ class SQLiteStore(StoreInterface):
                     visited.add(neighbor_id)
                     next_frontier.append(neighbor_id)
                     for e in self.get_edges_between(current, neighbor_id):
-                        if e.kind == "hierarchy":
+                        if e.type == EDGE_ASSOC:
                             sub.edges.append(e)
                             break
             frontier = next_frontier
@@ -370,22 +396,21 @@ class SQLiteStore(StoreInterface):
 
         除节点 / 边 / 邻接外，**MUST 一并捕获 4 个变更跟踪集**：还原它们后，
         下次 ``flush_changes`` 的删 / 增正好抵消本次（被回滚的）reorg，不残留
-        旧行、不漏删——否则边会在 DB 里翻倍。边拷贝**保留原 id**。
+        旧行、不漏删——否则边会在 DB 里翻倍。节点 / 边的 extensions **深拷贝**
+        （含嵌套结构彻底回滚）；边拷贝**保留原 id**。
         """
-        from dataclasses import replace as dc_replace
-
         return {
             "nodes": {
-                nid: dc_replace(n, extensions=dict(n.extensions or {}))
+                nid: dc_replace(n, extensions=copy.deepcopy(n.extensions or {}))
                 for nid, n in self._nodes.items()
             },
             "edges": {
-                eid: dc_replace(e, extensions=dict(e.extensions or {}))
+                eid: dc_replace(e, extensions=copy.deepcopy(e.extensions or {}))
                 for eid, e in self._edges.items()
             },
-            "hierarchy_out": {k: set(v) for k, v in self._hierarchy_out.items()},
-            "fact_by_node": {k: set(v) for k, v in self._fact_by_node.items()},
             "assoc_by_node": {k: set(v) for k, v in self._assoc_by_node.items()},
+            "mutex_by_node": {k: set(v) for k, v in self._mutex_by_node.items()},
+            "assoc_out": {k: set(v) for k, v in self._assoc_out.items()},
             "dirty_nodes": set(self._dirty_nodes),
             "deleted_nodes": set(self._deleted_nodes),
             "dirty_edges": set(self._dirty_edges),
@@ -396,15 +421,9 @@ class SQLiteStore(StoreInterface):
         """从 ``snapshot()`` 整体还原内部状态 + 变更跟踪集（保留边 id）。"""
         self._nodes = dict(snapshot["nodes"])
         self._edges = dict(snapshot["edges"])
-        self._hierarchy_out = {
-            k: set(v) for k, v in snapshot["hierarchy_out"].items()
-        }
-        self._fact_by_node = {
-            k: set(v) for k, v in snapshot["fact_by_node"].items()
-        }
-        self._assoc_by_node = {
-            k: set(v) for k, v in snapshot.get("assoc_by_node", {}).items()
-        }
+        self._assoc_by_node = {k: set(v) for k, v in snapshot["assoc_by_node"].items()}
+        self._mutex_by_node = {k: set(v) for k, v in snapshot["mutex_by_node"].items()}
+        self._assoc_out = {k: set(v) for k, v in snapshot["assoc_out"].items()}
         self._dirty_nodes = set(snapshot["dirty_nodes"])
         self._deleted_nodes = set(snapshot["deleted_nodes"])
         self._dirty_edges = set(snapshot["dirty_edges"])
@@ -441,45 +460,45 @@ class SQLiteStore(StoreInterface):
 
     def load(self) -> None:
         """从 SQLite 数据库加载节点和边到内存。"""
-        from mcs.entities.graph import Edge, Node
-
         if self.conn is None:
             return
         for row in self.conn.execute(
-            "SELECT id, name, content, role, extensions_json FROM nodes"
+            "SELECT id, name, content, node_class, extensions_json FROM nodes"
         ):
             raw = json.loads(row[4]) if row[4] else {}
             ext = self._deserialize_extensions(raw)
             self._nodes[row[0]] = Node(
-                id=row[0], name=row[1], content=row[2] or "", role=row[3], extensions=ext
+                id=row[0],
+                name=row[1],
+                content=row[2] or "",
+                node_class=row[3] or CLASS_CONCEPT,
+                extensions=ext,
             )
-            self._hierarchy_out.setdefault(row[0], set())
-            self._fact_by_node.setdefault(row[0], set())
             self._assoc_by_node.setdefault(row[0], set())
+            self._mutex_by_node.setdefault(row[0], set())
+            self._assoc_out.setdefault(row[0], set())
 
         for row in self.conn.execute(
-            "SELECT id, source_id, target_id, kind, label, priority, extensions_json FROM edges"
+            "SELECT id, source_id, target_id, type, priority, extensions_json FROM edges"
         ):
-            raw = json.loads(row[6]) if row[6] else {}
+            raw = json.loads(row[5]) if row[5] else {}
             ext = self._deserialize_extensions(raw, self._edge_extensions)
             edge = Edge(
                 id=row[0],
                 source_id=row[1],
                 target_id=row[2],
-                kind=row[3] or "hierarchy",
-                label=row[4] or "",
-                priority=row[5] if row[5] is not None else 0.0,
+                type=row[3] or EDGE_ASSOC,
+                priority=row[4] if row[4] is not None else 0.0,
                 extensions=ext,
             )
             self._edges[edge.id] = edge
-            if edge.kind == "hierarchy":
-                self._hierarchy_out.setdefault(edge.source_id, set()).add(edge.target_id)
-            elif edge.kind == "fact":
-                self._fact_by_node.setdefault(edge.source_id, set()).add(edge.id)
-                self._fact_by_node.setdefault(edge.target_id, set()).add(edge.id)
-            else:  # assoc
+            if edge.type == EDGE_ASSOC:
                 self._assoc_by_node.setdefault(edge.source_id, set()).add(edge.id)
                 self._assoc_by_node.setdefault(edge.target_id, set()).add(edge.id)
+                self._assoc_out.setdefault(edge.source_id, set()).add(edge.target_id)
+            else:  # 互斥
+                self._mutex_by_node.setdefault(edge.source_id, set()).add(edge.id)
+                self._mutex_by_node.setdefault(edge.target_id, set()).add(edge.id)
 
         self._clear_change_tracking()
 
@@ -542,12 +561,12 @@ class SQLiteStore(StoreInterface):
             return
         self.conn.execute(
             "INSERT OR REPLACE INTO nodes "
-            "(id, name, content, role, extensions_json) VALUES (?, ?, ?, ?, ?)",
+            "(id, name, content, node_class, extensions_json) VALUES (?, ?, ?, ?, ?)",
             (
                 node.id,
                 node.name,
                 node.content,
-                node.role,
+                node.node_class,
                 json.dumps(
                     self._serialize_extensions(node.extensions),
                     default=str,
@@ -561,14 +580,13 @@ class SQLiteStore(StoreInterface):
             return
         self.conn.execute(
             "INSERT OR REPLACE INTO edges "
-            "(id, source_id, target_id, kind, label, priority, extensions_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(id, source_id, target_id, type, priority, extensions_json) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 edge.id,
                 edge.source_id,
                 edge.target_id,
-                edge.kind,
-                edge.label,
+                edge.type,
                 edge.priority,
                 json.dumps(
                     self._serialize_extensions(
@@ -656,7 +674,7 @@ class SQLiteStore(StoreInterface):
             "id TEXT PRIMARY KEY",
             "name TEXT NOT NULL",
             "content TEXT",
-            "role TEXT DEFAULT 'concept'",
+            "node_class TEXT DEFAULT '概念'",
             "extensions_json TEXT",
         ]
         ext_columns = []
@@ -670,8 +688,7 @@ class SQLiteStore(StoreInterface):
                 id TEXT PRIMARY KEY,
                 source_id TEXT NOT NULL,
                 target_id TEXT NOT NULL,
-                kind TEXT NOT NULL DEFAULT 'hierarchy',
-                label TEXT NOT NULL DEFAULT '',
+                type TEXT NOT NULL DEFAULT '关联',
                 priority REAL NOT NULL DEFAULT 0.0,
                 extensions_json TEXT
             )
@@ -698,20 +715,7 @@ class SQLiteStore(StoreInterface):
 
         self.conn.commit()
 
-    # === 出处（provenance）与旧库补列 ===
-
-    def _ensure_edges_extensions_column(self) -> None:
-        """旧库 ``edges`` 表无 ``extensions_json`` 列时补齐（让放行后可写）。
-
-        ``CREATE TABLE IF NOT EXISTS`` 对既存表是 no-op、不会追加新列；故开库 MUST
-        显式检测并 ``ALTER TABLE ... ADD COLUMN``（附加列、SQLite 下 O(1)、安全）。
-        """
-        if self.conn is None:
-            return
-        cols = {row[1] for row in self.conn.execute("PRAGMA table_info(edges)")}
-        if "extensions_json" not in cols:
-            self.conn.execute("ALTER TABLE edges ADD COLUMN extensions_json TEXT")
-            self.conn.commit()
+    # === 出处（provenance）===
 
     def _read_meta_all(self) -> dict[str, str]:
         """读取 ``meta`` 表全部键值；表不存在 / 空返回 ``{}``。"""
@@ -736,14 +740,17 @@ class SQLiteStore(StoreInterface):
         except sqlite3.Error:
             return False
 
-    def _write_provenance(self, relation_model: str, ext_names: list[str]) -> None:
-        """写入 / 覆盖出处元信息（``relation_model`` / ``schema_version`` / ``extensions``）。"""
+    def _write_provenance(self, ext_names: list[str]) -> None:
+        """写入 / 覆盖出处元信息（``schema_version`` / ``extensions``）。
+
+        统一图模型为单一模型，已无 ``relation_model`` 维度；出处仅跟踪 schema 版本
+        与扩展名集。
+        """
         if self.conn is None:
             return
         self.conn.executemany(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
             [
-                ("relation_model", relation_model),
                 ("schema_version", SCHEMA_VERSION),
                 ("extensions", json.dumps(ext_names, ensure_ascii=False)),
             ],
@@ -766,33 +773,24 @@ class SQLiteStore(StoreInterface):
         return sorted(set(self._node_extensions) | set(self._edge_extensions))
 
     def _validate_or_write_provenance(self) -> None:
-        """开库出处校验三态（MUST 先于任何读写）。
+        """开库出处校验（MUST 先于任何读写）。
 
-        - ``relation_model`` 不一致 → 抛 ``StoreProvenanceError`` 拒绝（唯一硬拒）；
-        - 出处缺失（旧库 / 空库）→ 按当前配置补写；旧库有数据时记 WARNING 放行；
-        - 扩展名集变化 → 记 WARNING、刷新为当前集、放行（合法迁移，新字段取默认）。
+        统一模型已删 ``relation_model``（无硬拒条件）。出处缺失（旧库 / 空库）→ 按当前
+        配置补写；真旧库（有数据）记 WARNING 放行。扩展名集变化 → 记 WARNING、刷新为
+        当前集、放行（合法迁移，新字段取默认）。
         """
         ext_names = self._current_ext_names()
         stored = self._read_meta_all()
-        stored_model = stored.get("relation_model")
+        stored_version = stored.get("schema_version")
 
-        if stored_model is None:
+        if stored_version is None:
             # 旧库无出处（或全新空库）：按当前配置补写；真旧库（有数据）告警
-            self._write_provenance(self._relation_model, ext_names)
+            self._write_provenance(ext_names)
             if self._has_graph_data():
                 logger.warning(
-                    "打开无出处元信息的旧库（legacy），已按当前配置 "
-                    "relation_model=%s 补写 provenance 放行。",
-                    self._relation_model,
+                    "打开无出处元信息的旧库（legacy），已按当前配置补写 provenance 放行。"
                 )
             return
-
-        # relation_model 不一致 → 硬拒（防混库静默损坏）
-        if stored_model != self._relation_model:
-            raise StoreProvenanceError(
-                f"库出处 relation_model={stored_model!r} 与当前配置 "
-                f"{self._relation_model!r} 不一致；混库为未定义行为，拒绝打开。"
-            )
 
         # 扩展名集变化 → 仅告警、刷新为当前集、放行
         stored_ext = self._parse_ext_set(stored.get("extensions"))
@@ -803,7 +801,7 @@ class SQLiteStore(StoreInterface):
                 "旧 orphan 字段被忽略），已刷新为当前集并放行。",
                 sorted(stored_ext), sorted(current_ext),
             )
-            self._write_provenance(self._relation_model, ext_names)
+            self._write_provenance(ext_names)
 
     # === 内部边操作 ===
 
@@ -811,12 +809,11 @@ class SQLiteStore(StoreInterface):
         edge = self._edges.pop(edge_id, None)
         if edge is None:
             return
-        if edge.kind == "hierarchy":
-            self._hierarchy_out.get(edge.source_id, set()).discard(edge.target_id)
-        elif edge.kind == "fact":
-            self._fact_by_node.get(edge.source_id, set()).discard(edge.id)
-            self._fact_by_node.get(edge.target_id, set()).discard(edge.id)
-        else:  # assoc
+        if edge.type == EDGE_ASSOC:
             self._assoc_by_node.get(edge.source_id, set()).discard(edge.id)
             self._assoc_by_node.get(edge.target_id, set()).discard(edge.id)
+            self._assoc_out.get(edge.source_id, set()).discard(edge.target_id)
+        else:  # 互斥
+            self._mutex_by_node.get(edge.source_id, set()).discard(edge.id)
+            self._mutex_by_node.get(edge.target_id, set()).discard(edge.id)
         self._track_edge_deleted(edge_id)

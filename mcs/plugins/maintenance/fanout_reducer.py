@@ -12,6 +12,14 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.plugin import PluginType
+from mcs.entities.graph import (
+    CLASS_CONCEPT,
+    CLASS_FACT,
+    CORE_NODE_CLASSES,
+    EDGE_ASSOC,
+    SEED_ROOT_ID,
+    SEED_ROOT_NAME,
+)
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
 
 if TYPE_CHECKING:
@@ -22,10 +30,6 @@ if TYPE_CHECKING:
     from mcs.entities.graph import Edge, Node
 
 logger = logging.getLogger(__name__)
-
-# 持久虚拟根：分层种子图的顶点（固定 id，永不删除）。兜底种子 = 它的(递归)子节点。
-SEED_ROOT_ID = "__seed_root__"
-SEED_ROOT_NAME = "__seed_root__"
 
 
 class FanoutReducerPlugin(CompactionPluginInterface):
@@ -79,7 +83,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         # 持久根。否则无预算压力的图（小语料 / 大窗口 T / 整篇摄入）永不建根、查询
         # 无从沿出边下钻（曾导致整图扁平、文档级召回为 0）。
         if self.maintain_root and any(
-            getattr(n, "role", "concept") == "concept" for n in changed_nodes
+            getattr(n, "node_class", CLASS_CONCEPT) in CORE_NODE_CLASSES for n in changed_nodes
         ):
             return True
         return False
@@ -269,23 +273,23 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         root = store.get_node(SEED_ROOT_ID)
         if root is None:
             root = Node(
-                id=SEED_ROOT_ID, name=SEED_ROOT_NAME, content="", role="hub"
+                id=SEED_ROOT_ID, name=SEED_ROOT_NAME, content="",
+                node_class=CLASS_CONCEPT, extensions={"hub": True},
             )
             store.add_node(root)
 
         # 新概念**仅在"孤儿"（零关系关联）时**挂根（单条下行 root→concept，D6）。
         # 有关系关联者经字面入口（alias_entry）+ 关系 BFS 可达，不挂根——避免 root
         # 扁平化、让图成森林。此处在阶段⑥运行，stage⑤ 的关系边已落库，判定准确。
-        # 关系关联 = fact（property_graph）或 assoc（attribute_node）任一；property_graph
-        # 模式下 get_assoc 恒空，等价于原"仅 get_facts"判定（基线零变化）。
+        # 关系关联 = 该节点作任一端的 关联 / 互斥 边（get_relations 反查）。
         for n in list(changed_nodes):
             if n.id == root.id:
                 continue
-            if getattr(n, "role", "concept") != "concept" or not store.get_node(n.id):
+            if getattr(n, "node_class", CLASS_CONCEPT) not in CORE_NODE_CLASSES or not store.get_node(n.id):
                 continue
-            if store.get_facts(n.id) or store.get_assoc(n.id):
+            if store.get_relations(n.id):
                 continue  # 有关系关联 → 不挂根
-            store.add_edge(root.id, n.id, kind="hierarchy")
+            store.add_edge(root.id, n.id, type=EDGE_ASSOC)
 
         # 递归分层（自根向下；进展检查 + max_reorg 双重防死循环）
         affected: dict[str, Node] = {root.id: root}
@@ -331,47 +335,46 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         则把 X 到 M 各成员的直接边替换为单条 X → H：减边、减扇出、复用已有 hub。
 
         净减边判据：仅当 ``|M| ≥ 2`` 才吸收——删 |M| 条加 1 条，净 -（|M|-1）。
-        骨架识别依据节点 ``role``（``role=="hub"``），不依赖边方向。
+        骨架识别依据节点 ``hub`` 标记（``hub is True``），不依赖边方向。
+
+        统一模型下组织层级用 ``关联`` 边 + hub 标记表达（无独立层级边）：吸收扫描
+        ``关联`` 出边。语义为 Phase B（边吸收任务 #25）的深度行为，此处为机械翻译。
         """
-        # 一次遍历：节点 → 层级出边目标集合（只看层级边——吸收是层级重连，事实边不参与）
+        # 一次遍历：节点 → 关联出边目标集合（吸收是层级重连，互斥边不参与）
         out_children: dict[str, set[str]] = {}
         for edge in store.get_all_edges():
-            if edge.kind != "hierarchy":
+            if edge.type != EDGE_ASSOC:
                 continue
             out_children.setdefault(edge.source_id, set()).add(edge.target_id)
 
         nodes = store.get_all_nodes()
-        hubs = [n for n in nodes if n.role == "hub"]
+        hubs = [n for n in nodes if n.hub]
 
         for hub in hubs:
-            # hub 的概念成员（kind="hierarchy" 出边目标中非 hub 者）。
-            # 新模型：直接按 kind 过滤，不再依赖"反向边启发式"。
-            hub_edges_out = [
-                e for e in store.get_all_edges()
-                if e.source_id == hub.id and e.kind == "hierarchy"
-            ]
-            hub_members = {
-                e.target_id for e in hub_edges_out
-                if store.get_node(e.target_id) is not None
-                and store.get_node(e.target_id).role != "hub"
-            }
+            # hub 的概念成员（关联出边目标中非 hub 者）。复用上方 out_children 映射，
+            # 避免 per-hub 调 get_all_edges（O(N_hub × E) → O(E)）。
+            hub_members: set[str] = set()
+            for tid in out_children.get(hub.id, ()):
+                member = store.get_node(tid)
+                if member is not None and not member.hub:
+                    hub_members.add(tid)
             # 净减边判据：至少 2 个成员才有收益
             if len(hub_members) < 2:
                 continue
 
             for node in nodes:
-                if node.id == hub.id or node.role == "hub":
+                if node.id == hub.id or node.hub:
                     continue  # hub 不吸收其他 hub 的边（避免层级缠绕）
                 children = out_children.get(node.id)
                 if not children or not hub_members.issubset(children):
                     continue
-                # 吸收：删 X→各成员（层级边），加 X→hub
+                # 吸收：删 X→各成员（关联边），加 X→hub
                 for m_id in hub_members:
                     for e in store.get_edges_between(node.id, m_id):
-                        if e.kind == "hierarchy":
+                        if e.type == EDGE_ASSOC:
                             store.delete_edge(e.id)
                             break
-                store.add_edge(node.id, hub.id, kind="hierarchy")
+                store.add_edge(node.id, hub.id, type=EDGE_ASSOC)
                 # 同步更新映射，供后续 hub 判定
                 children.difference_update(hub_members)
                 children.add(hub.id)
@@ -488,7 +491,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         if not summary_words:
             return None
         for node in store.get_all_nodes():
-            if node.role != "hub" or node.id == SEED_ROOT_ID:
+            if not node.hub or node.id == SEED_ROOT_ID:
                 continue
             if not node.content:
                 continue
@@ -517,16 +520,16 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         for m in members:
             if m.id == hub.id:
                 continue
-            # 删 node→member（层级边）
+            # 删 node→member（关联边）
             edges = store.get_edges_between(node.id, m.id)
             for e in edges:
-                if e.kind == "hierarchy":
+                if e.type == EDGE_ASSOC:
                     store.delete_edge(e.id)
                     break
-            # 建 hub→member（下行层级边）
-            store.add_edge(hub.id, m.id, kind="hierarchy")
-        # 建 node→hub（下行层级边）
-        store.add_edge(node.id, hub.id, kind="hierarchy")
+            # 建 hub→member（下行关联边）
+            store.add_edge(hub.id, m.id, type=EDGE_ASSOC)
+        # 建 node→hub（下行关联边）
+        store.add_edge(node.id, hub.id, type=EDGE_ASSOC)
 
     def _reorganize_multi(
         self,
@@ -580,7 +583,20 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 continue
             members = [n for n in neighbors if n.id in comm.member_ids]
             if strategy == "merge":
-                self._merge_synonyms(node, hub, members, store)
+                # 宪法：对事实节点只重组不合并（合并会断背书/互斥）。
+                # 概念走合并（删除同义节点、合并内容/边），事实走重组（保留节点、仅重挂层级边）。
+                concept_members = [
+                    m for m in members
+                    if getattr(m, "node_class", CLASS_CONCEPT) != CLASS_FACT
+                ]
+                fact_members = [
+                    m for m in members
+                    if getattr(m, "node_class", CLASS_CONCEPT) == CLASS_FACT
+                ]
+                if concept_members:
+                    self._merge_synonyms(node, hub, concept_members, store)
+                if fact_members:
+                    self._reorganize(node, hub, fact_members, store)
             else:
                 self._reorganize(node, hub, members, store)
             new_hubs.append(hub)
@@ -611,7 +627,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         3. 删除非代表成员节点
         4. 建立下行边 node→rep
 
-        合并后 rep.role="hub"，作为组织中心。
+        合并后 rep 打 hub 标记（extensions={"hub": True}），作为组织中心。
         """
         if rep.id == node.id:
             return
@@ -641,7 +657,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             store.delete_node(m.id)
 
         # 建立下行边 node→rep
-        store.add_edge(node.id, rep.id, kind="hierarchy")
+        store.add_edge(node.id, rep.id, type=EDGE_ASSOC)
 
         logger.info(
             "合并同义：%d 个节点合并到 '%s'（id=%s）",
@@ -656,8 +672,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         """把 old_id 的所有单向边迁移到 new_id，避免悬空边。
 
         对于 old_id 的每条边：
-        - 如果 new_id 与对端之间已有同 kind 边，跳过（不重复）
-        - 否则，创建新边（保留 kind/label/priority），删除旧边
+        - 如果 new_id 与对端之间已有同 type 边，跳过（不重复）
+        - 否则，创建新边（保留 type/priority/extensions），删除旧边
         - 跳过自环
         """
         edges_to_migrate: list[Edge] = []
@@ -676,18 +692,15 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             # 不迁移自环
             if new_source == new_target:
                 continue
-            # 去重：层级边按 kind（label 恒空）；事实边须 kind+label 都相同才算重复，
-            # 否则会丢掉同一对端点间不同 label 的事实（创立 vs 属于 是两条事实）。
+            # 去重：同一对端点间同 type 的边只存一份（统一模型无 label；互斥按无序对去重）。
             existing = store.get_edges_between(new_source, new_target)
-            if any(
-                e.kind == edge.kind and e.label == edge.label for e in existing
-            ):
+            if any(e.type == edge.type for e in existing):
                 continue
 
             store.delete_edge(edge.id)
             store.add_edge(
                 new_source, new_target,
-                kind=edge.kind, label=edge.label, priority=edge.priority,
+                type=edge.type, priority=edge.priority,
                 extensions=dict(edge.extensions or {}),
             )
 
@@ -748,7 +761,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         """从社区信息创建/提拔 hub。
 
         三种策略：
-        - key_concept：提拔现有节点为 hub（置 role="hub"）
+        - key_concept：提拔现有节点为 hub（打 hub 标记，落 extensions）
         - merge：找到第一个成员作为代表，提拔为 hub
         - summarize：新建概括性 hub
         """
@@ -759,7 +772,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         if strategy == "key_concept":
             key_id = getattr(community, "key_concept_id", None)
             if key_id and store.get_node(key_id):
-                store.update_node(key_id, {"role": "hub"})
+                store.update_node(key_id, {"hub": True})
                 return store.get_node(key_id)
             # key_id 无效 → 退化为 summarize
             strategy = "summarize"
@@ -769,11 +782,11 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 return None
             rep_id = community.member_ids[0]
             if store.get_node(rep_id):
-                store.update_node(rep_id, {"role": "hub"})
+                store.update_node(rep_id, {"hub": True})
                 return store.get_node(rep_id)
             return None
 
-        # summarize：新建概括性 hub
+        # summarize：新建概括性 hub（概念节点 + hub 标记）
         summary = getattr(community, "summary", None) or getattr(community, "theme", "")
         if not summary:
             return None
@@ -786,7 +799,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             id=str(uuid.uuid4()),
             name=_short_name(summary),
             content=summary,
-            role="hub",
+            node_class=CLASS_CONCEPT,
+            extensions={"hub": True},
         )
         store.add_node(hub)
         return hub

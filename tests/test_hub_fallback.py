@@ -14,7 +14,7 @@ GraphStore = InMemoryStore
 def _hub_graph() -> GraphStore:
     """根枢纽 h → {c1, c2}（c1 再挂一个 g1）。使用单向下行边构建层级。"""
     g = GraphStore()
-    g.add_node(Node(id="h", name="根枢纽", content="顶层", role="hub"))
+    g.add_node(Node(id="h", name="根枢纽", content="顶层", extensions={"hub": True}))
     g.add_node(Node(id="c1", name="子概念1", content="..."))
     g.add_node(Node(id="c2", name="子概念2", content="..."))
     g.add_node(Node(id="g1", name="孙概念1", content="..."))
@@ -47,7 +47,7 @@ def test_navigate_hub_called_and_drills(mock_llm):
 def test_no_hubs_returns_empty(mock_llm):
     """图中没有 hub 角色节点时返回空，不发起 LLM 调用。"""
     g = GraphStore()
-    g.add_node(Node(id="x", name="普通", content="", role="concept"))
+    g.add_node(Node(id="x", name="普通", content=""))
     plugin = HubFallbackEntryPlugin()
     init_plugin_manager(g, plugin, extra_plugins=[mock_llm])
     assert plugin.locate("q", None) == []
@@ -75,10 +75,10 @@ def test_disable_llm_navigation_returns_hubs(mock_llm):
 
 def test_navigates_from_persistent_root(mock_llm):
     """存在持久根 __seed_root__ 时，从根自顶向下导航；绝不把合成根当种子。"""
-    from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
+    from mcs.entities.graph import SEED_ROOT_ID
 
     g = GraphStore()
-    g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub"))
+    g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", extensions={"hub": True}))
     g.add_node(Node(id="t1", name="顶层1", content="..."))
     g.add_node(Node(id="t2", name="顶层2", content="..."))
     g.add_node(Node(id="leaf", name="叶", content="..."))
@@ -103,10 +103,10 @@ def test_navigates_from_persistent_root(mock_llm):
 
 def test_root_present_no_llm_returns_children(mock_llm):
     """有持久根但关闭导航：返回根的直接子节点作种子（不含根本身）。"""
-    from mcs.plugins.maintenance.fanout_reducer import SEED_ROOT_ID
+    from mcs.entities.graph import SEED_ROOT_ID
 
     g = GraphStore()
-    g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", role="hub"))
+    g.add_node(Node(id=SEED_ROOT_ID, name="__seed_root__", content="", extensions={"hub": True}))
     g.add_node(Node(id="t1", name="顶层1", content="..."))
     g.add_node(Node(id="t2", name="顶层2", content="..."))
     g.add_edge(SEED_ROOT_ID, "t1")
