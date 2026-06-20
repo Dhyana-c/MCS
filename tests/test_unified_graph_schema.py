@@ -57,6 +57,26 @@ def test_edge_types_registry():
     assert ALLOWED_EDGE_TYPES == {EDGE_ASSOC, EDGE_MUTEX}
 
 
+def test_add_edge_mutex_requires_fact_endpoints():
+    """互斥边两端 MUST 均为事实节点（宪法"互斥恒为事实↔事实"）。
+
+    概念间创建互斥边 MUST 抛 ValueError；事实间允许。
+    """
+    store = InMemoryStore()
+    store.add_node(Node(id="c1", name="概念A", content="", node_class=CLASS_CONCEPT))
+    store.add_node(Node(id="c2", name="概念B", content="", node_class=CLASS_CONCEPT))
+    store.add_node(Node(id="f1", name="事实1", content="", node_class=CLASS_FACT))
+    store.add_node(Node(id="f2", name="事实2", content="", node_class=CLASS_FACT))
+
+    # 概念间互斥 → ValueError
+    with pytest.raises(ValueError, match="互斥边"):
+        store.add_edge("c1", "c2", type=EDGE_MUTEX)
+
+    # 事实间互斥 → 允许
+    eid = store.add_edge("f1", "f2", type=EDGE_MUTEX)
+    assert eid  # 非空
+
+
 def test_config_has_no_relation_model():
     """统一模型：MCSConfig 不再持有 relation_model / attribute_content_max。"""
     cfg = MCSConfig()
@@ -140,8 +160,8 @@ def test_add_edge_returns_existing_on_dedup_assoc():
 def test_add_edge_mutex_dedup_unordered():
     """互斥按无序对 {s,t} 去重：A→B 与 B→A 视为同一条。"""
     store = InMemoryStore()
-    store.add_node(Node(id="a", name="a", content=""))
-    store.add_node(Node(id="b", name="b", content=""))
+    store.add_node(Node(id="a", name="a", content="", node_class=CLASS_FACT))
+    store.add_node(Node(id="b", name="b", content="", node_class=CLASS_FACT))
     eid1 = store.add_edge("a", "b", type=EDGE_MUTEX)
     eid2 = store.add_edge("b", "a", type=EDGE_MUTEX)
     assert eid1 == eid2

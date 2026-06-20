@@ -175,6 +175,14 @@ class QueryEngine:
         processed = self._run_preprocess(query, ctx)
         return self._locate_seeds(processed, ctx)
 
+    def get_related_events(self, node_id: str) -> list[Node]:
+        """定向查事件：绕过载重规则，获取背书此核心节点的全部事件。
+
+        宪法载重规则使核心节点 ``get_relations`` 不含事件边。
+        查询需要出处/证据时用此方法——独立检索步，不进常驻活跃视图。
+        """
+        return self.store.get_related_events(node_id)
+
     # === 阶段辅助方法 ===
 
     def _run_preprocess(self, text: str, ctx: QueryContext) -> str:

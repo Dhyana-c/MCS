@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 from mcs.core.plugin import PluginType
 from mcs.entities.graph import (
     CLASS_CONCEPT,
+    CLASS_FACT,
+    CORE_NODE_CLASSES,
     EDGE_ASSOC,
     SEED_ROOT_ID,
     SEED_ROOT_NAME,
@@ -81,7 +83,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         # 持久根。否则无预算压力的图（小语料 / 大窗口 T / 整篇摄入）永不建根、查询
         # 无从沿出边下钻（曾导致整图扁平、文档级召回为 0）。
         if self.maintain_root and any(
-            getattr(n, "node_class", CLASS_CONCEPT) == CLASS_CONCEPT for n in changed_nodes
+            getattr(n, "node_class", CLASS_CONCEPT) in CORE_NODE_CLASSES for n in changed_nodes
         ):
             return True
         return False
@@ -283,7 +285,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         for n in list(changed_nodes):
             if n.id == root.id:
                 continue
-            if getattr(n, "node_class", CLASS_CONCEPT) != CLASS_CONCEPT or not store.get_node(n.id):
+            if getattr(n, "node_class", CLASS_CONCEPT) not in CORE_NODE_CLASSES or not store.get_node(n.id):
                 continue
             if store.get_relations(n.id):
                 continue  # 有关系关联 → 不挂根
@@ -581,7 +583,20 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 continue
             members = [n for n in neighbors if n.id in comm.member_ids]
             if strategy == "merge":
-                self._merge_synonyms(node, hub, members, store)
+                # 宪法：对事实节点只重组不合并（合并会断背书/互斥）。
+                # 概念走合并（删除同义节点、合并内容/边），事实走重组（保留节点、仅重挂层级边）。
+                concept_members = [
+                    m for m in members
+                    if getattr(m, "node_class", CLASS_CONCEPT) != CLASS_FACT
+                ]
+                fact_members = [
+                    m for m in members
+                    if getattr(m, "node_class", CLASS_CONCEPT) == CLASS_FACT
+                ]
+                if concept_members:
+                    self._merge_synonyms(node, hub, concept_members, store)
+                if fact_members:
+                    self._reorganize(node, hub, fact_members, store)
             else:
                 self._reorganize(node, hub, members, store)
             new_hubs.append(hub)

@@ -9,7 +9,7 @@ from conftest import make_query_engine
 from mcs.core.plugin_manager import PluginContext, PluginManager
 from mcs.core.query_engine import QueryContext, QueryEngine
 from mcs.core.token_budget import TokenBudget
-from mcs.entities.graph import Node, Subgraph
+from mcs.entities.graph import CLASS_EVENT, EDGE_ASSOC, Node, Subgraph
 from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 from mcs.interfaces.query_preprocess_plugin import QueryPreprocessPluginInterface
@@ -438,3 +438,42 @@ def test_traverse_with_no_neighbors_or_facts(seeded_graph, mock_llm):
     result = engine.query("test")
     assert isinstance(result, Subgraph)
     assert result.nodes[0].id == "cnn"
+
+
+# ─── 定向查事件 ──────────────────────────────────────────────────────────
+
+
+def test_get_related_events_bypasses_cargo_rule():
+    """get_related_events 绕过载重规则：核心节点能查到背书它的事件。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    fact = Node(id="f1", name="某事实", content="某事实", node_class="事实")
+    g.add_node(fact)
+    event = Node(id="e1", name="用户对话", content="用户说了啥", node_class=CLASS_EVENT)
+    g.add_node(event)
+    g.add_edge("e1", "f1", type=EDGE_ASSOC)  # 事件→事实（背书）
+
+    # 核心侧 get_relations 不含事件边（载重规则）
+    fact_assoc = [e for e in g.get_relations("f1") if e.type == EDGE_ASSOC]
+    assert not any(e.source_id == "e1" for e in fact_assoc)
+
+    # 定向查事件能绕过
+    mock = MockLLM()
+    engine = make_query_engine(g, mock, _StaticEntry(["f1"], g))
+    events = engine.get_related_events("f1")
+    assert len(events) >= 1
+    assert events[0].node_class == CLASS_EVENT
+
+
+def test_get_related_events_no_events():
+    """无事件背书时返回空列表。"""
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    concept = Node(id="c1", name="概念", content="概念", node_class="概念")
+    g.add_node(concept)
+
+    mock = MockLLM()
+    engine = make_query_engine(g, mock, _StaticEntry(["c1"], g))
+    assert engine.get_related_events("c1") == []

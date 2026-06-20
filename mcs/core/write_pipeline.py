@@ -21,8 +21,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.errors import InvalidDecisionError, UnknownActionError
-from mcs.entities.decisions import ConceptDraft, Decision, DecisionList
-from mcs.entities.graph import CLASS_CONCEPT, EDGE_ASSOC
+from mcs.entities.decisions import ConceptDraft, Decision, DecisionList, EventData
+from mcs.entities.graph import CLASS_CONCEPT, CLASS_EVENT, EDGE_ASSOC, EDGE_MUTEX
 
 if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginManager
@@ -242,14 +242,17 @@ class WritePipeline:
 
         返回新创建或合并的节点列表（即状态发生变化的节点）。
 
-        两遍处理：第一遍派发 3 种 action 并记录「概念名 → 节点 id」映射；第二遍把
-        ``edges_to_names``（同一批新概念之间的篇内关系）按名解析成边——兄弟概念此刻
-        已全部建好，弥补"同次摄入的概念之间无法用 id 互连"的缺口。
+        三遍处理：
+        - 第一遍：派发 3 种 action 并记录「概念名 → 节点 id」映射；处理 ``mutex_with``
+          （已有事实节点 id → 互斥边）
+        - 第二遍：把 ``edges_to_names`` 和 ``mutex_with_names``（同一批新概念之间
+          的篇内关系/互斥）按名解析成边——兄弟概念此刻已全部建好
         """
 
         changed: list[Node] = []
         name_to_id: dict[str, str] = {}
         pending_named_edges: list[tuple[str, list[dict]]] = []
+        pending_mutex_names: list[tuple[str, list[str]]] = []
         # 精确同名去重索引：create 时若已有同名节点则并入而非新建（确定性兜底，
         # 不依赖 judge_relations 的 merge 判定——其 prompt 偏向 create 会让同名实体
         # 裂成多个节点、碎片化事实、压低召回）。
@@ -270,12 +273,24 @@ class WritePipeline:
                     changed.append(node)
                 if cname:
                     name_to_id[cname] = decision.target_id
+                # merge 事实的互斥边（merge 后新节点继承互斥关系）
+                for mid in decision.mutex_with or []:
+                    if decision.target_id and self.store.get_node(mid):
+                        try:
+                            self.store.add_edge(decision.target_id, mid, type=EDGE_MUTEX)
+                        except ValueError:
+                            logger.warning(
+                                "互斥边被拒绝（两端非事实）：merge target=%s, mutex_with=%s",
+                                decision.target_id, mid,
+                            )
             elif action == "create":
                 dup_id = existing_by_name.get(_norm_name(cname)) if cname else None
+                new_id: str | None = None
                 if dup_id is not None and self.store.get_node(dup_id) is not None:
                     # 同名已存在 → 并入既有节点（content/别名/edges_to），不新建
                     node = self._merge_concept_into(dup_id, decision)
                     changed.append(node)
+                    new_id = dup_id
                     if cname:
                         name_to_id[cname] = dup_id
                     if decision.edges_to_names:
@@ -283,6 +298,7 @@ class WritePipeline:
                 else:
                     node = self._dispatch_create(decision)
                     changed.append(node)
+                    new_id = node.id
                     if cname:
                         name_to_id[cname] = node.id
                         key = _norm_name(cname)
@@ -290,20 +306,83 @@ class WritePipeline:
                             existing_by_name.setdefault(key, node.id)  # 同批后续同名也并入
                     if decision.edges_to_names:
                         pending_named_edges.append((node.id, decision.edges_to_names))
+                # create 事实的互斥边（已有事实 id）
+                for mid in decision.mutex_with or []:
+                    if new_id and self.store.get_node(mid):
+                        try:
+                            self.store.add_edge(new_id, mid, type=EDGE_MUTEX)
+                        except ValueError:
+                            logger.warning(
+                                "互斥边被拒绝（两端非事实）：source=%s, target=%s",
+                                new_id, mid,
+                            )
+                # 篇内互斥（同批新事实名 → 第二遍解析）
+                if decision.mutex_with_names:
+                    pending_mutex_names.append((new_id or "", decision.mutex_with_names))
             elif action == "no_op":
                 continue  # 显式无操作；无需处理
             else:
                 raise UnknownActionError(action)
 
-        # 第二遍：篇内关系边（统一模型：关联边，无 label；谓词落点由事实节点承载，
-        # 留待写入管线 Phase C #30 实现。当前篇内概念间关联以 关联 边直连。）
+        # 第二遍：篇内关系边（统一模型：关联边，无 label；谓词落点由事实节点承载）
         for source_id, edge_specs in pending_named_edges:
             for edge_info in edge_specs:
                 target_name = edge_info.get("target_name", "")
                 target_id = name_to_id.get(target_name)
                 if target_id:
                     self.store.add_edge(source_id, target_id, type=EDGE_ASSOC)
+
+        # 第二遍：篇内互斥边（事实 ↔ 事实）
+        for source_id, mutex_names in pending_mutex_names:
+            for target_name in mutex_names:
+                target_id = name_to_id.get(target_name)
+                if target_id and source_id:
+                    try:
+                        self.store.add_edge(source_id, target_id, type=EDGE_MUTEX)
+                    except ValueError:
+                        logger.warning(
+                            "篇内互斥边被拒绝（两端非事实）：source=%s, target=%s",
+                            source_id, target_id,
+                        )
+
         return changed
+
+    def ingest_event(self, event_data: EventData) -> Node:
+        """事件规则入库（不经 LLM）。
+
+        宪法 D5：事件按既定结构直接存。创建 ``CLASS_EVENT`` 节点
+        并对 ``target_ids`` 中每个 id 创建 ``事件 → 目标`` 的 ``EDGE_ASSOC`` 边
+        （背书·提及，方向固定；核心不反查——载重规则已在 store 层落实）。
+
+        事件节点 extensions 中自动注入 ``event_meta``：
+        ``{"timestamp": <timestamp>, "targets": [<target_ids>]}``。
+        """
+        from mcs.entities.graph import Node
+
+        meta = {"targets": list(event_data.target_ids)}
+        if event_data.timestamp:
+            meta["timestamp"] = event_data.timestamp
+        ext = dict(event_data.extensions or {})
+        ext["event_meta"] = meta
+
+        node = Node(
+            id=str(uuid.uuid4()),
+            name=event_data.name,
+            content=event_data.content,
+            node_class=CLASS_EVENT,
+            extensions=ext,
+        )
+        self.store.add_node(node)
+
+        for tid in event_data.target_ids:
+            if self.store.get_node(tid) is not None:
+                self.store.add_edge(node.id, tid, type=EDGE_ASSOC)
+            else:
+                logger.warning(
+                    "ingest_event: 目标节点 %s 不存在，跳过背书边", tid
+                )
+
+        return node
 
     def _dispatch_merge(self, decision: Decision) -> None:
         """合并：把新概念的名称/别名并入 ``target_id`` 的别名槽，并把
@@ -354,19 +433,22 @@ class WritePipeline:
     def _dispatch_create(self, decision: Decision) -> Node:
         """创建：新节点 + 到 ``edges_to`` 中每个锚点的关联边。
 
-        统一模型下概念间关联为 ``关联`` 边（无 label；开放谓词落事实节点 content，
-        事实节点化留待写入管线 Phase C #30）。
+        统一模型下：
+        - 概念间关联为 ``关联`` 边（无 label；开放谓词落事实节点 content）
+        - ``node_class`` 从 decision 读取：概念（默认）或事实
         """
         from mcs.entities.graph import Node
 
         c = decision.concept
         if c is None:
             raise InvalidDecisionError("create without concept payload")
+        # node_class 优先级：decision.node_class > concept.node_class > 默认概念
+        nc = decision.node_class or getattr(c, "node_class", CLASS_CONCEPT) or CLASS_CONCEPT
         node = Node(
             id=str(uuid.uuid4()),
             name=c.name,
             content=c.content,
-            node_class=CLASS_CONCEPT,
+            node_class=nc,
         )
         self.store.add_node(node)
         for edge_info in decision.edges_to or []:
@@ -435,11 +517,12 @@ class WritePipeline:
 
 def _format_concepts(concepts: list[ConceptDraft]) -> str:
     """ConceptDraft 的紧凑字符串表示，用于 ``judge_relations`` LLM 提示的
-    ``{concepts}`` 占位符。
+    ``{concepts}`` 占位符。事实节点前置 ``[事实]`` 标记。
     """
     lines = []
     for i, c in enumerate(concepts, 1):
-        lines.append(f"{i}. {c.name}: {c.content}")
+        prefix = "[事实] " if c.node_class == "事实" else ""
+        lines.append(f"{i}. {prefix}{c.name}: {c.content}")
         for hint in c.relation_hints:
             lines.append(f"   - {hint}")
     return "\n".join(lines) if lines else "(无)"

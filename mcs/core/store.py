@@ -121,6 +121,31 @@ class StoreInterface(ABC):
         """
         ...
 
+    def get_related_events(self, node_id: str) -> list[Node]:
+        """定向查事件：绕过载重规则，返回**指向此核心节点的全部事件节点**。
+
+        宪法载重规则使核心节点 ``get_relations`` 不含事件边（核心不反查）。
+        查询需要出处/证据时，用此方法**定向**获取背书此核心节点的事件——独立检索步，
+        不进常驻活跃视图、不占 T 预算。
+
+        返回以本节点为 target 的 ``关联`` 边的 source 端中 ``node_class=="事件"``
+        的节点列表（时间倒排，Phase 1 返回全部）。
+        """
+        # 默认实现：扫全量边找 target==node_id 且 source 为事件的关联边
+        node = self.get_node(node_id)
+        if node is None:
+            return []
+        events: list[Node] = []
+        for edge in self.get_all_edges():
+            if edge.type != "关联":
+                continue
+            if edge.target_id != node_id:
+                continue
+            source = self.get_node(edge.source_id)
+            if source is not None and source.node_class == "事件":
+                events.append(source)
+        return events
+
     def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:
         """获取两个节点之间的所有边（不限 type）。"""
         return [

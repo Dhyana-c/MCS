@@ -92,6 +92,19 @@ class MCPServer:
         wctx = self._mcs.ingest(text)
         return format_ingest_status(wctx)
 
+    def _do_ingest_event(self, name: str, content: str,
+                         timestamp: str | None = None,
+                         target_ids: list[str] | None = None) -> str:
+        assert self._mcs is not None
+        from mcs.entities.decisions import EventData
+        event_data = EventData(
+            name=name, content=content,
+            timestamp=timestamp,
+            target_ids=target_ids or [],
+        )
+        node = self._mcs.ingest_event(event_data)
+        return f"事件入库成功：id={node.id}, name={node.name}"
+
     # === 公共：工具处理（串行、线程亲和） ===
 
     def run_query(self, query: str) -> str:
@@ -163,6 +176,28 @@ def build_fastmcp(server: MCPServer) -> Any:
         except Exception as exc:  # 单次异常隔离，server 不崩
             logger.warning("ingest tool failed", exc_info=True)
             return f"[error] ingest 失败：{type(exc).__name__}: {exc}"
+
+    @mcp_server.tool()
+    async def ingest_event(name: str, content: str,
+                           timestamp: str | None = None,
+                           target_ids: list[str] | None = None) -> str:
+        """规则入库事件节点（不经 LLM），自动创建背书边。
+
+        Args:
+            name: 事件名称
+            content: 事件内容
+            timestamp: ISO 8601 时间戳（可选）
+            target_ids: 背书目标节点 id 列表（可选）
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                server._executor, server._do_ingest_event,
+                name, content, timestamp, target_ids,
+            )
+        except Exception as exc:
+            logger.warning("ingest_event tool failed", exc_info=True)
+            return f"[error] ingest_event 失败：{type(exc).__name__}: {exc}"
 
     return mcp_server
 

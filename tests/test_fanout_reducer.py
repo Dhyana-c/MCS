@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from mcs.core.token_budget import TokenBudget
 from mcs.entities.decisions import Community, MultiHubDecision
-from mcs.entities.graph import Node
+from mcs.entities.graph import CLASS_CONCEPT, CLASS_FACT, Node
 from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
 from mcs.stores.in_memory import InMemoryStore
 
@@ -343,3 +343,79 @@ def test_migrate_edges_dedup_same_type_between_pair():
 
     rep_facts = [e for e in g.get_relations("rep") if e.target_id == "x"]
     assert len(rep_facts) == 1  # 同 type 去重，只一份
+
+
+def test_merge_strategy_skips_fact_nodes():
+    """宪法：对事实节点只重组不合并（合并会断背书/互斥）。
+
+    merge 策略下：概念走合并（删除同义节点），事实走重组（保留节点、仅重挂层级边）。
+    直接调用 _reorganize_multi，不设 token_budget 以避免 _validate_reorg 回滚干扰。
+    """
+    g = GraphStore()
+    center = Node(id="center", name="center", content="c" * 400)
+    g.add_node(center)
+    # 2 个概念 + 2 个事实
+    c1 = Node(id="c1", name="概念A", content="概念A内容", node_class=CLASS_CONCEPT)
+    c2 = Node(id="c2", name="概念A别名", content="概念A同义内容", node_class=CLASS_CONCEPT)
+    f1 = Node(id="f1", name="事实1", content="X喜欢Y", node_class=CLASS_FACT)
+    f2 = Node(id="f2", name="事实2", content="X出生于Z", node_class=CLASS_FACT)
+    for n in [c1, c2, f1, f2]:
+        g.add_node(n)
+        g.add_edge("center", n.id)
+    # 事实间有互斥边（合并会断掉）
+    g.add_edge("f1", "f2", type="互斥")
+
+    p = FanoutReducerPlugin({"floor": 2, "maintain_root": False})
+    # 不设 token_budget → _validate_reorg 直接返回 True
+    neighbors = g.get_out_hierarchy("center")
+
+    decision = MultiHubDecision(
+        communities=[
+            Community(
+                theme="合并组", member_ids=["c1", "c2", "f1", "f2"],
+                strategy="merge", summary="合并同义",
+            ),
+        ],
+    )
+
+    p._reorganize_multi(center, decision, neighbors, g)
+
+    # 概念 c2 应被合并删除（同义合并）
+    assert g.get_node("c2") is None, "同义概念应被合并删除"
+    # 事实 f1、f2 应保留（只重组不合并）
+    assert g.get_node("f1") is not None, "事实节点不应被合并删除"
+    assert g.get_node("f2") is not None, "事实节点不应被合并删除"
+    # 互斥边应保留（合并不会断掉）
+    mutex_edges = [e for e in g.get_relations("f1") if e.type == "互斥"]
+    assert len(mutex_edges) >= 1, "事实间互斥边应保留"
+
+
+def test_merge_strategy_pure_concepts_still_merges():
+    """纯概念社区仍走合并路径（无事实节点时不影响行为）。"""
+    g = GraphStore()
+    center = Node(id="center", name="center", content="c" * 400)
+    g.add_node(center)
+    c1 = Node(id="c1", name="概念A", content="概念A内容", node_class=CLASS_CONCEPT)
+    c2 = Node(id="c2", name="概念A别名", content="概念A同义内容", node_class=CLASS_CONCEPT)
+    for n in [c1, c2]:
+        g.add_node(n)
+        g.add_edge("center", n.id)
+
+    p = FanoutReducerPlugin({"floor": 2, "maintain_root": False})
+    neighbors = g.get_out_hierarchy("center")
+
+    decision = MultiHubDecision(
+        communities=[
+            Community(
+                theme="合并组", member_ids=["c1", "c2"],
+                strategy="merge", summary="合并同义",
+            ),
+        ],
+    )
+
+    p._reorganize_multi(center, decision, neighbors, g)
+
+    # c2 被合并删除
+    assert g.get_node("c2") is None
+    # c1 保留（作为代表）
+    assert g.get_node("c1") is not None

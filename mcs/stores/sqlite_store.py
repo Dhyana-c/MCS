@@ -21,6 +21,7 @@ from mcs.entities.graph import (
     ALLOWED_EDGE_TYPES,
     CLASS_CONCEPT,
     CLASS_EVENT,
+    CLASS_FACT,
     CORE_NODE_CLASSES,
     EDGE_ASSOC,
     EDGE_MUTEX,
@@ -185,6 +186,20 @@ class SQLiteStore(StoreInterface):
             return ""
         if source_id not in self._nodes or target_id not in self._nodes:
             return ""
+        # 宪法：互斥边两端 MUST 均为事实节点（互斥恒为事实↔事实）
+        if type == EDGE_MUTEX:
+            src = self._nodes.get(source_id)
+            tgt = self._nodes.get(target_id)
+            if src is not None and src.node_class != CLASS_FACT:
+                raise ValueError(
+                    f"互斥边 source 节点 {source_id!r} 的 node_class={src.node_class!r}，"
+                    f"期望 '{CLASS_FACT}'（互斥仅事实↔事实）"
+                )
+            if tgt is not None and tgt.node_class != CLASS_FACT:
+                raise ValueError(
+                    f"互斥边 target 节点 {target_id!r} 的 node_class={tgt.node_class!r}，"
+                    f"期望 '{CLASS_FACT}'（互斥仅事实↔事实）"
+                )
 
         existing = self._find_existing_edge(source_id, target_id, type)
         if existing is not None:

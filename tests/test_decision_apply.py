@@ -11,7 +11,7 @@ from mcs.core.store import StoreInterface
 from mcs.core.token_budget import TokenBudget
 from mcs.core.write_pipeline import WritePipeline
 from mcs.entities.decisions import ConceptDraft, Decision
-from mcs.entities.graph import Node
+from mcs.entities.graph import CLASS_CONCEPT, CLASS_FACT, EDGE_MUTEX, Node
 
 
 def _make_pipeline(store: StoreInterface, mock_llm) -> WritePipeline:
@@ -257,3 +257,115 @@ def test_multiple_decisions_apply_in_order(empty_graph, mock_llm):
     )
     assert [c.name for c in changed] == ["A", "B", "C"]
     assert len(empty_graph.get_all_nodes()) == 3
+
+
+# ─── 事实节点 + 互斥边 ────────────────────────────────────────────────────
+
+
+def test_create_fact_node(empty_graph, mock_llm):
+    """Decision(node_class=事实) 创建 node_class=="事实" 的事实节点。"""
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="苹果创立了NeXT", content="苹果创立了NeXT", node_class=CLASS_FACT),
+                node_class=CLASS_FACT,
+            )
+        ]
+    )
+    assert len(changed) == 1
+    assert changed[0].node_class == CLASS_FACT
+
+
+def test_create_concept_node_default(empty_graph, mock_llm):
+    """不设 node_class 时默认创建概念节点（向后兼容）。"""
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [Decision(action="create", concept=ConceptDraft(name="概念A", content=""))]
+    )
+    assert len(changed) == 1
+    assert changed[0].node_class == CLASS_CONCEPT
+
+
+def test_mutex_edge_created_between_facts(empty_graph, mock_llm):
+    """Decision(mutex_with=[id]) 在两个事实间创建互斥边。"""
+    fact1 = Node(id="f1", name="地球是平的", content="地球是平的", node_class=CLASS_FACT)
+    empty_graph.add_node(fact1)
+
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="地球是圆的", content="地球是圆的", node_class=CLASS_FACT),
+                node_class=CLASS_FACT,
+                mutex_with=["f1"],
+            )
+        ]
+    )
+    assert len(changed) == 1
+    new_fact = changed[0]
+    # 新事实 → f1 应有互斥边
+    mutex_edges = [e for e in empty_graph.get_relations(new_fact.id) if e.type == EDGE_MUTEX]
+    assert len(mutex_edges) >= 1
+    # 互斥边的另一端应是 f1
+    assert any(
+        (e.source_id == "f1" or e.target_id == "f1") for e in mutex_edges
+    )
+
+
+def test_mutex_with_names_resolved_in_batch(empty_graph, mock_llm):
+    """同批两个事实用 mutex_with_names 互连互斥边。"""
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="事实A", content="A说法", node_class=CLASS_FACT),
+                node_class=CLASS_FACT,
+                mutex_with_names=["事实B"],
+            ),
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="事实B", content="B说法", node_class=CLASS_FACT),
+                node_class=CLASS_FACT,
+                mutex_with_names=["事实A"],
+            ),
+        ]
+    )
+    assert len(changed) == 2
+    fact_a = next(n for n in changed if n.name == "事实A")
+    fact_b = next(n for n in changed if n.name == "事实B")
+    # A→B 或 B→A 应有互斥边（store 层无序对去重，可能只一条）
+    mutex = [e for e in empty_graph.get_relations(fact_a.id) if e.type == EDGE_MUTEX]
+    assert len(mutex) >= 1
+
+
+def test_concept_mutex_rejected(empty_graph, mock_llm):
+    """概念间的 mutex_with 被拒绝——互斥边两端必须为事实（宪法"互斥恒为事实↔事实"）。
+
+    store 层 add_edge(type=互斥) 校验两端 node_class==事实，概念间互斥抛 ValueError。
+    _apply_decisions 中概念 mutex_with 应被静默跳过（不建边），而非让异常冒泡。
+    """
+    concept1 = Node(id="c1", name="苹果", content="", node_class=CLASS_CONCEPT)
+    empty_graph.add_node(concept1)
+
+    wp = _make_pipeline(empty_graph, mock_llm)
+    changed = wp._apply_decisions(
+        [
+            Decision(
+                action="create",
+                concept=ConceptDraft(name="橙子", content=""),
+                node_class=CLASS_CONCEPT,
+                mutex_with=["c1"],
+            )
+        ]
+    )
+    assert len(changed) == 1
+    # 概念间不建互斥边——store 层校验拒绝，_apply_decisions 中 add_edge 抛 ValueError
+    # 应被静默跳过而非冒泡（概念 mutex_with 是 LLM 误判，不应崩管线）
+    # 验证：概念节点无互斥边
+    new_concept = changed[0]
+    mutex_edges = [e for e in empty_graph.get_relations(new_concept.id) if e.type == EDGE_MUTEX]
+    assert len(mutex_edges) == 0

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from mcs.core.query_engine import QueryEngine
     from mcs.core.store import StoreInterface
     from mcs.core.write_pipeline import WritePipeline
+    from mcs.entities.decisions import EventData
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,10 @@ class MCS:
     def ingest(self, text: str, **metadata: Any) -> Any:
         """执行写入管线。返回最终的 WriteContext。"""
         return self.write_pipeline.ingest(text, **metadata)
+
+    def ingest_event(self, event_data: "EventData") -> Any:
+        """事件规则入库（不经 LLM）。创建事件节点并连背书边。"""
+        return self.write_pipeline.ingest_event(event_data)
 
     def query(
         self,
