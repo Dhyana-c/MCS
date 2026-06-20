@@ -109,10 +109,15 @@ class EventData:
 
     宪法 D5：事件按既定结构直接存，不经 LLM。系统创建 ``CLASS_EVENT`` 节点
     并对 ``target_ids`` 中每个 id 创建 ``事件 → 目标`` 的 ``EDGE_ASSOC`` 边
-    （背书·提及，方向固定）。
+    （背书·提及，方向固定；核心不反查——载重规则已在 store 层落实）。
 
-    ``target_ids`` 是本事件背书/提及的核心节点 id（事实 / 概念）。
-    ``timestamp`` 存入 ``extensions["event_meta"]["timestamp"]``。
+    Extensions 约定（写入 ``node.extensions["event_meta"]``）：
+
+    - ``timestamp``: ISO 8601 字符串，事件发生时间。用于 ``get_related_events``
+      的时间倒排截断（§3 双层）。必填。
+    - ``targets``: list[str]，背书目标节点 id 列表（= target_ids 的冗余存储，
+      方便查询侧直接读取，不进活跃视图 token 口径）。
+    - 其余字段由调用方自定义（如 session_id / user_id 等），不限制。
     """
 
     name: str
@@ -127,16 +132,17 @@ class SourceData:
     """Source 规则入库的结构化输入（不经 LLM）。
 
     宪法 D5：source 按类型切分分类、保真存入、不经 LLM。系统创建
-    ``CLASS_SOURCE`` 节点。
+    ``CLASS_SOURCE`` 节点，并对 ``target_ids`` 中每个 id 创建
+    ``source → 目标`` 的 ``EDGE_ASSOC`` 关联边。
 
-    ``source_type`` 标识资料类型（文件/网页/段落/对话记录等），由扩展名/
-    格式/来源等规则判定，决定怎么切分、大字段怎么处理。
+    Extensions 约定（写入 ``node.extensions["source_meta"]``）：
 
-    ``chunks`` 是切分后的片段列表（每个片段为 dict，含 content 和可选的
-    chunk_index / chunk_id 等元信息）。若未切分，整个 source 作为一个
-    chunk 存入。每个 chunk 对应一个 source 节点。
-
-    ``target_ids`` 是本 source 关联的核心节点 id（事实 / 概念）。
+    - ``source_type``: str，资料类型标识（文件/网页/段落/对话记录等），
+      由扩展名/格式/来源等规则判定。必填。
+    - ``chunk``: dict，当前 chunk 的元信息（chunk_index / chunk_id 等）。
+      单 chunk source 的 chunk 为空 dict。
+    - ``targets``: list[str]，关联目标节点 id 列表（= target_ids 的冗余存储）。
+    - 其余字段由调用方自定义（如 doc_id / file_path / url 等），不限制。
     """
 
     name: str
