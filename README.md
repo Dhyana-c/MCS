@@ -180,6 +180,12 @@ mcs-mcp                          # 或 python -m mcs_mcp
 
 MCS 使用 MultiHop-RAG 做文档级多跳检索评测，指标为 Hit@k / MAP@k / MRR@k。
 
+**最新结果**（609 篇 whole-doc 建图、200 query、DeepSeek 后端，`T=16K`）：**hit@10 ≈ 0.70 / recall@10 ≈ 0.39**（分类型 inference 0.74 / temporal 0.69 / comparison 0.67）。
+
+> ⚠️ 当前 hit@10 的最大制约是**跨语言**：建图摘要由 LLM 生成为中文，而 query 为英文，词法交集近零。反事实对照（body 换英文原文、零 LLM）可达 ~0.84——说明瓶颈在语言对齐与下游重排，而非图模型 / 召回链路本身（全节点 gold 召回 0.89+）。详见 [评测报告](bench/multihop_rag/REPORT.md)。
+
+下方命令为 200 篇子集的**快速上手**（配置与上述权威数字不同，不直接对应该数字）：
+
 ```bash
 # 200 篇子集，DeepSeek 后端（相关性重排默认开）
 python -m bench.multihop_rag --llm deepseek --corpus-subset 200 --output ./mh_out
