@@ -7,13 +7,19 @@ agent 自有 LLM（独立于 MCS 的 read_llm），经 tool calling 调 5 个导
 
 消息与工具格式遵循 openai chat completions（deepseek 等 openai 兼容后端通用）：
 ``llm_call(messages, tools) -> assistant_message_dict``，dict 含 ``content`` / ``tool_calls``。
+
+追踪：``llm_call`` 返回的 dict 可含 ``_trace`` 键（``LLMCallTrace``），
+``chat()`` 提取追踪数据并剥离 ``_trace`` 键后追加到 messages。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Callable
+
+from mcs_agent.trace import ChatTrace, LLMCallTrace, ToolCallTrace
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +187,7 @@ class MemoryAgent:
         llm_call: ``(messages, tools) -> assistant_message_dict`` 的 callable。
         system_prompt: 系统提示词。
         max_turns: 单次 chat 的最大 LLM 轮次（防失控循环）。
+        on_trace: ``chat()`` 完成后的追踪回调（接收 ``ChatTrace``），None 则不回调。
     """
 
     def __init__(
@@ -190,6 +197,7 @@ class MemoryAgent:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         max_turns: int = 8,
         summary_budget: int = 1000,
+        on_trace: Callable[[ChatTrace], None] | None = None,
     ) -> None:
         self.memory = memory
         self.llm_call = llm_call
@@ -197,24 +205,39 @@ class MemoryAgent:
         self.max_turns = max_turns
         # 注入 system prompt 的图摘要字符预算（第二道闸，防归纳超标进入上下文）
         self.summary_budget = summary_budget
+        self.on_trace = on_trace
 
     def chat(self, user_message: str) -> str:
         """跑一轮 ReAct：LLM 决定调工具或给最终答案，返回最终答复文本。
 
         每轮注入最新图级摘要进 system prompt（「当前记忆图主题」段），使路由判断有据。
         """
+        t_start = time.perf_counter()
+        llm_traces: list[LLMCallTrace] = []
+        tool_traces: list[ToolCallTrace] = []
+
         messages: list[dict] = [
             {"role": "system", "content": self._build_system(self._fetch_summary())},
             {"role": "user", "content": user_message},
         ]
+        reply = ""
         for _ in range(self.max_turns):
             assistant = self.llm_call(messages, MEMORY_TOOLS)
+
+            # 提取 _trace 并剥离
+            llm_trace = assistant.pop("_trace", None)
+            if isinstance(llm_trace, LLMCallTrace):
+                llm_traces.append(llm_trace)
+
             messages.append(assistant)
             tool_calls = assistant.get("tool_calls")
             if not tool_calls:
-                return assistant.get("content") or ""
+                reply = assistant.get("content") or ""
+                break
             for tool_call in tool_calls:
-                result = self._dispatch(tool_call)
+                result, tc_trace = self._dispatch(tool_call)
+                if tc_trace is not None:
+                    tool_traces.append(tc_trace)
                 messages.append(
                     {
                         "role": "tool",
@@ -222,7 +245,26 @@ class MemoryAgent:
                         "content": result,
                     }
                 )
-        return "（达到最大轮次，未能给出最终答复。）"
+        else:
+            reply = "（达到最大轮次，未能给出最终答复。）"
+
+        # 构造 ChatTrace 并回调
+        total_latency_ms = (time.perf_counter() - t_start) * 1000
+        chat_trace = ChatTrace(
+            user_message=user_message[:100],
+            reply=reply[:200],
+            llm_calls=llm_traces,
+            tool_calls=tool_traces,
+            total_latency_ms=total_latency_ms,
+        )
+
+        if self.on_trace is not None:
+            try:
+                self.on_trace(chat_trace)
+            except Exception:
+                logger.warning("on_trace callback failed", exc_info=True)
+
+        return reply
 
     def _fetch_summary(self) -> str:
         """取图级摘要；memory 无 ``graph_summary`` 或调用异常时返回空串（不阻塞 chat）。"""
@@ -243,35 +285,69 @@ class MemoryAgent:
         theme = text if text else "(尚未生成)"
         return f"{self.system_prompt}\n\n# 当前记忆图主题\n{theme}"
 
-    def _dispatch(self, tool_call: dict) -> str:
-        """执行单个工具调用，返回结果文本（异常隔离为 [error] 文本，不抛出）。"""
+    def _dispatch(self, tool_call: dict) -> tuple[str, ToolCallTrace | None]:
+        """执行单个工具调用，返回 (结果文本, ToolCallTrace | None)。
+
+        异常隔离为 [error] 文本，不抛出。追踪记录工具名、参数摘要、返回摘要、延迟、异常。
+        """
         fn = tool_call.get("function", {})
         name = fn.get("name", "")
         raw_args = fn.get("arguments", "{}")
+
+        # 构造 args_summary
+        args_summary = raw_args[:200] if isinstance(raw_args, str) else json.dumps(raw_args, ensure_ascii=False)[:200]
+
+        t0 = time.perf_counter()
+        error: str | None = None
+        result: str
+
         try:
             args = (
                 json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
             )
         except json.JSONDecodeError:
-            return "[error] 工具参数不是合法 JSON"
+            latency_ms = (time.perf_counter() - t0) * 1000
+            error = "工具参数不是合法 JSON"
+            result = f"[error] {error}"
+            return result, ToolCallTrace(
+                tool_name=name,
+                args_summary=args_summary,
+                result_summary=result[:200],
+                latency_ms=latency_ms,
+                error=error,
+            )
+
         try:
             if name == "learn":
-                return self.memory.learn(args.get("text", ""))
-            if name == "search":
-                return self.memory.search(
+                result = self.memory.learn(args.get("text", ""))
+            elif name == "search":
+                result = self.memory.search(
                     args.get("query", ""), args.get("mode", "keyword")
                 )
-            if name == "associate":
-                return self.memory.associate(
+            elif name == "associate":
+                result = self.memory.associate(
                     args.get("seed_id", ""), args.get("mode", "mcs")
                 )
-            if name == "reason":
-                return self.memory.find_path(
+            elif name == "reason":
+                result = self.memory.find_path(
                     args.get("source_id", ""), args.get("target_id", "")
                 )
-            if name == "recall":
-                return self.memory.recall(args.get("limit", 5))
-            return f"[error] 未知工具：{name}"
+            elif name == "recall":
+                result = self.memory.recall(args.get("limit", 5))
+            else:
+                result = f"[error] 未知工具：{name}"
+                error = f"未知工具：{name}"
         except Exception as exc:  # 单次工具异常隔离，loop 不崩
             logger.warning("tool %s failed", name, exc_info=True)
-            return f"[error] {type(exc).__name__}: {exc}"
+            error = f"{type(exc).__name__}: {exc}"
+            result = f"[error] {error}"
+
+        latency_ms = (time.perf_counter() - t0) * 1000
+        trace = ToolCallTrace(
+            tool_name=name,
+            args_summary=args_summary,
+            result_summary=result[:200],
+            latency_ms=latency_ms,
+            error=error,
+        )
+        return result, trace

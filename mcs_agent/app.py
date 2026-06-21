@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import logging
 import os
 from pathlib import Path
 from typing import Any, Protocol
@@ -23,8 +25,17 @@ from mcs.presets import Phase1Builder
 from mcs_agent.llm import make_openai_llm_call
 from mcs_agent.loop import MemoryAgent
 from mcs_agent.memory import MemoryStore
+from mcs_agent.trace import ChatTrace
 
 __all__ = ["create_app", "build_agent_from_env", "run", "ChatRequest", "ChatResponse"]
+
+_trace_logger = logging.getLogger(__name__ + ".trace")
+_trace_logger.setLevel(logging.INFO)
+# 确保 trace 日志在默认部署下可见（root logger 默认 WARNING 会丢弃 INFO）。
+# 若已有 handler（如外部 dictConfig），避免重复输出。
+if not _trace_logger.handlers:
+    _trace_logger.addHandler(logging.StreamHandler())
+    _trace_logger.propagate = False  # 自挂 handler 后关冒泡，避免 root 也配 handler 时双打
 
 
 class ChatRequest(BaseModel):
@@ -98,6 +109,12 @@ def build_agent_from_env() -> MemoryAgent:
 
     缺关键变量时以非零码退出（``SystemExit``），早失败。
     """
+
+    def _on_trace(chat_trace: ChatTrace) -> None:
+        # TODO: request_summary 含用户原文预览，多轮对话会重复累积；需评估脱敏/限条数
+        # TODO: 当前输出 Python dict str()，非 JSON；换 json formatter 后自动解决
+        _trace_logger.info("ChatTrace: %s", dataclasses.asdict(chat_trace))
+
     config_path = os.environ.get("MCS_CONFIG")
     if not config_path:
         raise SystemExit("MCS_CONFIG env var not set (path to MCS yaml config).")
@@ -114,7 +131,7 @@ def build_agent_from_env() -> MemoryAgent:
 
     memory = MemoryStore(_build_mcs)
     llm_call = make_openai_llm_call(model, api_key, base_url)
-    return MemoryAgent(memory, llm_call)
+    return MemoryAgent(memory, llm_call, on_trace=_on_trace)
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
