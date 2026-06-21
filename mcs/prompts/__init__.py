@@ -89,6 +89,11 @@ DEFAULT_PROMPTS: dict[str, PromptBundle] = {
         template=select_facts.USER_TEMPLATE,
         parse=select_facts.parse,
     ),
+    "select_facts_write": PromptBundle(
+        system=select_facts.WRITE_SYSTEM_PROMPT,
+        template=select_facts.WRITE_USER_TEMPLATE,
+        parse=select_facts.parse,
+    ),
 }
 
 

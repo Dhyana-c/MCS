@@ -150,7 +150,9 @@ class QueryEngine:
         saved_max_rounds = self.max_rounds
         try:
             self.max_rounds = max_rounds
-            ctx.intermediate, _ = self._traverse(seeds, processed_text, ctx)
+            ctx.intermediate, _ = self._traverse(
+                seeds, processed_text, ctx, select_purpose="select_facts_write"
+            )
         finally:
             self.max_rounds = saved_max_rounds
 
@@ -264,6 +266,7 @@ class QueryEngine:
             seeds: list[Node],
             query: str,
             ctx: QueryContext,
+            select_purpose: str = "select_facts",
     ) -> tuple[list[Node], list[Edge]]:
         """阶段 ③：批量事实 BFS 遍历（四工作区 + 预算分离）。
 
@@ -277,8 +280,8 @@ class QueryEngine:
         逼近 token_budget 即停。
 
         逐层扩展：每层把待扩展节点的活跃双向视图按渲染 token 贪心打包到
-        ``T − 积累区``——合计 ≤ 余量的多个节点合并进**一次** ``select_facts``
-        调用（spec query-pipeline「按层分批、富余合并」）；单节点视图已超余量
+        ``T − 积累区``——合计 ≤ 余量的多个节点合并进**一次**事实筛选调用（purpose 取 ``select_purpose``；
+        spec query-pipeline「按层分批、富余合并」）；单节点视图已超余量
         则自成一批。批量调用解析失败时**逐节点回退**，保证遍历不中断
         （spec batch-neighbor-traverse）。LLM 选中的节点 / 事实端点补入
         accumulated 并作为下一层 frontier。
@@ -430,7 +433,7 @@ class QueryEngine:
             material = renderer.render_facts(view_nodes, facts)
             try:
                 return self.llm.call(
-                    purpose="select_facts",
+                    purpose=select_purpose,
                     nodes_in=view_nodes,
                     free_args={
                         "material": material,

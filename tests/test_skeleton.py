@@ -312,8 +312,13 @@ def test_context_renderer_get_summary_fallback() -> None:
     assert ContextRenderer.get_summary(node_with_summary) == "short summary"
 
 
-def test_default_prompts_has_9_purposes() -> None:
-    """DEFAULT_PROMPTS 注册了全部 Phase 1 目的（含 select_nodes_batch + select_facts）。"""
+def test_default_prompts_registry_complete() -> None:
+    """DEFAULT_PROMPTS 注册了全部默认目的。
+
+    含 select_nodes / select_nodes_batch、读侧 select_facts、
+    写侧 select_facts_write（读写事实筛选解耦，见 read-write-select-prompt-split）。
+    新增默认 purpose 时 MUST 同步本集合。
+    """
     from mcs.prompts import DEFAULT_PROMPTS
 
     expected_purposes = {
@@ -330,6 +335,7 @@ def test_default_prompts_has_9_purposes() -> None:
         "select_nodes",
         "select_nodes_batch",
         "select_facts",
+        "select_facts_write",
     }
     assert set(DEFAULT_PROMPTS.keys()) == expected_purposes
 

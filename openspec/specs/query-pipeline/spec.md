@@ -237,12 +237,22 @@ Stage ③ SHALL enforce safety valves: `max_rounds` (BFS rounds / hops) and `max
 
 ### Requirement: 语义理解 Loop 使用 select_facts 筛选候选
 
-阶段 ③ MUST 以**核心 BFS** 进行：每访问一个节点，渲染其**活跃双向视图**（{该节点的 `关联` 邻居（命题 / 概念，两端可达、反查）+ 层级邻居}），以 `purpose=select_facts` 让 LLM 选相关命题 / 邻居。视图收敛：**Phase 2** 按 `priority` 截断 ≤ T；**Phase 1 不截断**。遍历 MUST 按层级分批（不变量保证每层 ≤ T）。**事件默认不进视图**（核心不反查事件），需出处时走按需 `事实 → 事件` 定向查。
+阶段 ③ MUST 以**核心 BFS** 进行：每访问一个节点，渲染其**活跃双向视图**（{该节点的 `关联` 邻居（命题 / 概念，两端可达、反查）+ 层级邻居}），以可配置的 `select_purpose` 让 LLM 选相关命题 / 邻居。`_traverse` MUST 接受参数 `select_purpose: str`，**默认 `"select_facts"`**；读路径 `query()` MUST 使用默认值（即宽召回 `select_facts`）。视图收敛：**Phase 2** 按 `priority` 截断 ≤ T；**Phase 1 不截断**。遍历 MUST 按层级分批（不变量保证每层 ≤ T）。**事件默认不进视图**（核心不反查事件），需出处时走按需 `事实 → 事件` 定向查。
 
 #### Scenario: 每节点渲染活跃双向视图
 
 - **WHEN** BFS 访问节点 A
 - **THEN** 框架 MUST 渲染 A 的 `关联` 邻居（命题 / 概念）+ 层级邻居供选择，MUST NOT 默认带入连向 A 的事件
+
+#### Scenario: 读路径使用默认 select_facts
+
+- **WHEN** `query()` 进入阶段③ 的事实筛选
+- **THEN** 框架 MUST 以 `purpose="select_facts"`（宽召回）调用 LLM；MUST NOT 因调用方不同而改变读侧 purpose
+
+#### Scenario: 筛选 purpose 可由调用方指定
+
+- **WHEN** `_traverse` 被调用且传入 `select_purpose="X"`
+- **THEN** 阶段③ 的所有事实筛选 LLM 调用 MUST 使用 `purpose="X"`，MUST NOT 硬编码为 `select_facts`
 
 #### Scenario: 按层分批、富余合并
 
@@ -316,4 +326,27 @@ The system SHALL provide a `QueryContext` data class threaded through the entire
 
 - **WHEN** 后置插件试图修改 `system_prompt` 或 `user_input`
 - **THEN** 框架 MUST 阻止该修改（通过文档约定或运行时保护，由 Phase 1 实现决定具体形式）
+
+### Requirement: select_facts 采用宽召回口径
+
+读路径阶段 ③ 的事实筛选（`purpose=select_facts`）SHALL 采用**宽召回**口径：只要候选事实条目涉及查询中的任何实体、主题、时间、比较对象或其关联事实，就应纳入，宁可多召回交由后续裁剪 / 重排收敛，MUST NOT 因"没有哪一条直接回答了查询"而漏选或返回空。候选事实条目不少于 5 条时，SHALL 至少返回 3 条最相关的。默认 `select_facts` prompt bundle（`mcs.prompts.select_facts.SYSTEM_PROMPT` / `USER_TEMPLATE`）MUST 体现此宽召回口径。
+
+宽召回引入的噪声由查询管线后续阶段（`doc_rerank` / 裁剪）收敛，不在筛选步处理。
+
+> 注：本口径**仅约束读路径**。写管线阶段 ② 关联定位使用独立的窄召回 `select_facts_write`（见 `read-write-select-prompt-split`），不受本口径约束。
+
+#### Scenario: 宽召回宁可多选
+
+- **WHEN** 候选中存在与查询实体 / 主题 / 时间 / 比较对象相关的条目，但无任一条直接回答查询
+- **THEN** `select_facts` MUST 仍返回这些相关条目，MUST NOT 返回空
+
+#### Scenario: 候选充足时下限返回
+
+- **WHEN** 候选事实条目不少于 5 条且存在相关项
+- **THEN** `select_facts` SHALL 至少返回 3 条最相关条目
+
+#### Scenario: 默认 prompt 体现宽召回
+
+- **WHEN** 导入 `mcs.prompts.DEFAULT_PROMPTS["select_facts"]`
+- **THEN** 其 system / template MUST 体现"宽召回、宁多勿漏"口径，MUST NOT 是"仅选最相关、无相关可返回空"的窄召回口径
 
