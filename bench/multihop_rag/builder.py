@@ -119,12 +119,21 @@ def _make_mcs(
         }
     if llm == "deepseek":
         ds = config.plugin_configs["deepseek_llm"]
-        ds["api_key"] = os.environ.get("DEEPSEEK_API_KEY", "")
-        # 模型/base_url 可经环境变量覆盖（如 DEEPSEEK_MODEL=deepseek-v4-flash）
-        if os.environ.get("DEEPSEEK_MODEL"):
-            ds["model"] = os.environ["DEEPSEEK_MODEL"]
-        if os.environ.get("DEEPSEEK_BASE_URL"):
-            ds["base_url"] = os.environ["DEEPSEEK_BASE_URL"]
+        # 优先 llm_config["deepseek"]（如智谱 OpenAI 端点 + thinking 开关），
+        # 回退环境变量（deepseek 基线）。与 claude 分支对称，便于经配置文件切后端、
+        # 凭据不散在 .env。dc.get(...) 为 None 时 ``or`` 短路到环境变量默认值。
+        dc = (llm_config or {}).get("deepseek", {})
+        ds["api_key"] = dc.get("api_key") or os.environ.get("DEEPSEEK_API_KEY", "")
+        ds["model"] = dc.get("model") or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+        ds["base_url"] = dc.get("base_url") or os.environ.get(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        )
+        if dc.get("timeout") is not None:
+            ds["timeout"] = float(dc["timeout"])
+        if dc.get("max_tokens") is not None:
+            ds["max_tokens"] = int(dc["max_tokens"])
+        if dc.get("thinking") is not None:
+            ds["thinking"] = dc["thinking"]
     elif llm == "claude":
         # 从配置文件读取 claude 端点（base_url/auth_token/model/timeout/max_tokens），
         # 支持官方端点与兼容网关（如反代第三方模型的 Messages 协议网关）。不读环境变量。

@@ -125,37 +125,42 @@ def doc_rerank(
 # LLM 语义文档重排
 # ---------------------------------------------------------------------------
 
-# prompt 模板 — system
+# prompt 模板 — system（文档级：候选已按 doc 汇总，排序单位 == 评测单位）
 _LLM_RERANK_SYSTEM = """\
-你是一个文档检索专家。用户会给出一个查询（query）和一组候选节点。每个节点有一个编号、名称、内容，以及它所属的来源文档。
+你是一个文档检索专家。用户会给出一个查询（query）和一组候选文档，每个文档有一个编号、标题，以及从该文档抽取的要点摘要。
 
-你的任务：根据查询，从候选节点中选出与查询**最相关**的节点编号，按相关性从高到低排列。
+你的任务：根据查询，从候选文档中选出相关的文档编号，按相关性从高到低排列。这是多跳问题——只要某文档能提供回答查询所需的**任意一跳**证据，就应选上。
 
 规则：
-1. 只返回相关节点的编号，用逗号分隔（如：3, 1, 7）
-2. 如果没有相关节点，返回 none
+1. 只返回相关文档的编号，用逗号分隔（如：3, 1, 7），最多 15 个
+2. 如果没有相关文档，返回 none
 3. 不要返回任何其他内容"""
 
 # prompt 模板 — user
 _LLM_RERANK_USER = """\
 查询：{query}
 
-候选节点：
+候选文档：
 {candidates}
 
-请返回最相关的节点编号（从高到低），用逗号分隔："""
+请返回最相关的文档编号（从高到低），用逗号分隔："""
+
+# 每文档汇总要点喂给 LLM 前的截断字符数（控 token / 防上下文溢出，不喂原文）
+_DOC_FACTS_MAXCHARS = 200
 
 
-def _format_candidates(nodes: list[Node]) -> str:
-    """把 node 列表格式化为 LLM 可读的候选列表。"""
-    parts: list[str] = []
-    for i, node in enumerate(nodes, 1):
-        name = getattr(node, "name", "") or ""
-        content = getattr(node, "content", "") or ""
-        doc_ids = _source_doc_ids(node)
-        doc_str = doc_ids[0] if doc_ids else "未知文档"
-        parts.append(f"[{i}] 名称：{name}\n    内容：{content}\n    来源文档：{doc_str}")
-    return "\n".join(parts)
+def _format_doc_candidates(docs: dict[str, dict]) -> tuple[list[str], str]:
+    """把按 doc 汇总的候选格式化为 LLM 可读列表。
+
+    返回 ``(doc_ids, candidates_str)``——``doc_ids`` 与编号一一对应（1-based），
+    每文档一行：``[i] 标题 :: 要点摘要``（要点截断 ``_DOC_FACTS_MAXCHARS``）。
+    """
+    doc_ids = list(docs)
+    lines = []
+    for i, doc_id in enumerate(doc_ids, 1):
+        facts = " ".join(docs[doc_id]["texts"])[:_DOC_FACTS_MAXCHARS]
+        lines.append(f"[{i}] {doc_id} :: {facts}")
+    return doc_ids, "\n".join(lines)
 
 
 def _parse_llm_indices(raw: str, max_idx: int) -> list[int]:
@@ -211,6 +216,8 @@ def _rerank_call_llm(system: str, user: str, llm_config: dict | None) -> str:
     client = OpenAI(
         api_key=os.environ.get("DEEPSEEK_API_KEY", ""),
         base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        timeout=float(cfg.get("timeout", 90.0)),  # 防网络挂起无限等
+        max_retries=int(cfg.get("max_retries", 2)),
     )
     resp = client.chat.completions.create(
         model=os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
@@ -229,44 +236,42 @@ def llm_doc_rerank(
     top_n: int | None = None,
     llm_config: dict | None = None,
 ) -> list[str]:
-    """用 LLM 从召回 node 中挑选相关节点，返回对应的**去重文档 ID 列表**。
+    """**分 doc 汇总召回事实**后喂 LLM 判断相关性的文档级重排，返回 doc_id 列表。
 
     流程：
-      1. 把全部召回 node 的 name/content/来源文档 格式化为候选列表
-      2. 喂给重排 LLM，让它按相关性挑选
-      3. 按选中顺序提取 node 对应的 doc_id（去重、保序）
+      1. 把召回节点按来源 doc 汇总（``aggregate_docs``）——每文档一条候选
+         （标题 + 要点摘要，要点截断 ``_DOC_FACTS_MAXCHARS`` 控 token，不喂原文）
+      2. 喂给重排 LLM，让它对**文档**按相关性排序（排序单位 == 评测单位，
+         避免旧「按 node 喂、再映射 doc」的稀释）
+      3. LLM 选中的文档在前、未选中按原汇总序补后（保证 recall@k 口径完整）
 
     ``llm_config`` 指定后端（``backend="claude"`` 走 Messages 协议，否则 OpenAI 兼容）。
-    解析失败时降级回词法排序。
+    解析失败/为空时降级回词法 ``doc_rerank``。
     """
     if not nodes:
         return []
+    docs = aggregate_docs(nodes)
+    if not docs:
+        return []
 
-    # 候选为空 doc_id 的 node 无法映射文档，但仍参与 LLM 评选
-    candidates_str = _format_candidates(nodes)
-
-    system = _LLM_RERANK_SYSTEM
+    doc_ids, candidates_str = _format_doc_candidates(docs)
     user = _LLM_RERANK_USER.format(query=query, candidates=candidates_str)
 
     try:
-        raw = _rerank_call_llm(system, user, llm_config)
+        raw = _rerank_call_llm(_LLM_RERANK_SYSTEM, user, llm_config)
     except Exception:
         logger.warning("LLM doc_rerank 调用失败，降级到词法排序", exc_info=True)
         return doc_rerank(nodes, query, top_n=top_n)
 
-    indices = _parse_llm_indices(raw, len(nodes))
+    indices = _parse_llm_indices(raw, len(doc_ids))
     if not indices:
         logger.warning("LLM doc_rerank 解析为空 (raw=%r)，降级到词法排序", raw[:100])
         return doc_rerank(nodes, query, top_n=top_n)
 
-    # 按选中顺序提取 doc_id（去重、保序）
-    seen: set[str] = set()
-    result: list[str] = []
-    for idx in indices:
-        for doc_id in _source_doc_ids(nodes[idx]):
-            if doc_id not in seen:
-                seen.add(doc_id)
-                result.append(doc_id)
+    # 选中文档在前（保序去重），未选中按原汇总序补后
+    selected = [doc_ids[i] for i in indices]
+    seen = set(selected)
+    result = selected + [d for d in doc_ids if d not in seen]
 
     if top_n is not None and top_n >= 0:
         result = result[:top_n]
