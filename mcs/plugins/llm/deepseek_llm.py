@@ -14,6 +14,8 @@
   - ``timeout``  (默认: 60 秒)
   - ``max_retries`` (默认: 3)
   - ``base_delay``  (默认: 1.0 秒)
+  - ``thinking`` (默认: ``None``；厂商扩展参数，非 None 时透传到请求 body 顶层，
+    如智谱 GLM 的 ``{"type": "disabled"}`` 关闭思维链)
 """
 
 from __future__ import annotations
@@ -42,6 +44,9 @@ class DeepSeekLLMPlugin(LLMInterface):
         )
         self.timeout: float = float(self.config.get("timeout", 60.0))
         self.max_tokens: int = int(self.config.get("max_tokens", 32768))
+        # 厂商扩展参数透传（如智谱 GLM 的 thinking 开关 {"type":"disabled"}）。
+        # 非 None 时合并进请求 body 顶层（OpenAI SDK extra_body）。
+        self.thinking: dict | None = self.config.get("thinking")
         self.client: Any = None
 
     # === Plugin 基类方法 ===
@@ -89,9 +94,16 @@ class DeepSeekLLMPlugin(LLMInterface):
             if system:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": user})
-            resp = self.client.chat.completions.create(
-                model=self.model, messages=messages, max_tokens=self.max_tokens
-            )
+            kwargs: dict = {
+                "model": self.model,
+                "messages": messages,
+                "max_tokens": self.max_tokens,
+            }
+            # 透传厂商扩展参数到请求 body 顶层（兼容 OpenAI 协议：SDK 用
+            # extra_body 合并不识别的字段，如智谱 GLM 的 thinking 开关）。
+            if self.thinking:
+                kwargs["extra_body"] = {"thinking": self.thinking}
+            resp = self.client.chat.completions.create(**kwargs)
             return resp.choices[0].message.content or ""
         except Exception as e:
             retryable = _is_retryable_openai_error(e)
