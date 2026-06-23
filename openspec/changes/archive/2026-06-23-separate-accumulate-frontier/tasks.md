@@ -37,6 +37,6 @@
 
 ## 6. 文档与规范
 
-- [ ] 6.1 `openspec/specs/query-pipeline/spec.md`：合并本 change 的 MODIFIED / ADDED requirement（**归档时** `openspec archive` 执行）
-- [ ] 6.2 `openspec/specs/token-budget-traverse/spec.md`：合并本 change 的 MODIFIED / ADDED requirement（**归档时** `openspec archive` 执行）
-- [ ] 6.3 归档时确认 `CLAUDE.md` 查询流程描述 / `docs/graph-model-design.md` 与"探索 vs 结果双角色"一致（代码文档统一）
+- [x] 6.1 `openspec/specs/query-pipeline/spec.md`：合并本 change 的 MODIFIED / ADDED requirement（**归档时** `openspec archive` 执行）
+- [x] 6.2 `openspec/specs/token-budget-traverse/spec.md`：合并本 change 的 MODIFIED / ADDED requirement（**归档时** `openspec archive` 执行）
+- [x] 6.3 归档时确认 `CLAUDE.md` 查询流程描述 / `docs/graph-model-design.md` 与"探索 vs 结果双角色"一致（代码文档统一）
