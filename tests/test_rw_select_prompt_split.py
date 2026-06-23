@@ -20,6 +20,7 @@ from mcs.interfaces.entry_plugin import EntryPluginInterface
 from mcs.interfaces.llm import PromptBundle
 from mcs.prompts import DEFAULT_PROMPTS
 from mcs.prompts import select_facts
+from mcs.prompts.select_facts import SelectFactsResult
 
 
 # === 辅助 ===
@@ -158,31 +159,50 @@ def test_select_facts_write_bundle_fields():
 # === 4.4 parse 边界一致性 ===
 
 
-def test_parse_valid_array():
-    """合法编号数组。"""
-    assert select_facts.parse("[1, 3, 5]") == [1, 3, 5]
+def test_parse_flat_array_normalized_to_both():
+    """旧式 flat 数组归一为"两者"（result == frontier），保旧行为/写侧兼容。"""
+    assert select_facts.parse("[1, 3, 5]") == SelectFactsResult([1, 3, 5], [1, 3, 5])
+
+
+def test_parse_object_dual_role():
+    """读侧对象形：result / frontier 两维独立，可不同。"""
+    assert select_facts.parse('{"result": [1], "frontier": [2, 3]}') == (
+        SelectFactsResult([1], [2, 3])
+    )
+
+
+def test_parse_object_partial_keys():
+    """对象缺一维 → 该维归空（另一维保留）。"""
+    assert select_facts.parse('{"frontier": [2]}') == SelectFactsResult([], [2])
+    assert select_facts.parse('{"result": [1]}') == SelectFactsResult([1], [])
 
 
 def test_parse_empty_array():
-    """空数组 []。"""
-    assert select_facts.parse("[]") == []
+    """空数组 [] → 两维皆空。"""
+    assert select_facts.parse("[]") == SelectFactsResult([], [])
 
 
 def test_parse_fenced():
     """含 markdown fence。"""
-    assert select_facts.parse("```json\n[1, 2]\n```") == [1, 2]
+    assert select_facts.parse("```json\n[1, 2]\n```") == SelectFactsResult([1, 2], [1, 2])
 
 
 def test_parse_non_array_raises():
-    """非数组抛 LLMParseError。"""
+    """非数组/非对象抛 LLMParseError。"""
     with pytest.raises(LLMParseError):
         select_facts.parse('"hello"')
 
 
 def test_parse_non_int_raises():
-    """非整数元素抛 LLMParseError。"""
+    """非整数元素抛 LLMParseError（flat）。"""
     with pytest.raises(LLMParseError):
         select_facts.parse('[1, "two"]')
+
+
+def test_parse_object_non_int_raises():
+    """对象内非整数元素抛 LLMParseError。"""
+    with pytest.raises(LLMParseError):
+        select_facts.parse('{"result": [1, "two"], "frontier": []}')
 
 
 # === 4.5 覆盖正交 ===
