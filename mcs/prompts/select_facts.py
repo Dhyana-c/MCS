@@ -39,7 +39,11 @@ class SelectFactsResult(NamedTuple):
     frontier: list[int]
 
 
-# ── 读侧双角色（宽探索 + 严结果）──
+# ── 读侧双角色（V4 定稿：宽探索 + 严结果 + 任务背景）──
+# GLM-5.1 验证此版 gold 5/6 + accumulated 精筛 16-78（双角色理想态）；
+# deepseek-chat 守不住精细口径（空返回/膨胀两难），生产可切 V3（拿不准归 result，
+# gold 4/6 但 accumulated 胀）。多版本 prompt 实验、模型差异、版本切换策略见
+# docs/select_facts_model_differences.md。
 
 SYSTEM_PROMPT = (
     "你在为一个多跳问答系统做知识图检索。知识图里节点是概念 / 事实 / 事件，"
