@@ -46,8 +46,8 @@ def test_default_returns_subgraph(seeded_graph, mock_llm):
         mock_llm,
         _StaticEntry(["dl"], seeded_graph),
     )
-    # select_facts 不扩展任何邻居
-    mock_llm.set_response("select_nodes", [])
+    # 种子只进 frontier，需 LLM 标 `结果` 才进 accumulated：仅选中心(编号1)、不探索
+    mock_llm.set_response("select_facts", {"result": [1], "frontier": []})
     result = engine.query("什么是深度学习？")
     assert isinstance(result, Subgraph)
     assert all(isinstance(n, Node) for n in result.nodes)
@@ -172,8 +172,8 @@ def test_existing_context_skips_seed_location(seeded_graph, mock_llm):
             raise AssertionError("entry 插件在有 existing_context 时不能运行")
 
     engine = make_query_engine(seeded_graph, mock_llm, _RaisingEntry())
-    # select_facts 不扩展
-    mock_llm.set_response("select_nodes", [])
+    # 种子(nn)经 LLM 标 `结果`（编号1）进 accumulated；不探索
+    mock_llm.set_response("select_facts", {"result": [1], "frontier": []})
     seed = seeded_graph.get_node("nn")
     result = engine.query("test", existing_context=[seed])
     assert isinstance(result, Subgraph)
@@ -198,7 +198,7 @@ def test_postprocess_chain_transforms_output(seeded_graph, mock_llm):
         _StaticEntry(["dl"], seeded_graph),
         _Stringify(),
     )
-    mock_llm.set_response("select_nodes", [])
+    mock_llm.set_response("select_facts", {"result": [1], "frontier": []})
     result = engine.query("test")
     assert isinstance(result, str)
     assert "深度学习" in result
@@ -225,7 +225,7 @@ def test_query_context_lifecycle_fields_populated(seeded_graph, mock_llm):
         _StaticEntry(["dl"], seeded_graph),
         _Spy(),
     )
-    mock_llm.set_response("select_nodes", [])
+    mock_llm.set_response("select_facts", {"result": [1], "frontier": []})
     engine.query("my query")
     assert captured["user_input"] == "my query"
     assert captured["intermediate"][0].id == "dl"
@@ -405,39 +405,59 @@ def test_fact_bfs_endpoints_added_to_accumulated():
 
 
 def test_fact_bfs_parse_error_skips_node(seeded_graph, mock_llm):
-    """LLMParseError 时跳过当前节点，继续处理队列。"""
+    """LLMParseError 时跳过当前调用，继续遍历不崩溃；之前选中的节点保留。"""
     from mcs.core.errors import LLMParseError
 
     call_count = 0
 
-    def fail_once(nodes_in, _free_args):
+    def fail_later(nodes_in, _free_args):
+        # 首轮（种子视图）成功：把候选全选为"两者"（含种子 dl）；
+        # 后续轮次抛 LLMParseError → 被捕获跳过，遍历不崩溃。
         nonlocal call_count
         call_count += 1
-        if call_count == 1:
+        if call_count >= 2:
             raise LLMParseError("select_facts", "invalid", "test error")
-        return [n.id for n in (nodes_in or []) if n.id != "dl"]
+        return [n.id for n in (nodes_in or [])]
 
-    mock_llm.set_response("select_nodes", fail_once)
+    mock_llm.set_response("select_nodes", fail_later)
     engine = make_query_engine(seeded_graph, mock_llm, _StaticEntry(["dl"], seeded_graph))
     result = engine.query("test")
 
-    # 即使首次失败，种子 dl 仍应在结果中
+    # 首轮选中的种子 dl 保留；后续 parse error 被优雅跳过
     assert isinstance(result, Subgraph)
     assert any(n.id == "dl" for n in result.nodes)
 
 
-def test_traverse_with_no_neighbors_or_facts(seeded_graph, mock_llm):
-    """叶子节点（无子节点无事实）不会触发 LLM 调用。"""
-    # cnn 是叶子节点
+def test_traverse_leaf_seed_still_evaluated(seeded_graph, mock_llm):
+    """修法 A'：孤立/叶子种子（无子节点无事实）仍单节点成视图、交 LLM 评估。
+
+    旧行为靠种子预填 accumulated 兜底；解耦后种子只进 frontier，若 `_node_view`
+    对无视图节点返回 None 则永失 accumulated。A' 使叶子种子仍被评估、可标 `结果`。
+    """
+    # cnn 是叶子节点（无下钻成员、无关系边）
     engine = make_query_engine(
         seeded_graph,
         mock_llm,
         _StaticEntry(["cnn"], seeded_graph),
     )
-    mock_llm.set_response("select_nodes", [])
+    # 叶子种子单节点成视图（编号1=cnn），LLM 标 `结果` → 进 accumulated
+    mock_llm.set_response("select_facts", {"result": [1], "frontier": []})
     result = engine.query("test")
     assert isinstance(result, Subgraph)
     assert result.nodes[0].id == "cnn"
+
+
+def test_traverse_leaf_seed_not_selected_returns_empty(seeded_graph, mock_llm):
+    """叶子种子未被标任何角色 → 不进 accumulated → 空结果（不崩溃）。"""
+    engine = make_query_engine(
+        seeded_graph,
+        mock_llm,
+        _StaticEntry(["cnn"], seeded_graph),
+    )
+    mock_llm.set_response("select_facts", {"result": [], "frontier": []})
+    result = engine.query("test")
+    assert isinstance(result, Subgraph)
+    assert result.nodes == []
 
 
 # ─── 定向查事件 ──────────────────────────────────────────────────────────

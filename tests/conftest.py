@@ -279,6 +279,7 @@ def make_query_engine(
     *extra_plugins,
     max_rounds: int = 3,
     max_accumulated_nodes: int = 1000,
+    max_frontier_nodes: int = 500,
     token_budget: int = 8000,
 ):
     """初始化 PluginManager（注册 llm + extra_plugins）并构建 QueryEngine（测试用）。
@@ -309,6 +310,7 @@ def make_query_engine(
         token_budget=TokenBudget(token_budget),
         max_rounds=max_rounds,
         max_accumulated_nodes=max_accumulated_nodes,
+        max_frontier_nodes=max_frontier_nodes,
     )
 
 

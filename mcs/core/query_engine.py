@@ -18,6 +18,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from mcs.prompts.select_facts import SelectFactsResult, coerce_select_result
+
 if TYPE_CHECKING:
     from mcs.core.plugin_manager import PluginManager
     from mcs.core.store import StoreInterface
@@ -65,6 +67,7 @@ class QueryEngine:
             token_budget: TokenBudget,
             max_rounds: int = 5,
             max_accumulated_nodes: int = 1000,
+            max_frontier_nodes: int = 500,
             system_prompt: str = "",
             summary_max_nodes: int = 50,
     ):
@@ -74,6 +77,9 @@ class QueryEngine:
         self.token_budget = token_budget
         self.max_rounds = max_rounds
         self.max_accumulated_nodes = max_accumulated_nodes
+        # frontier 规模安全阀：解耦后 `探索` 不吃 T，used_tokens 不再约束 frontier
+        # 增长，max_rounds 只限深度——单轮 next_frontier 宽度需独立阀防 LLM 调用爆炸。
+        self.max_frontier_nodes = max_frontier_nodes
         self.system_prompt = system_prompt
         # 每次 select_facts 调用带的「已累积上下文」最多列多少个节点（仅 name）。
         # 旧实现带全量 name+content → 输入平方级膨胀（占查询输入 ~73%）。0 = 关闭。
@@ -268,13 +274,20 @@ class QueryEngine:
             ctx: QueryContext,
             select_purpose: str = "select_facts",
     ) -> tuple[list[Node], list[Edge]]:
-        """阶段 ③：批量事实 BFS 遍历（四工作区 + 预算分离）。
+        """阶段 ③：批量事实 BFS 遍历（双角色解耦 + 预算分离）。
 
         四工作区（§4.3）：
-          - **积累区**（accumulated）：已确认相关的节点，逐轮累积，占 token_budget（≤ T）
+          - **积累区**（accumulated）：进 LLM 的输出集（`结果` 角色），逐轮累积，占
+            token_budget（≤ T），为 ``_traverse`` 的返回集
           - **活跃区**（active）：本轮待 LLM 推理/筛选的候选，占 T − 积累区
           - **visited**：已处理节点 id，去重防重复遍历（仅存 id，不进 LLM）
-          - **frontier**：BFS 待扩展节点 id 队列（仅存 id，不进 LLM）
+          - **frontier**：BFS 待扩展节点队列（`探索` 角色，仅存引用、不进 LLM、
+            不吃 T、遍历结束丢弃）
+
+        **双角色解耦**：``select_facts`` 同一次调用输出 ``{result, frontier}`` 两维——
+        `结果`/两者 → accumulated（吃 T）；`探索`/两者 → 下一轮 frontier（不吃 T）。
+        探索口径宽（保召回 / 广探索）、结果口径严（控进 LLM 规模），二者成员可不同。
+        frontier 用完即弃（不返回），其规模由 ``max_frontier_nodes`` 阀兜。
 
         预算分离：积累区 + 活跃区 ≤ T。积累区逐轮变大、活跃区空间随之收缩，
         逼近 token_budget 即停。
@@ -283,8 +296,7 @@ class QueryEngine:
         ``T − 积累区``——合计 ≤ 余量的多个节点合并进**一次**事实筛选调用（purpose 取 ``select_purpose``；
         spec query-pipeline「按层分批、富余合并」）；单节点视图已超余量
         则自成一批。批量调用解析失败时**逐节点回退**，保证遍历不中断
-        （spec batch-neighbor-traverse）。LLM 选中的节点 / 事实端点补入
-        accumulated 并作为下一层 frontier。
+        （spec batch-neighbor-traverse）。
 
         返回 (accumulated_nodes, selected_fact_edges)。
         """
@@ -310,14 +322,17 @@ class QueryEngine:
         merged_into: dict[str, str] = {}    # node_id → target_id（被合并掉的）
 
         # frontier（BFS 待扩展队列，仅存 id→Node 引用，不进 LLM）
+        # 种子只进 frontier（去重）：不预填 accumulated、不进初始 visited、不预计
+        # used_tokens（对齐 token-budget-traverse「accumulated 初始为空、种子经 LLM
+        # 筛选后才加入」，修正既有 drift）。种子在首轮 `_node_view` 中作 view_nodes[0]
+        # 经 LLM 双角色评估决定归属。visited 由 `_consume` 在 LLM 选中时统一加——
+        # 种子绝不进初始 visited，否则首轮即便标 `结果` 也会被 `_consume` 的
+        # `if node.id in visited` 跳过、永失 accumulated（确定性 bug）。
         frontier: list[Node] = []
+        seen_seed: set[str] = set()
         for seed in seeds:
-            if seed.id not in visited:
-                visited.add(seed.id)
-                accumulated.append(seed)
-                used_tokens += self.token_budget.estimate_node(
-                    seed, estimate_cache
-                )
+            if seed.id not in seen_seed:
+                seen_seed.add(seed.id)
                 frontier.append(seed)
 
         def _try_read_repair(node: Node) -> Node:
@@ -408,11 +423,20 @@ class QueryEngine:
             return target_node
 
         def _node_view(node: Node):
-            """单节点活跃双向视图 (view_nodes, relation_edges)；无可扩展内容返回 (None, None)。"""
+            """单节点活跃双向视图 (view_nodes, relation_edges)。
+
+            无下钻成员且无关系边时（修法 A'，关掉孤立/叶子节点静默丢弃）：
+            - **未裁决**的无视图中心（=种子，不在 visited）→ 返回 ``([node], [])``
+              单节点视图，交 LLM 评估、有机会被标 `结果`；
+            - **已 visited** 的无视图叶子（探索跳板，已裁决）→ 返回 ``(None, None)``
+              跳过，避免空转 re-eval（`_consume` 会因 visited 跳过、无新增）。
+            """
             children = self.store.get_out_hierarchy(node.id) or []
             facts = self.store.get_relations(node.id) or []
             if not children and not facts:
-                return None, None
+                if node.id in visited:
+                    return None, None
+                return [node], []
             seen: set[str] = {node.id}
             view_nodes: list[Node] = [node]
             for child in children:
@@ -429,10 +453,10 @@ class QueryEngine:
             return view_nodes, facts
 
         def _call_select(view_nodes, facts):
-            """渲染 + 调 select_facts；解析失败返回 None。"""
+            """渲染 + 调 select_facts；返回 SelectFactsResult，解析失败返回 None。"""
             material = renderer.render_facts(view_nodes, facts)
             try:
-                return self.llm.call(
+                raw = self.llm.call(
                     purpose=select_purpose,
                     nodes_in=view_nodes,
                     free_args={
@@ -442,64 +466,98 @@ class QueryEngine:
                             accumulated, self.summary_max_nodes
                         ),
                     },
-                ) or []
+                )
+                if raw is None:
+                    return SelectFactsResult([], [])
+                # 归一（真 LLM 经 parse 已是 SelectFactsResult；mock 返回 flat 列表
+                # 在此归一为"两者"——保旧测试行为：选中即进双方）。
+                return coerce_select_result(raw)
             except LLMParseError:
                 return None
 
-        def _consume(indices, view_nodes, facts):
-            """编号映射回节点 / 事实边（1-based），补入 accumulated。
+        def _consume(sel: SelectFactsResult, view_nodes, facts):
+            """按角色把 select 结果（1-based 编号）分流。
 
-            新节点加入前先走 read-repair 同名合并。
-            返回 (新增节点列表, 是否撞 max_accumulated cap)。
+            - `结果`（result）→ accumulated（+visited、+used_tokens；事实边记
+              selected_edges、端点入 accumulated）；新节点先走 read-repair 同名合并。
+            - `探索`（frontier）→ 下一轮 frontier（+visited，不吃 token、不合并）。
+            - 两者（同一编号在两列表）→ 同时进双方。
+
+            返回 (frontier_nodes, 是否撞 max_accumulated cap)。frontier_nodes 即
+            下一轮待扩展节点（探索 / 两者角色产出）。
             """
             nonlocal used_tokens
             n_nodes = len(view_nodes)
-            newly: list[Node] = []
+            frontier_nodes: list[Node] = []
             hit_cap = False
-            for idx in indices:
+
+            def _route(node: Node, want_result: bool, want_frontier: bool) -> bool:
+                """按角色路由单个节点；返回是否撞 accumulated cap。
+
+                visited 在此**统一**加（结果走 read-repair 后加，探索直接加），
+                使"两者"角色在同一次调用里既进 accumulated 又进 frontier_nodes
+                （不会被"结果先加 visited、探索再被 visited 挡"破坏）。
+                """
+                nonlocal used_tokens
+                if node.id in visited:
+                    return False
+                if want_result:
+                    effective = _try_read_repair(node)
+                    if effective.id != node.id:
+                        # 被合并到已有节点 → 不重复加入 accumulated，也不入 frontier
+                        # （同义跳板，target 已在 accumulated）
+                        return False
+                    visited.add(node.id)
+                    accumulated.append(node)
+                    used_tokens += self.token_budget.estimate_node(
+                        node, estimate_cache
+                    )
+                    if want_frontier:
+                        frontier_nodes.append(node)
+                    return len(accumulated) >= self.max_accumulated_nodes
+                # 仅探索
+                visited.add(node.id)
+                frontier_nodes.append(node)
+                return False
+
+            want_r = set(sel.result)
+            want_f = set(sel.frontier)
+            # 结果优先序、去重（"两者"只处理一次）
+            ordered: list[int] = []
+            seen_idx: set[int] = set()
+            for idx in list(sel.result) + list(sel.frontier):
+                if idx not in seen_idx:
+                    seen_idx.add(idx)
+                    ordered.append(idx)
+
+            for idx in ordered:
                 if hit_cap:
                     break
                 zero_idx = idx - 1
                 if zero_idx < 0:
                     continue
+                wr = idx in want_r
+                wf = idx in want_f
                 if zero_idx < n_nodes:
-                    # 节点条目 → read-repair + 加入 accumulated
-                    sel_node = view_nodes[zero_idx]
-                    if sel_node.id not in visited:
-                        effective = _try_read_repair(sel_node)
-                        if effective.id != sel_node.id:
-                            # 被合并到已有节点 → 不再重复加入 accumulated
-                            continue
-                        visited.add(sel_node.id)
-                        accumulated.append(sel_node)
-                        used_tokens += self.token_budget.estimate_node(
-                            sel_node, estimate_cache
-                        )
-                        newly.append(sel_node)
-                        if len(accumulated) >= self.max_accumulated_nodes:
-                            hit_cap = True
+                    # 节点条目
+                    if _route(view_nodes[zero_idx], wr, wf):
+                        hit_cap = True
                 else:
-                    # 事实边条目 → 记录边 + 补入端点
+                    # 事实边条目 → 结果角色记边；端点按角色补入
                     edge_idx = zero_idx - n_nodes
                     if 0 <= edge_idx < len(facts):
                         edge = facts[edge_idx]
-                        if edge.id not in selected_edge_ids:
+                        if wr and edge.id not in selected_edge_ids:
                             selected_edge_ids.add(edge.id)
                             selected_edges.append(edge)
                         for eid in (edge.source_id, edge.target_id):
-                            if eid not in visited:
-                                endpoint = self.store.get_node(eid)
-                                if endpoint is not None:
-                                    visited.add(eid)
-                                    accumulated.append(endpoint)
-                                    used_tokens += self.token_budget.estimate_node(
-                                        endpoint, estimate_cache
-                                    )
-                                    newly.append(endpoint)
-                                    if len(accumulated) >= self.max_accumulated_nodes:
-                                        hit_cap = True
-                                        break
-            return newly, hit_cap
+                            endpoint = self.store.get_node(eid)
+                            if endpoint is None:
+                                continue
+                            if _route(endpoint, wr, wf):
+                                hit_cap = True
+                                break
+            return frontier_nodes, hit_cap
 
         depth = 0
         while frontier and depth < self.max_rounds:
@@ -555,10 +613,10 @@ class QueryEngine:
 
                 if len(batch) == 1:
                     _node, view_nodes, facts, _est = batch[0]
-                    indices = _call_select(view_nodes, facts)
-                    if indices is None:
+                    sel = _call_select(view_nodes, facts)
+                    if sel is None:
                         continue
-                    newly, hit_cap = _consume(indices, view_nodes, facts)
+                    newly, hit_cap = _consume(sel, view_nodes, facts)
                 else:
                     # 合并各节点视图（去重）为一次调用
                     merged_nodes: list[Node] = []
@@ -574,26 +632,30 @@ class QueryEngine:
                             if e.id not in merged_fact_ids:
                                 merged_fact_ids.add(e.id)
                                 merged_facts.append(e)
-                    indices = _call_select(merged_nodes, merged_facts)
-                    if indices is None:
+                    sel = _call_select(merged_nodes, merged_facts)
+                    if sel is None:
                         # 批量解析失败 → 逐节点回退（spec batch-neighbor-traverse）
                         newly = []
                         hit_cap = False
                         for _n, vn, fs, _e in batch:
-                            idx_single = _call_select(vn, fs)
-                            if idx_single is None:
+                            sel_single = _call_select(vn, fs)
+                            if sel_single is None:
                                 continue
-                            added, cap = _consume(idx_single, vn, fs)
+                            added, cap = _consume(sel_single, vn, fs)
                             newly.extend(added)
                             if cap:
                                 hit_cap = True
                                 break
                     else:
                         newly, hit_cap = _consume(
-                            indices, merged_nodes, merged_facts
+                            sel, merged_nodes, merged_facts
                         )
 
+                # frontier 安全阀：next_frontier 达 max_frontier_nodes 即停止入队
+                # （当前轮 `结果` 已进 accumulated，非整体终止；区别于 max_accumulated 撞阀）
                 for n in newly:
+                    if len(next_frontier) >= self.max_frontier_nodes:
+                        break
                     if n.id not in next_seen:
                         next_seen.add(n.id)
                         next_frontier.append(n)
