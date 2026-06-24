@@ -183,6 +183,12 @@ def write_report() -> None:
         rs = [r for r in res if r["type"] != "null_query"]
         return sum(1 for r in rs if set(r["gold"]) & set(r["ranked"])) / max(1, len(rs))
 
+    def recall_inf(res, name):  # 完整召回率 recall@∞：全部 gold 召回比例（不限名次）
+        rs = [r for r in res if r["type"] != "null_query"
+              and (name == "overall" or r["type"] == name)]
+        return sum(len(set(r["gold"]) & set(r["ranked"])) / max(1, len(r["gold"]))
+                   for r in rs) / max(1, len(rs))
+
     a_reach, f_reach = reached_rate(agent_res), reached_rate(fr_sub)
     # 成本
     tot_agent_llm = sum(r.get("n_llm_agent", 0) for r in agent_res)
@@ -198,15 +204,16 @@ def write_report() -> None:
     L.append(f"> 框架基线取自 `dschat_full_16k_bfsroot_newprompt`，仅对比 agent 已跑的 {n} 题。\n")
 
     L.append("## 一、总体指标对照（agent vs 框架）\n")
-    L.append("| 分组 | n | hit@10 (agent/框架) | recall@10 (agent/框架) | mrr@10 (agent/框架) |")
-    L.append("|---|---|---|---|---|")
+    L.append("| 分组 | n | hit@10 (a/框) | recall@10 (a/框) | mrr@10 (a/框) | recall@∞ (a/框) |")
+    L.append("|---|---|---|---|---|---|")
     for name in ["overall", "inference_query", "comparison_query", "temporal_query"]:
         a, f = am.get(name), fm.get(name)
         if not a or not f:
             continue
         L.append(f"| {name} | {a['n']} | {a['hit@10']:.3f} / {f['hit@10']:.3f} | "
                  f"{a['recall@10']:.3f} / {f['recall@10']:.3f} | "
-                 f"{a['mrr@10']:.3f} / {f['mrr@10']:.3f} |")
+                 f"{a['mrr@10']:.3f} / {f['mrr@10']:.3f} | "
+                 f"{recall_inf(agent_res, name):.3f} / {recall_inf(fr_sub, name):.3f} |")
     L.append("")
     L.append(f"**召回天花板 reached（gold 是否出现在检索集中，任意名次）**：agent **{a_reach:.3f}** vs 框架 **{f_reach:.3f}**。")
     L.append("> reached 衡量「导航到没到」（与排序无关）；hit@10 衡量「排没排进前 10」。两者差距即排序损失。\n")
