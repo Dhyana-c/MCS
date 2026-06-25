@@ -36,6 +36,15 @@ PHASE1_READ_PLUGINS: list[str] = [
 PHASE1_DEFAULT_PLUGINS: list[str] = PHASE1_SHARED_PLUGINS + PHASE1_WRITE_PLUGINS + PHASE1_READ_PLUGINS
 
 
+# ── LLM 上下文窗口映射（与各 LLM 插件内映射表保持同步）──────────────────────
+_LLM_CONTEXT_WINDOWS: dict[str, int] = {
+    "deepseek": 128_000,
+    "claude": 200_000,
+    "ollama": 8_192,
+}
+_DEFAULT_CONTEXT_WINDOW = 16_000
+
+
 @dataclass
 class MCSConfig:
     """MCS 顶级配置。
@@ -107,9 +116,13 @@ class MCSConfig:
         if read_llm_name != write_llm_name:
             _add_llm_config(plugin_configs, read_llm, read_llm_name)
 
+        # 根据模型上下文窗口自动计算 T 默认值（保守上限 8000）
+        window = _LLM_CONTEXT_WINDOWS.get(write_llm, _DEFAULT_CONTEXT_WINDOW)
+        auto_T = min(8000, (window - 2000) // 2)
+
         return cls(
             mode="knowledge_graph",
-            token_budget=8000,
+            token_budget=auto_T,
             max_rounds=5,
             max_accumulated_nodes=1000,
             shared_plugins=list(PHASE1_SHARED_PLUGINS),

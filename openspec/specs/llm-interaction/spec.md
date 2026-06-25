@@ -190,3 +190,38 @@ The data structures `ConceptDraft` (output of `extract_concepts`) and `DecisionL
 - **WHEN** parser 处理 LLM 原始输出
 - **THEN** 它 MUST 把字符串解析成对应 purpose 期望的 Python 类型（ConceptDraft 列表 / DecisionList / str / List[str] / 等）；这是类型契约的唯一执行点
 
+---
+### Requirement: LLMInterface 提供 count_tokens 方法
+
+`LLMInterface` SHALL 提供 `count_tokens(text: str) -> int` 方法，返回文本的 token 数量估算。默认实现 SHALL 使用 `CalibratedEstimator`（按模型族调整系数）。各 LLM 插件 SHOULD 覆盖为更精确的计数方案（API 端点或 tiktoken）。精确方案不可用时 MUST 静默降级到校准经验式，不抛异常。
+
+#### Scenario: 默认实现使用校准经验式
+
+- **WHEN** `LLMInterface` 子类未覆盖 `count_tokens`
+- **THEN** 方法 MUST 使用 `CalibratedEstimator`（按 `_detect_model_family()` 返回的模型族选择系数）进行估算
+
+#### Scenario: 空文本返回零
+
+- **WHEN** 调用 `count_tokens("")` 或 `count_tokens(None)`
+- **THEN** MUST 返回 0
+
+#### Scenario: 计数异常降级
+
+- **WHEN** 精确计数方案（API / tiktoken）抛出异常
+- **THEN** MUST 静默降级到校准经验式，MUST NOT 抛出异常
+
+---
+### Requirement: LLMInterface 提供 context_window_size 属性
+
+`LLMInterface` SHALL 提供 `context_window_size` 只读属性（`int`），返回模型的上下文窗口 token 数。默认实现 SHALL 返回 16000。各 LLM 插件 SHOULD 覆盖为已知模型的实际窗口大小。
+
+#### Scenario: 默认值
+
+- **WHEN** `LLMInterface` 子类未覆盖 `context_window_size`
+- **THEN** 属性 MUST 返回 16000
+
+#### Scenario: 插件内映射表
+
+- **WHEN** LLM 插件覆盖了 `context_window_size`
+- **THEN** MUST 使用插件内映射表（模型名 → 窗口大小），未知模型回退插件默认值
+

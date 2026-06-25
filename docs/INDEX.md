@@ -6,7 +6,7 @@
 
 | 文档 | 路径 | 说明 |
 |------|------|------|
-| README | [README.md](../README.md) | 项目定位、核心赌注、快速开始 |
+| README | [README.md](../README.md) | 项目定位、核心定位、快速开始 |
 | 贡献指南 | [CONTRIBUTING.md](../CONTRIBUTING.md) | 环境搭建、开发流程、提交规范 |
 | 变更历史 | [CHANGELOG.md](../CHANGELOG.md) | 所有归档 change 的按时间倒序索引 |
 | 许可证 | [LICENSE](../LICENSE) | 开源许可证 |

@@ -2,6 +2,14 @@
 
 > 所有归档 change 的按时间倒序索引。每个条目链接到对应的 `openspec/changes/archive/` 目录。
 
+## 2026-06-25
+
+- **[model-aware-token-estimation](openspec/changes/archive/2026-06-25-model-aware-token-estimation/)** — 模型感知 token 估算：`LLMInterface` 新增 `count_tokens` / `context_window_size`；DeepSeek/Ollama 用 tiktoken 本地精确计数（Ollama 走 ollama 族系数），Claude 运行时用 claude 族校准式（不调 API，避免 O(邻域) 网络调用与 429 降级破坏口径一致性，API 仅离线校准）；`TokenBudget` counter 改由 write_llm 注入、兜底统一为 `CalibratedEstimator("unknown")` ×1.7；`knowledge_graph()` 按上下文窗口自动算 T（保守上限 8000）。待跟进：7.4 校准系数实测验证
+
+## 2026-06-24
+
+- **[reposition-general-memory-engine](openspec/changes/archive/2026-06-24-reposition-general-memory-engine/)** — 重定位为通用记忆引擎：文档去除「核心赌注 / 局部性假设 / 面向单一领域」，局部性改述为「系统主动维持」；README「核心赌注」节→「核心定位」；doc-hierarchy spec 同步
+
 ## 2026-06-13
 
 - **[perf-optimization-overhaul](openspec/changes/archive/2026-06-13-perf-optimization-overhaul/)** — 性能优化：estimate_node 缓存、写管线复用优化、LLM 重试退避、SQLiteStore.delete_node 优化、rerank 分词缓存

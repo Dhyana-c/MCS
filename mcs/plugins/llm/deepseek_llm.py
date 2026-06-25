@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 class DeepSeekLLMPlugin(LLMInterface):
     """通过 OpenAI 兼容 API 的 DeepSeek LLM 后端。"""
 
+    # 已知模型 → 上下文窗口大小
+    _CONTEXT_WINDOWS: dict[str, int] = {
+        "deepseek-chat": 128_000,
+        "deepseek-reasoner": 128_000,
+    }
+    _DEFAULT_CONTEXT_WINDOW = 128_000
+
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.api_key: str = self.config.get("api_key", "")
@@ -110,6 +117,24 @@ class DeepSeekLLMPlugin(LLMInterface):
             raise LLMCallError(
                 f"DeepSeek call failed: {e}", retryable=retryable
             ) from e
+
+    # === Token 计数 ===
+
+    def count_tokens(self, text: str) -> int:
+        """使用 tiktoken cl100k_base 计数，失败时降级到校准经验式。"""
+        try:
+            if not hasattr(self, "_tiktoken_enc"):
+                import tiktoken
+
+                self._tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+            return len(self._tiktoken_enc.encode(text))
+        except Exception:
+            return super().count_tokens(text)  # tiktoken 不可用 → 降级
+
+    @property
+    def context_window_size(self) -> int:
+        """返回 DeepSeek 模型的上下文窗口 token 数。"""
+        return self._CONTEXT_WINDOWS.get(self.model, self._DEFAULT_CONTEXT_WINDOW)
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:

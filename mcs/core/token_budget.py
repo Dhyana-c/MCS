@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from mcs.core.calibrated_estimator import CalibratedEstimator
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -45,13 +47,16 @@ class TokenBudget:
         self.W = window_size if window_size is not None else self.S + self.T + self.R
         # 可选注入真分词器的 count 函数 (text)->int；None 时用经验式估计
         self._counter = counter
+        # counter 异常时的保守兜底（unknown 族 ×1.7/÷3，宁可高估不破坏不变量）
+        self._fallback_estimator = CalibratedEstimator("unknown")
 
     def estimate(self, text: str | None) -> int:
         """估算 ``text`` 的 token 数量（单一入口）。
 
         - 若注入了 ``counter``（真分词器），优先用它；
-        - 否则用经验式：**CJK 约 1 字符/token、拉丁/数字/其它约 4 字符/token**
-          （旧的 ``len//2`` 对英文高估约 2×，这里修正）。
+        - 无 counter 或 counter 异常时，回退到 ``CalibratedEstimator("unknown")``
+          （保守高估 ×1.7/÷3）。兜底层必须是最保守的——旧的字面经验式（CJK 1:1 +
+          非CJK ÷4）对中文低估，曾是最危险的一层，已替换。
 
         空值/None 返回 0。
         """
@@ -61,9 +66,8 @@ class TokenBudget:
             try:
                 return max(0, int(self._counter(text)))
             except Exception:
-                pass  # 注入器异常 → 回退经验式
-        cjk = sum(1 for ch in text if "一" <= ch <= "鿿")
-        return max(1, cjk + (len(text) - cjk) // 4)
+                pass  # 注入器异常 → 回退保守校准式
+        return self._fallback_estimator.estimate(text)
 
     def estimate_node(
         self, node: Node, cache: dict[str, int] | None = None

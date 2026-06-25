@@ -223,6 +223,46 @@ class LLMInterface(Plugin):
             raise KeyError(f"No prompt bundle registered for purpose={purpose!r}")
         return DEFAULT_PROMPTS[purpose]
 
+    # === Token 计数 ===
+
+    def count_tokens(self, text: str) -> int:
+        """估算 ``text`` 的 token 数量。
+
+        默认实现使用 ``CalibratedEstimator``（按模型族调整系数）。
+        子类应覆盖为更精确的计数方案（API 端点或 tiktoken）。
+
+        精确方案不可用时静默降级到校准经验式，不抛异常。
+        """
+        if not text:
+            return 0
+        if not hasattr(self, "_calibrated_estimator"):
+            from mcs.core.calibrated_estimator import CalibratedEstimator
+
+            self._calibrated_estimator = CalibratedEstimator(
+                self._detect_model_family()
+            )
+        return self._calibrated_estimator.estimate(text)
+
+    def _detect_model_family(self) -> str:
+        """从 ``self.model`` 推断模型族（用于校准经验式系数选择）。"""
+        model = getattr(self, "model", "").lower()
+        if "claude" in model:
+            return "claude"
+        if "gpt" in model:
+            return "gpt"
+        if "deepseek" in model:
+            return "deepseek"
+        return "unknown"
+
+    @property
+    def context_window_size(self) -> int:
+        """返回模型上下文窗口 token 数。
+
+        默认实现返回 16000（保守值）。
+        子类应覆盖为已知模型的实际窗口大小。
+        """
+        return 16_000
+
 
 def _short_repr(obj: Any, limit: int = 200) -> str:
     s = repr(obj)

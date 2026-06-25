@@ -39,6 +39,10 @@ THINK_END = "</think>"
 class OllamaLLMPlugin(LLMInterface):
     """通过 Ollama 原生 ``/api/chat`` 端点的本地/远程 LLM 后端。"""
 
+    # Ollama 模型名由用户自定义，无法穷举；默认使用 num_ctx 值
+    _CONTEXT_WINDOWS: dict[str, int] = {}
+    _DEFAULT_CONTEXT_WINDOW = 8_192
+
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.base_url: str = self.config.get(
@@ -223,3 +227,33 @@ class OllamaLLMPlugin(LLMInterface):
             return '\n'.join(json_lines)
 
         return ""
+
+    # === Token 计数 ===
+
+    def _detect_model_family(self) -> str:
+        """Ollama 模型名由用户自定义（如 qwen3.5:9b），无法从名字推断厂商。
+
+        固定返回 "ollama"，使 tiktoken 不可用时的校准式兜底走 ollama 族系数
+        （×1.3/÷4），而非默认的 unknown（×1.7/÷3）。
+        """
+        return "ollama"
+
+    def count_tokens(self, text: str) -> int:
+        """使用 tiktoken cl100k_base 计数，失败时降级到校准经验式。"""
+        try:
+            if not hasattr(self, "_tiktoken_enc"):
+                import tiktoken
+
+                self._tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+            return len(self._tiktoken_enc.encode(text))
+        except Exception:
+            return super().count_tokens(text)  # tiktoken 不可用 → 降级
+
+    @property
+    def context_window_size(self) -> int:
+        """返回 Ollama 模型的上下文窗口 token 数。
+
+        Ollama 模型名由用户自定义，无法穷举。
+        默认使用配置的 ``num_ctx`` 值。
+        """
+        return self._CONTEXT_WINDOWS.get(self.model, self.num_ctx)

@@ -38,6 +38,19 @@ if TYPE_CHECKING:
 class ClaudeLLMPlugin(LLMInterface):
     """通过 Anthropic Messages API 的 Claude LLM 后端。"""
 
+    # 已知模型 → 上下文窗口大小
+    _CONTEXT_WINDOWS: dict[str, int] = {
+        "claude-3-5-sonnet-latest": 200_000,
+        "claude-3-5-sonnet-20241022": 200_000,
+        "claude-3-5-sonnet-20240620": 200_000,
+        "claude-3-opus-latest": 200_000,
+        "claude-3-opus-20240229": 200_000,
+        "claude-3-haiku-20240307": 200_000,
+        "claude-3-5-haiku-latest": 200_000,
+        "claude-3-5-haiku-20241022": 200_000,
+    }
+    _DEFAULT_CONTEXT_WINDOW = 200_000
+
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
         self.auth_token: str = self.config.get("auth_token", "")
@@ -113,6 +126,27 @@ class ClaudeLLMPlugin(LLMInterface):
             raise LLMCallError(
                 f"Claude call failed: {e}", retryable=retryable
             ) from e
+
+    # === Token 计数 ===
+    #
+    # 运行时不 override count_tokens：走 LLMInterface 默认实现（CalibratedEstimator
+    # 按 _detect_model_family 选 claude 族系数 ×1.7/÷3）。
+    #
+    # 曾考虑用 Anthropic count_tokens API 作精确 counter，但作为 TokenBudget 全域
+    # counter 时有两个硬伤：① 查询 bounding/trim 链逐节点 estimate_node 会产生
+    # O(邻域) 次同步网络调用（延迟 + Tier1 100RPM 速率限制）；② 429/网络失败降级到
+    # 校准式时，同一文本在不同调用返回不同值（API 值 ↔ ×1.7），破坏铁律一"口径一致
+    # 性"——而口径一致性正是 design 为该方案给出的全部论证。
+    # 故 API 仅用于 bench/calibration 离线校准；运行时用确定性本地校准式。
+
+    @property
+    def context_window_size(self) -> int:
+        """返回 Claude 模型的上下文窗口 token 数。
+
+        精确匹配已知模型；未知模型回退 ``_DEFAULT_CONTEXT_WINDOW``。当前 Claude 3.x
+        全族窗口均为 200000，映射表为未来窗口不同的模型预留扩展点。
+        """
+        return self._CONTEXT_WINDOWS.get(self.model, self._DEFAULT_CONTEXT_WINDOW)
 
 
 def _is_retryable_anthropic_error(exc: Exception) -> bool:

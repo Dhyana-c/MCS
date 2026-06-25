@@ -16,6 +16,7 @@ dependencies = [
     "openai>=1.0,<2.0",
     "jieba>=0.42",
     "ujson>=5.0",
+    "tiktoken>=0.7",
 ]
 
 [project.optional-dependencies]

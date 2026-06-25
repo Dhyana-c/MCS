@@ -73,15 +73,19 @@ class MCSBuilder(ABC):
         # 1. 实例化 Store
         store = self._init_store()
 
-        # 2. 实例化 TokenBudget
-        token_budget = TokenBudget(self.config.token_budget)
-
-        # 3. 实例化双 PluginManager
+        # 2. 实例化双 PluginManager
         write_manager = PluginManager()
         read_manager = PluginManager()
 
-        # 4. 按配置实例化并注册插件
+        # 3. 按配置实例化并注册插件（获取 write_llm / read_llm）
         write_llm, read_llm = self._register_plugins(write_manager, read_manager)
+
+        # 4. 用 write_llm.count_tokens 构造 TokenBudget
+        #    write_llm 必非 None：_register_llm_plugins 在 write_llm 缺失时直接 raise
+        token_budget = TokenBudget(
+            self.config.token_budget,
+            counter=write_llm.count_tokens,
+        )
 
         # 5. 初始化 SQLiteStore（若使用）
         if isinstance(store, SQLiteStore) and store.conn is None:

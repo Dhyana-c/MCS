@@ -52,17 +52,27 @@ The default entry plugin chain SHALL have `AliasEntryPlugin.priority = 100` and 
 
 ### Requirement: 默认 token budget 与 Loop 上限
 
-The default configuration SHALL set `token_budget.T = 8000`, query `max_rounds = 5`, and query `max_picked = 50`.
+The default configuration SHALL set `token_budget.T` based on the LLM model's context window size (conservative upper bound 8000), query `max_rounds = 5`, and query `max_accumulated_nodes = 1000`. `MCSConfig.knowledge_graph()` SHALL auto-calculate T using `min(8000, (context_window_size - 2000) // 2)`.
 
-#### Scenario: 默认值固定
+#### Scenario: DeepSeek 默认 T
 
-- **WHEN** 加载 `MCSConfig.knowledge_graph()` 默认配置
-- **THEN** `T == 8000`；`max_rounds == 5`；`max_picked == 50`
+- **WHEN** 加载 `MCSConfig.knowledge_graph(write_llm="deepseek")`
+- **THEN** `T == min(8000, (128000 - 2000) // 2) == 8000`
+
+#### Scenario: Claude 默认 T
+
+- **WHEN** 加载 `MCSConfig.knowledge_graph(write_llm="claude")`
+- **THEN** `T == min(8000, (200000 - 2000) // 2) == 8000`
+
+#### Scenario: Ollama 默认 T
+
+- **WHEN** 加载 `MCSConfig.knowledge_graph(write_llm="ollama")`
+- **THEN** `T == min(8000, (8192 - 2000) // 2) == 3096`
 
 #### Scenario: 用户可覆盖默认
 
 - **WHEN** 用户在 config 中覆盖 `token_budget = 16000`
-- **THEN** 框架 MUST 使用 16000；无静默回退到 8000
+- **THEN** 框架 MUST 使用 16000；无静默回退到自动计算值
 
 ---
 
