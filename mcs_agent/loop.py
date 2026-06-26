@@ -1,15 +1,17 @@
 """记忆 agent 的 ReAct loop。
 
-agent 自有 LLM（独立于 MCS 的 read_llm），经 tool calling 调 5 个导航工具
-（learn / search / associate / reason / recall）。**导航决策权交给 LLM**：LLM
-决定查什么、用哪个种子、用哪种扩展模式、选哪两个节点找路径。LLM 调用抽成
-可注入的 callable，便于测试（注入脚本化 mock，不依赖真实 API）。
+agent 自有 LLM（独立于 MCS 的 read_llm），经 tool calling 调导航工具（learn / search /
+associate / reason / recall）。**导航决策权交给 LLM**：LLM 决定查什么、用哪个种子、
+用哪种扩展模式、选哪两个节点找路径。LLM 后端实现 ``AgentLLMInterface``（裸 callable
+经 ``CallableAgentLLM`` 自动适配，保既有注入式测试零改动）。
 
-消息与工具格式遵循 openai chat completions（deepseek 等 openai 兼容后端通用）：
-``llm_call(messages, tools) -> assistant_message_dict``，dict 含 ``content`` / ``tool_calls``。
+工具集由 ``ToolSpec`` 注册表（``BUILTIN_TOOLS``）驱动、经 ``ToolsetConfig`` 可配置；
+``MemoryAgent`` 构造时 ``build_toolset`` 产 ``(schemas, dispatch)``。``_dispatch`` 为
+包装层（timing + try/except + ``ToolCallTrace``），按 ``dispatch_table`` 分发，删旧硬编码 if/elif。
 
-追踪：``llm_call`` 返回的 dict 可含 ``_trace`` 键（``LLMCallTrace``），
-``chat()`` 提取追踪数据并剥离 ``_trace`` 键后追加到 messages。
+消息与工具格式遵循 openai chat completions（deepseek 等 openai 兼容后端通用）。
+``AssistantMessage.trace``（``LLMCallTrace``）为一等字段；``chat()`` 读取 trace 后把消息
+重建为 openai assistant dict（含完整 ``tool_calls`` 结构）追加到 messages。
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ import logging
 import time
 from typing import Any, Callable
 
+from mcs_agent.llms import AgentLLMInterface, CallableAgentLLM
+from mcs_agent.tools import BUILTIN_TOOLS, MEMORY_TOOLS, ToolsetConfig, build_toolset
 from mcs_agent.trace import ChatTrace, LLMCallTrace, ToolCallTrace
 
 logger = logging.getLogger(__name__)
@@ -61,149 +65,39 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
-MEMORY_TOOLS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "learn",
-            "description": (
-                "把一段信息写入记忆图谱（复用 MCS 写管线，自动抽概念入图）。"
-                "仅当用户明确要求记住时调用。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "要记住的文本",
-                    }
-                },
-                "required": ["text"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search",
-            "description": (
-                "搜索记忆图谱的种子节点作为导航入口，返回节点列表（含 id）。"
-                "mode=keyword 按用户输入做关键词/字面匹配（主力，已实现）；"
-                "mode=direct 返回顶层 hub 节点（无明确关键词时用，已实现）；"
-                "mode=vector 向量检索（未实现，勿用）。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "查询内容（自然语言）",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["keyword", "direct", "vector"],
-                        "description": "搜索模式，默认 keyword",
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "associate",
-            "description": (
-                "从指定种子节点出发做联想扩展（BFS），返回扩展子图（含 id）。"
-                "mode=mcs 用 MCS 事实 BFS（主力，已实现）；"
-                "mode=hot 热点排序（未实现）；mode=random 随机截断（未实现）。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "seed_id": {
-                        "type": "string",
-                        "description": "种子节点 id（由 search 返回的 [id:...]）",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["mcs", "hot", "random"],
-                        "description": "扩展模式，默认 mcs",
-                    },
-                },
-                "required": ["seed_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "reason",
-            "description": (
-                "在两个已知节点间找连通路径（双向最短路径，允许失败）。"
-                "source_id/target_id 由前序工具返回的 [id:...] 提供。找不到则告知无路径。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "source_id": {
-                        "type": "string",
-                        "description": "起点节点 id",
-                    },
-                    "target_id": {
-                        "type": "string",
-                        "description": "终点节点 id",
-                    },
-                },
-                "required": ["source_id", "target_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "recall",
-            "description": "回忆近期热点事件。（未实现：依赖事件节点与热点排序，暂不可用。）",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "返回事件数上限，默认 5",
-                    }
-                },
-                "required": [],
-            },
-        },
-    },
-]
-
-
 class MemoryAgent:
-    """ReAct 记忆 agent。LLM 经 tool calling 调 5 个导航工具探索记忆图。
+    """ReAct 记忆 agent。LLM 经 tool calling 调导航工具探索记忆图。
 
     Args:
         memory: 暴露 learn/search/associate/find_path/recall 的对象（通常是 ``MemoryStore``）。
-        llm_call: ``(messages, tools) -> assistant_message_dict`` 的 callable。
+        llm: ``(messages, tools) -> dict`` 裸 callable（自动包 ``CallableAgentLLM``）或 ``AgentLLMInterface`` 后端。
+        tools: 工具集配置（启用子集 / 覆盖参数）；None = 全部 5 个内置工具。
         system_prompt: 系统提示词。
         max_turns: 单次 chat 的最大 LLM 轮次（防失控循环）。
+        summary_budget: 注入 system prompt 的图摘要字符预算（第二道闸，防归纳超标进入上下文）。
         on_trace: ``chat()`` 完成后的追踪回调（接收 ``ChatTrace``），None 则不回调。
     """
 
     def __init__(
         self,
         memory: Any,
-        llm_call: Callable[[list[dict], list[dict]], dict],
+        llm: Callable[[list[dict], list[dict]], dict] | AgentLLMInterface,
+        *,
+        tools: ToolsetConfig | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         max_turns: int = 8,
         summary_budget: int = 1000,
         on_trace: Callable[[ChatTrace], None] | None = None,
     ) -> None:
         self.memory = memory
-        self.llm_call = llm_call
+        # 裸 callable 自动包 CallableAgentLLM（保既有注入式测试零改动）；AgentLLMInterface 直用
+        self.llm: AgentLLMInterface = (
+            llm if isinstance(llm, AgentLLMInterface) else CallableAgentLLM(llm)
+        )
+        # 工具集：build_toolset 产 (schemas_for_llm, dispatch)；tools=None → 全 5 内置
+        self.schemas, self.dispatch = build_toolset(BUILTIN_TOOLS, tools)
         self.system_prompt = system_prompt
         self.max_turns = max_turns
-        # 注入 system prompt 的图摘要字符预算（第二道闸，防归纳超标进入上下文）
         self.summary_budget = summary_budget
         self.on_trace = on_trace
 
@@ -222,17 +116,22 @@ class MemoryAgent:
         ]
         reply = ""
         for _ in range(self.max_turns):
-            assistant = self.llm_call(messages, MEMORY_TOOLS)
+            assistant = self.llm.chat(messages, self.schemas)  # -> AssistantMessage
 
-            # 提取 _trace 并剥离
-            llm_trace = assistant.pop("_trace", None)
-            if isinstance(llm_trace, LLMCallTrace):
-                llm_traces.append(llm_trace)
+            # trace 为一等字段（替旧 dict["_trace"] hack）
+            if isinstance(assistant.trace, LLMCallTrace):
+                llm_traces.append(assistant.trace)
 
-            messages.append(assistant)
-            tool_calls = assistant.get("tool_calls")
+            # 重建 openai assistant dict 后 append：tool_calls 保完整结构（id/type/function）
+            # 供后续 tool 消息按 id 配对、openai 多轮回放校验通过；无工具调用时省略 tool_calls。
+            entry: dict = {"role": "assistant", "content": assistant.content}
+            if assistant.tool_calls:
+                entry["tool_calls"] = assistant.tool_calls
+            messages.append(entry)
+
+            tool_calls = assistant.tool_calls
             if not tool_calls:
-                reply = assistant.get("content") or ""
+                reply = assistant.content or ""
                 break
             for tool_call in tool_calls:
                 result, tc_trace = self._dispatch(tool_call)
@@ -288,21 +187,28 @@ class MemoryAgent:
     def _dispatch(self, tool_call: dict) -> tuple[str, ToolCallTrace | None]:
         """执行单个工具调用，返回 (结果文本, ToolCallTrace | None)。
 
-        异常隔离为 [error] 文本，不抛出。追踪记录工具名、参数摘要、返回摘要、延迟、异常。
+        包装层：JSON 解析、按 ``self.dispatch`` 分发、timing、异常隔离（``[error]`` 文本）。
+        ``handler`` 纯（不做 trace/异常）；本层把 LLM 入参与 ``ToolsetConfig.params`` 合并
+        （``{**llm_args, **params}``，params 覆盖同名入参）后调 ``handler(memory, merged)``。
+        未知工具 / 非法 JSON / 工具异常均隔离为 ``[error]`` 文本，不抛出。
         """
         fn = tool_call.get("function", {})
         name = fn.get("name", "")
         raw_args = fn.get("arguments", "{}")
 
-        # 构造 args_summary
-        args_summary = raw_args[:200] if isinstance(raw_args, str) else json.dumps(raw_args, ensure_ascii=False)[:200]
+        args_summary = (
+            raw_args[:200]
+            if isinstance(raw_args, str)
+            else json.dumps(raw_args, ensure_ascii=False)[:200]
+        )
 
         t0 = time.perf_counter()
         error: str | None = None
         result: str
 
+        # 1) 解析 JSON 参数
         try:
-            args = (
+            llm_args = (
                 json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
             )
         except json.JSONDecodeError:
@@ -317,26 +223,24 @@ class MemoryAgent:
                 error=error,
             )
 
+        # 2) 查 dispatch_table（未知工具）
+        entry = self.dispatch.get(name)
+        if entry is None:
+            latency_ms = (time.perf_counter() - t0) * 1000
+            error = f"未知工具：{name}"
+            result = f"[error] {error}"
+            return result, ToolCallTrace(
+                tool_name=name,
+                args_summary=args_summary,
+                result_summary=result[:200],
+                latency_ms=latency_ms,
+                error=error,
+            )
+
+        # 3) 调 handler（params 覆盖 LLM 同名入参）；异常隔离为 [error]
+        handler, params = entry
         try:
-            if name == "learn":
-                result = self.memory.learn(args.get("text", ""))
-            elif name == "search":
-                result = self.memory.search(
-                    args.get("query", ""), args.get("mode", "keyword")
-                )
-            elif name == "associate":
-                result = self.memory.associate(
-                    args.get("seed_id", ""), args.get("mode", "mcs")
-                )
-            elif name == "reason":
-                result = self.memory.find_path(
-                    args.get("source_id", ""), args.get("target_id", "")
-                )
-            elif name == "recall":
-                result = self.memory.recall(args.get("limit", 5))
-            else:
-                result = f"[error] 未知工具：{name}"
-                error = f"未知工具：{name}"
+            result = handler(self.memory, {**llm_args, **params})
         except Exception as exc:  # 单次工具异常隔离，loop 不崩
             logger.warning("tool %s failed", name, exc_info=True)
             error = f"{type(exc).__name__}: {exc}"

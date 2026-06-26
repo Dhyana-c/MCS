@@ -30,8 +30,9 @@
 
 #### Scenario: 参数覆盖
 
-- **WHEN** `ToolsetConfig.params` 为某工具指定参数（如 `{"find_path": {"max_hops": 8}}`）
+- **WHEN** `ToolsetConfig.params` 为某工具指定参数（如 `{"reason": {"max_hops": 8}}`，key = 工具名）
 - **THEN** dispatch 执行该工具时 MUST 应用覆盖后的参数（而非内置默认值）
+- **AND** `params` 与 LLM 入参同名时 MUST 以 `params` 为准（合并口径 `handler(memory, {**llm_args, **params})`）
 
 #### Scenario: 未知工具
 
@@ -58,7 +59,7 @@
 
 ### Requirement: AgentConfig / AgentBuilder / create_agent 构造体系
 
-`mcs_agent` SHALL 提供编程式与 YAML 双路径构造记忆 agent：`AgentConfig` 数据对象、`AgentBuilder(config).build() -> MemoryAgent`、`create_agent(...)` 工厂、`AgentConfig.from_file(path) -> AgentConfig`。`build()` 返回 `MemoryAgent`（**不**返回 FastAPI app；`create_app(agent)` 仍是独立一层）。**统一 LLM**：单一 `LLMConfig`（provider/model/api_key/base_url）同时驱动 agent 的 chat LLM 与 MCS 的 write/read LLM（provider 键映射两侧）；`mcs_config`（完整 MCSConfig）作逃逸口优先（想给 MCS 配不同 LLM 时）。
+`mcs_agent` SHALL 提供编程式与 YAML 双路径构造记忆 agent：`AgentConfig` 数据对象、`AgentBuilder(config).build() -> MemoryAgent`、`create_agent(...)` 工厂、`AgentConfig.from_file(path) -> AgentConfig`。`build()` 返回 `MemoryAgent`（**不**返回 FastAPI app；`create_app(agent)` 仍是独立一层）。**统一 LLM**：单一 `LLMConfig`（provider/model/api_key/base_url/auth_token）同时驱动 agent 的 chat LLM 与 MCS 的 write/read LLM（provider 键映射两侧；`auth_token` 仅 claude 用，Bearer 授权）；`mcs_config`（完整 MCSConfig）作逃逸口优先（想给 MCS 配不同 LLM 时）。
 
 #### Scenario: 工厂编程式构建可用 agent
 
@@ -87,8 +88,8 @@
 
 #### Scenario: 缺 LLM 早失败
 
-- **WHEN** `AgentConfig` 既无 `llm` 也无 `mcs_config`
-- **THEN** `build()` MUST 抛清晰错误（提示无 LLM、`learn`/`associate` 不可用），MUST NOT 静默产出调用即崩的 agent
+- **WHEN** `AgentConfig` 无 `llm`（不论 `mcs_config` 有无——含"只给 `mcs_config` 不给 `llm`"）
+- **THEN** `build()` MUST 抛清晰错误（agent chat 无 LLM 后端；`mcs_config` 的 LLM 无 tool-calling、不能作 agent chat 后端），MUST NOT 静默产出 `chat()` 即崩的 agent
 
 #### Scenario: mcs_config 逃逸口
 
@@ -99,7 +100,7 @@
 
 ### Requirement: AgentLLMInterface 可插拔 LLM 后端
 
-`mcs_agent` SHALL 提供 `AgentLLMInterface` ABC（`chat(messages, tools) -> AssistantMessage`）+ **provider 键**注册表 `AGENT_LLM_REGISTRY`，按 `LLMConfig.provider` 选择后端；同一 provider 键同时映射 MCS 插件（`PROVIDER_TO_MCS_LLM`），实现统一 LLM 配置。`AssistantMessage` 含 `content` / `tool_calls` / `trace`（一等 trace，替代 dict `_trace` 键 hack）。内置 `OpenAIAgentLLM`（openai 兼容，覆盖 deepseek / ollama）与 `AnthropicAgentLLM`（原生 claude）。内部消息 / 工具格式以 openai chat-completions 为 lingua franca。
+`mcs_agent` SHALL 提供 `AgentLLMInterface` ABC（`chat(messages, tools) -> AssistantMessage`）+ **provider 键**注册表 `AGENT_LLM_REGISTRY`，按 `LLMConfig.provider` 选择后端；同一 provider 键同时映射 MCS 插件（`PROVIDER_TO_MCS_LLM`），实现统一 LLM 配置。**统一 provider 集 = agent adapter ∩ MCS 插件 = `{deepseek, ollama, claude}`**；官方 openai 无 MCS 插件、不作统一 provider 键。`AssistantMessage` 含 `content` / `tool_calls` / `trace`（一等 trace，替代 dict `_trace` 键 hack）。内置 `OpenAIAgentLLM`（openai 兼容，覆盖 deepseek / ollama）与 `AnthropicAgentLLM`（原生 claude；`LLMConfig.auth_token` 支持 Bearer 授权，agent 侧与 MCS `claude_llm` 同源种入）。内部消息 / 工具格式以 openai chat-completions 为 lingua franca。
 
 #### Scenario: 选 deepseek / ollama（openai 兼容）
 
@@ -112,6 +113,12 @@
 - **WHEN** `llm.provider="claude"`
 - **THEN** MUST 用 `AnthropicAgentLLM`（原生 claude）
 - **AND** 未安装 `anthropic` 依赖时 MUST 抛清晰错误（不影响 openai-compat 后端可用性）
+
+#### Scenario: claude 用 auth_token（Bearer）
+
+- **WHEN** `llm.provider="claude"` 且给 `llm.auth_token`
+- **THEN** agent 侧 `AnthropicAgentLLM` MUST 用 `auth_token`（Bearer）授权
+- **AND** MCS 侧 `claude_llm` 插件配置 MUST 同时种入 `auth_token`（claude_llm `auth_token` 优先于 `api_key`）
 
 #### Scenario: trace 为一等字段
 

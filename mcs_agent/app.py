@@ -21,10 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from mcs.entities.config import MCSConfig
-from mcs.presets import Phase1Builder
-from mcs_agent.llm import make_openai_llm_call
+from mcs_agent.builder import AgentBuilder, AgentConfig, LLMConfig
 from mcs_agent.loop import MemoryAgent
-from mcs_agent.memory import MemoryStore
 from mcs_agent.trace import ChatTrace
 
 __all__ = ["create_app", "build_agent_from_env", "run", "ChatRequest", "ChatResponse"]
@@ -100,14 +98,15 @@ def create_app(agent: _AgentProto) -> FastAPI:
 
 
 def build_agent_from_env() -> MemoryAgent:
-    """从环境变量构建生产 ``MemoryAgent``。
+    """从环境变量构建生产 ``MemoryAgent``（经 ``AgentBuilder``）。
 
     需要：
-      - ``MCS_CONFIG``：MCS yaml 配置路径（``MemoryStore`` 经 ``Phase1Builder`` build）。
-      - ``AGENT_LLM_API_KEY`` / ``AGENT_LLM_MODEL`` /（可选）``AGENT_LLM_BASE_URL``：
-        agent 自有 LLM（openai 兼容端点）。
+      - ``MCS_CONFIG``：MCS yaml 配置路径（→ ``mcs_config`` 逃逸口，MCS LLM 由 yaml 决定）。
+      - ``AGENT_LLM_API_KEY`` / ``AGENT_LLM_MODEL`` /（可选）``AGENT_LLM_BASE_URL`` /
+        ``AGENT_LLM_PROVIDER``（默认 ``deepseek``）：agent chat LLM（→ ``LLMConfig``）。
 
-    缺关键变量时以非零码退出（``SystemExit``），早失败。
+    缺关键变量时以非零码退出（``SystemExit``），早失败。env 契约逐字保留（change
+    memory-agent-builder D8）。
     """
 
     def _on_trace(chat_trace: ChatTrace) -> None:
@@ -119,19 +118,16 @@ def build_agent_from_env() -> MemoryAgent:
     if not config_path:
         raise SystemExit("MCS_CONFIG env var not set (path to MCS yaml config).")
     api_key = os.environ.get("AGENT_LLM_API_KEY", "")
-    model = os.environ.get("AGENT_LLM_MODEL", "deepseek-chat")
-    base_url = os.environ.get("AGENT_LLM_BASE_URL") or None
     if not api_key:
         raise SystemExit("AGENT_LLM_API_KEY env var not set.")
+    model = os.environ.get("AGENT_LLM_MODEL", "deepseek-chat")
+    base_url = os.environ.get("AGENT_LLM_BASE_URL") or None
+    provider = os.environ.get("AGENT_LLM_PROVIDER", "deepseek")
 
-    config = MCSConfig.from_file(config_path)
-
-    def _build_mcs() -> Any:
-        return Phase1Builder(config).build()
-
-    memory = MemoryStore(_build_mcs)
-    llm_call = make_openai_llm_call(model, api_key, base_url)
-    return MemoryAgent(memory, llm_call, on_trace=_on_trace)
+    mcs_config = MCSConfig.from_file(config_path)
+    llm = LLMConfig(provider=provider, model=model, api_key=api_key, base_url=base_url)
+    config = AgentConfig(llm=llm, mcs_config=mcs_config, on_trace=_on_trace)
+    return AgentBuilder(config).build()
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:

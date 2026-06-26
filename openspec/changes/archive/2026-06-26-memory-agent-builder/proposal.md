@@ -5,7 +5,7 @@
 ## What Changes
 
 - **构造层**：引入 `AgentConfig` + `AgentBuilder(config).build() -> MemoryAgent` + `create_agent(...)` 工厂 + `AgentConfig.from_file(yaml)`。编程式（kwargs）与 YAML 双路径；builder 出 agent（`create_app(agent)` 仍独立）。
-- **可插拔 LLM（路线 A2）**：`AgentLLMInterface` ABC（`chat(messages, tools) -> AssistantMessage(content, tool_calls, trace)`）+ 后端注册表 `AGENT_LLM_REGISTRY`。内置 `OpenAIAgentLLM`（覆盖 deepseek / openai / ollama-compat）与 `AnthropicAgentLLM`（原生 claude，msg 双向翻译）。trace 提为一等返回字段，替掉 openai 实现里偷偷塞 `_trace` dict 键的 hack。
+- **可插拔 LLM（路线 A2）**：`AgentLLMInterface` ABC（`chat(messages, tools) -> AssistantMessage(content, tool_calls, trace)`）+ 后端注册表 `AGENT_LLM_REGISTRY`。内置 `OpenAIAgentLLM`（openai 兼容协议，覆盖 deepseek / ollama；**统一 provider 集 = {deepseek, ollama, claude}**，见 design D4——官方 openai 无 MCS 插件、不作统一 provider 键）与 `AnthropicAgentLLM`（原生 claude，msg 双向翻译）。trace 提为一等返回字段，替掉 openai 实现里偷偷塞 `_trace` dict 键的 hack。
 - **工具配置（窄档）**：`ToolSpec(name, schema, handler)` 注册表 + `BUILTIN_TOOLS`（5 个内置）+ `ToolsetConfig(enabled?, params)`；builder 产 `(schemas_for_llm, dispatch_table)`；删掉 `loop.py` 里 `MEMORY_TOOLS` 硬编码 list 与 `_dispatch` 的 if/elif。**不做**自定义工具注册（registry 形状为将来留口）。
 - **指定已有图谱**：`db_path` 提为一等旋钮（对齐 `create_mcs(db_path=)`）；加载已有数据由 `SQLiteStore` build 时自动完成（白送）。
 - **消息格式**：openai chat-completions 作内部 lingua franca——ABC 只标准化"返回值"，`MemoryAgent` 的消息历史不动；仅 `AnthropicAgentLLM` 内部做 native↔openai 双向翻译。
@@ -27,15 +27,16 @@
 
 ### 代码变更
 
-- **新增**：`mcs_agent/builder.py`（`AgentConfig` / `AgentBuilder` / `create_agent` / `AgentConfig.from_file`）；LLM 抽象与后端（重构 `mcs_agent/llm.py` 为 `AgentLLMInterface` + `OpenAIAgentLLM`，新增 `AnthropicAgentLLM`，加 `AGENT_LLM_REGISTRY` + `CallableAgentLLM` 适配器）；`ToolSpec` 工具注册表（`mcs_agent/tools.py` 或并入 `loop.py`）。
-- **改写**：`loop.py` 的 `MemoryAgent`——接 `AgentLLMInterface`（callable 自动适配）+ `(schemas, dispatch)`，删硬编码 `MEMORY_TOOLS` / `_dispatch`；`app.py` 的 `build_agent_from_env` 改走 builder；`__init__.py` 导出新 API。
+- **新增**：`mcs_agent/builder.py`（`AgentConfig` / `AgentBuilder` / `create_agent` / `AgentConfig.from_file`）；LLM 抽象与后端落 `mcs_agent/llms/` 子包（`AgentLLMInterface` + `AssistantMessage` 于 `base.py`、`OpenAIAgentLLM`、`AnthropicAgentLLM`、`CallableAgentLLM`、`AGENT_LLM_REGISTRY` + `PROVIDER_TO_MCS_LLM` 于 `registry.py`；旧 `llm.py` 降为 `make_openai_llm_call` 废弃别名）；`ToolSpec` 工具注册表 `mcs_agent/tools.py`（`BUILTIN_TOOLS` / `ToolsetConfig` / `build_toolset`，`MEMORY_TOOLS` 降为废弃别名）。
+- **改写**：`loop.py` 的 `MemoryAgent`——接 `AgentLLMInterface`（callable 自动适配）+ `tools: ToolsetConfig`（内部 `build_toolset`），删硬编码 `MEMORY_TOOLS` / `_dispatch`；`app.py` 的 `build_agent_from_env` 改走 builder；`__init__.py` 导出新 API。
 - **不动**：`memory.py`（`MemoryStore` 单线程模型、原语签名）、`FastAPI create_app`、前端、MCS 核心库。
 
 ### API 变更
 
-- 新增 public：`AgentConfig`、`AgentBuilder`、`create_agent`、`AgentLLMInterface`、`AGENT_LLM_REGISTRY`、`OpenAIAgentLLM`、`AnthropicAgentLLM`、`CallableAgentLLM`、`ToolSpec`、`BUILTIN_TOOLS`、`ToolsetConfig`。
+- 新增 public：`LLMConfig`、`AgentConfig`、`AgentBuilder`、`create_agent`、`AgentLLMInterface`、`AGENT_LLM_REGISTRY`、`OpenAIAgentLLM`、`AnthropicAgentLLM`、`CallableAgentLLM`、`ToolSpec`、`BUILTIN_TOOLS`、`ToolsetConfig`。
 - `MemoryAgent` 构造签名变更：LLM 入参 `Callable` → `AgentLLMInterface`（callable 自动适配，注入 callable 的调用方不破）；工具由模块常量 → 可选 `ToolsetConfig`（缺省 = 全部 5 内置）。**对直接构造 `MemoryAgent` 的代码为 BREAKING**，但经适配器 + 缺省工具集，既有测试与 `build_agent_from_env` 路径保持工作。
 - `MEMORY_TOOLS` 保留为**已废弃别名**（指向内置 schema 列表），避免 import 断裂；后续 change 移除。
+- `make_openai_llm_call` 同样保留为**已废弃别名**（内部委托 `OpenAIAgentLLM`、回填 `_trace` 键，保持旧 callable 形状），`__init__.py` 仍导出；与 `MEMORY_TOOLS` 对称；后续 change 移除。
 
 ### 依赖
 
@@ -48,4 +49,6 @@
 - **`MemoryAgent` 构造签名 BREAKING**：直接 `MemoryAgent(memory, callable)` 的调用方需感知签名变化。缓解：`CallableAgentLLM` 适配器 + 缺省全工具集，使注入 callable 的测试零改动；`build_agent_from_env` 内部切换。
 - **trace 口径变化**：`_trace` dict 键 → `AssistantMessage.trace` 字段；凡直接读 `assistant["_trace"]` 的代码需改读字段。缓解：该读取仅 `loop.py` 内部一处，随重构一并迁移。
 - **anthropic native 翻译**：openai↔anthropic 消息 / tool_call 格式转换有边界（多模态 content、并行 tool_calls 等）。缓解：首版只支持 text + tool_calls 的子集，多模态留 TODO（同当前 openai 实现的 NOTE）。
+- **统一 provider 集收窄**：统一 = provider 键须同时映射 agent adapter 与 MCS 插件，故可用集 = 二者交集 `{deepseek, ollama, claude}`；官方 openai 无 MCS 插件、不能作统一 provider（这是统一的既定代价，非缺陷）。缓解：agent 要连任意 openai 兼容端点用 `deepseek`/`ollama` 键 + 自定义 `base_url`；想给 MCS 配独立 LLM 走 `mcs_config` 逃逸口。
+- **claude Bearer 授权**：claude_llm 优先 `auth_token`(Bearer)、回退 `api_key`(x-api-key)。缓解：`LLMConfig` 增可选 `auth_token` 字段（仅 claude 有意义），统一模式即可覆盖 Bearer 网关；非 claude 忽略。
 - **线程模型不变**：本次不引入并发；"未来全局并发控制"为另一个 change。
