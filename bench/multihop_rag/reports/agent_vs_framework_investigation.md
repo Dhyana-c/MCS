@@ -75,8 +75,7 @@ agent 的 `associate` 工具底层仍调框架同一条 BFS（`mcs.query(existin
    - **查询拆解 → 多种子入口** → 提升召回（recall@∞）。
    - **聚焦候选集** → 提升排序（hit@10 / mrr）。
    整套 ReAct 的扩展层（associate 重跑 BFS + 上下文膨胀）对召回无额外贡献，只贡献 token 账单。
-3. **deepseek 的隐患仍在**：早停/越界（8 题 agent 反输，含 0 工具直接答）、null 用参数知识兜、非确定性。任何"让 deepseek 自判够了就停/剪枝"的设计都要对冲它的过激（见 proposal）。
-4. **下一步**：proposal [`focused-candidate-selection`](../../../openspec/changes/focused-candidate-selection/) 已立，覆盖**排序杠杆**（方案 A 事后充分性裁剪，deepseek 优先；方案 B 有界可回访 LLM 引导遍历）。**召回杠杆（查询拆解→多种子）暂未纳入**，作为后续种子定位改进的候选。
+3. **deepseek 的隐患仍在**：早停/越界（8 题 agent 反输，含 0 工具直接答）、null 用参数知识兜、非确定性。任何"让 deepseek 自判够了就停/剪枝"的设计都要对冲它的过激。
 
 ## 复现
 
