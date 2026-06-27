@@ -141,6 +141,17 @@ class SQLiteStore(StoreInterface):
     def get_node(self, node_id: str) -> Node | None:
         return self._nodes.get(node_id)
 
+    def get_nodes(self, node_ids: list[str]) -> list[Node]:
+        result: list[Node] = []
+        for nid in node_ids:
+            node = self._nodes.get(nid)
+            if node is not None:
+                result.append(node)
+        return result
+
+    def get_nodes_by_class(self, node_class: str) -> list[Node]:
+        return [n for n in self._nodes.values() if n.node_class == node_class]
+
     def update_node(self, node_id: str, updates: dict) -> None:
         node = self._nodes.get(node_id)
         if node is None:
@@ -267,6 +278,25 @@ class SQLiteStore(StoreInterface):
         edge = self._edges.get(edge_id)
         if edge is None:
             return
+        # 登记制 + 互斥两端必为事实（与 add_edge 对称，避免 update 路径绕过校验）
+        new_type = fields.get("type", edge.type)
+        if new_type not in ALLOWED_EDGE_TYPES:
+            raise ValueError(
+                f"unknown edge type={new_type!r}; expected one of {sorted(ALLOWED_EDGE_TYPES)}"
+            )
+        if new_type == EDGE_MUTEX:
+            src = self._nodes.get(edge.source_id)
+            tgt = self._nodes.get(edge.target_id)
+            if src is not None and src.node_class != CLASS_FACT:
+                raise ValueError(
+                    f"互斥边 source 节点 {edge.source_id!r} 的 node_class={src.node_class!r}，"
+                    f"期望 '{CLASS_FACT}'（互斥仅事实↔事实）"
+                )
+            if tgt is not None and tgt.node_class != CLASS_FACT:
+                raise ValueError(
+                    f"互斥边 target 节点 {edge.target_id!r} 的 node_class={tgt.node_class!r}，"
+                    f"期望 '{CLASS_FACT}'（互斥仅事实↔事实）"
+                )
         for key, value in fields.items():
             if hasattr(edge, key):
                 setattr(edge, key, value)

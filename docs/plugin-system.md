@@ -37,9 +37,8 @@
 | `EDGE_EXTENSION` | `EdgeExtensionInterface` | `schema/default/serialize/deserialize/render(edge, purpose)` | —（opt-in） |
 | `STORAGE_SCHEMA_EXT` | `StorageSchemaExtensionInterface` | `node_columns()`；`auxiliary_tables()` | SourceTracking（多接口） |
 | `MAINTENANCE` | `MaintenanceInterface` | `run(store)`；`should_run()` | FanoutReducer / SummaryRegen / GraphSummary |
-| `SEED_SELECTOR` | `SeedSelectorPluginInterface` | `select(...)` | —（**已废弃**，并入 TRIM） |
 
-废弃别名：`PREPROCESS` → 指向 `WRITE_PREPROCESS`；`SEED_SELECTOR` 语义筛选已并入 `TrimPlugin`。二者保留一个版本后移除。
+废弃别名：`PREPROCESS` → 指向 `WRITE_PREPROCESS`（保留一个版本后移除）。`SEED_SELECTOR` 已移除——语义筛选并入 `TrimPlugin`（`SemanticTrimPlugin`）。
 
 > **多接口插件**：一个插件可同时实现多个类型——如 `SourceTrackingPlugin` 既是 `NODE_EXTENSION` 又是
 > `STORAGE_SCHEMA_EXT`，覆写 `get_types()` 返回 `{NODE_EXTENSION, STORAGE_SCHEMA_EXT}`，`PluginManager`

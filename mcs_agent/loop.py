@@ -116,7 +116,13 @@ class MemoryAgent:
         ]
         reply = ""
         for _ in range(self.max_turns):
-            assistant = self.llm.chat(messages, self.schemas)  # -> AssistantMessage
+            try:
+                assistant = self.llm.chat(messages, self.schemas)  # -> AssistantMessage
+            except Exception as exc:
+                # LLM 调用失败（网络/限流/鉴权/空 tools 400 等）：优雅降级、仍构造并触发 trace
+                logger.warning("agent LLM 调用失败: %s", exc)
+                reply = f"（助手暂时不可用：{type(exc).__name__}）"
+                break
 
             # trace 为一等字段（替旧 dict["_trace"] hack）
             if isinstance(assistant.trace, LLMCallTrace):

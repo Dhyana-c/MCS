@@ -96,7 +96,7 @@ class AnthropicAgentLLM(AgentLLMInterface):
             token_usage = TokenUsage(
                 prompt_tokens=in_tok,
                 completion_tokens=out_tok,
-                total_tokens=total or None,
+                total_tokens=total,
             )
         request_summary = [
             MessageSummary(role=m.get("role", ""), content_preview=(m.get("content") or "")[:100])

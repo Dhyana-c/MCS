@@ -6,7 +6,15 @@
 from __future__ import annotations
 
 from mcs.core.token_budget import TokenBudget
-from mcs.entities.graph import CLASS_CONCEPT, CLASS_EVENT, CLASS_FACT, CLASS_SOURCE, EDGE_ASSOC, Node
+from mcs.entities.graph import (
+    CLASS_CONCEPT,
+    CLASS_EVENT,
+    CLASS_FACT,
+    CLASS_SOURCE,
+    EDGE_ASSOC,
+    EDGE_MUTEX,
+    Node,
+)
 from mcs.plugins.maintenance.dedup_maintenance import DedupMaintenance
 from mcs.stores.in_memory import InMemoryStore
 
@@ -139,7 +147,9 @@ class TestDedupMaintenance:
             Node(id="a2", name="大概念", content="Y" * 4000, node_class=CLASS_CONCEPT),
         )
         tb = TokenBudget(200)  # 极小预算
-        DedupMaintenance(token_budget=tb).run(store)
+        dedup = DedupMaintenance()
+        dedup.token_budget = tb  # 模拟 initialize(context) 注入
+        dedup.run(store)
         # 超 T → 不合并，两个都保留
         remaining = [n for n in store.get_all_nodes() if n.name == "大概念"]
         assert len(remaining) == 2
@@ -154,3 +164,15 @@ class TestDedupMaintenance:
         DedupMaintenance().run(store)
         remaining = [n for n in store.get_all_nodes() if n.name == "大概念"]
         assert len(remaining) == 1
+
+    def test_skips_merge_for_mutex_pair(self):
+        """D2 安全闸：互为互斥的同名事实不合并（避免自互斥/矛盾塌缩）。"""
+        store = _store_with(
+            Node(id="f1", name="地球形状", content="地球是圆的", node_class=CLASS_FACT),
+            Node(id="f2", name="地球形状", content="地球是平的", node_class=CLASS_FACT),
+        )
+        store.add_edge("f1", "f2", type=EDGE_MUTEX)
+        DedupMaintenance().run(store)
+        # 互为互斥 → 不合并，两者都保留
+        assert store.get_node("f1") is not None
+        assert store.get_node("f2") is not None

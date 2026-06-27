@@ -107,8 +107,8 @@ class MCS:
                         plugin.execute(store=self.store)
                         ran.append(plugin.get_name())
                     except Exception:
-                        logger.warning(
-                            "维护插件 %s 执行失败",
+                        logger.error(
+                            "维护插件 %s 执行失败，已跳过（其余插件继续）",
                             plugin.get_name(),
                             exc_info=True,
                         )

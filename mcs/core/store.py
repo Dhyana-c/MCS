@@ -56,6 +56,27 @@ class StoreInterface(ABC):
         """按 id 获取节点，不存在返回 None。"""
         ...
 
+    def get_nodes(self, node_ids: list[str]) -> list[Node]:
+        """按 id 批量获取节点（一次取回，缺省跳过、不报错）。
+
+        默认实现逐个 get_node；有索引的存储 SHOULD 覆写以消除 N+1。返回顺序与
+        输入一致，不存在的 id 被省略。
+        """
+        result: list[Node] = []
+        for nid in node_ids:
+            node = self.get_node(nid)
+            if node is not None:
+                result.append(node)
+        return result
+
+    def get_nodes_by_class(self, node_class: str) -> list[Node]:
+        """返回指定 ``node_class`` 的全部节点（定向查询，避免全量加载再过滤）。
+
+        默认实现遍历 ``get_all_nodes`` 过滤；存储 SHOULD 覆写以直接按类索引——
+        典型用途：事件层定向查（``recall`` 取近期事件），避免把核心节点也物化进调用方列表。
+        """
+        return [n for n in self.get_all_nodes() if n.node_class == node_class]
+
     @abstractmethod
     def update_node(self, node_id: str, updates: dict) -> None:
         """更新节点属性。"""

@@ -168,6 +168,48 @@ def test_add_edge_mutex_dedup_unordered():
     assert len([e for e in store.get_all_edges() if e.type == EDGE_MUTEX]) == 1
 
 
+def test_update_edge_rejects_unknown_type():
+    """update_edge 未知 type MUST 抛 ValueError（与 add_edge 对称，避免 update 绕过登记制）。"""
+    store = InMemoryStore()
+    store.add_node(Node(id="a", name="a", content=""))
+    store.add_node(Node(id="b", name="b", content=""))
+    eid = store.add_edge("a", "b", type=EDGE_ASSOC)
+    with pytest.raises(ValueError, match="unknown edge type"):
+        store.update_edge(eid, type="因果")  # 未登记
+
+
+def test_update_edge_mutex_requires_fact_endpoints():
+    """update_edge 改为互斥时两端 MUST 均为事实（与 add_edge 对称）。"""
+    store = InMemoryStore()
+    store.add_node(Node(id="c1", name="概念A", content="", node_class=CLASS_CONCEPT))
+    store.add_node(Node(id="f1", name="事实1", content="", node_class=CLASS_FACT))
+    eid = store.add_edge("c1", "f1", type=EDGE_ASSOC)  # 关联：概念→事实 合法
+    # 改为互斥 → 概念端非法 → ValueError
+    with pytest.raises(ValueError, match="互斥边"):
+        store.update_edge(eid, type=EDGE_MUTEX)
+
+
+def test_get_nodes_batch_skips_missing():
+    """get_nodes 批量取节点：缺省跳过、保持输入顺序；空输入返回 []。"""
+    store = InMemoryStore()
+    store.add_node(Node(id="a", name="a", content=""))
+    store.add_node(Node(id="b", name="b", content=""))
+    assert [n.id for n in store.get_nodes(["a", "ghost", "b"])] == ["a", "b"]
+    assert store.get_nodes([]) == []
+    assert store.get_nodes(["ghost"]) == []
+
+
+def test_get_nodes_by_class_targets_class():
+    """get_nodes_by_class 定向取某类节点（事件层定向查、不全量物化核心节点）。"""
+    store = InMemoryStore()
+    store.add_node(Node(id="c", name="概念", content="", node_class=CLASS_CONCEPT))
+    store.add_node(Node(id="e1", name="事件1", content="", node_class=CLASS_EVENT))
+    store.add_node(Node(id="e2", name="事件2", content="", node_class=CLASS_EVENT))
+    events = store.get_nodes_by_class(CLASS_EVENT)
+    assert {n.id for n in events} == {"e1", "e2"}
+    assert store.get_nodes_by_class(CLASS_SOURCE) == []
+
+
 # ── get_relations 载重规则（核心不反查事件）（#22 核心契约）────────────────
 
 

@@ -7,11 +7,13 @@ LLM（``gen_summary`` 目的）并更新该槽位。
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from mcs.core.plugin import PluginType
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -65,7 +67,9 @@ class SummaryRegenPlugin(CompactionPluginInterface):
                     nodes_in=[node],
                     free_args={"max_tokens": self.max_summary_tokens},
                 )
-            except Exception:
+            except Exception as exc:
+                # 摘要生成失败：记日志（不静默）、跳过该节点（不阻塞其余）
+                logger.warning("节点 %s 摘要生成失败，跳过: %s", node.id, exc)
                 continue
             if not isinstance(summary_text, str) or not summary_text.strip():
                 continue

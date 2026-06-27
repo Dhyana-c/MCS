@@ -11,6 +11,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from mcs.core.errors import LLMCallError
 from mcs.core.plugin import PluginType
 from mcs.entities.graph import (
     CLASS_CONCEPT,
@@ -432,8 +433,13 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                     nodes_in=[node, *current],
                     free_args={},
                 )
-            except Exception:
-                logger.warning("decide_hub LLM 调用异常", exc_info=True)
+            except Exception as exc:
+                # call() 内部已 retry/backoff，到此处多为不可重试。不可重试错误早停，
+                # 避免对错误配置 / 鉴权失败做 4 次无效折半调用；其余（解析相关等）保留折半重试。
+                if isinstance(exc, LLMCallError) and not exc.retryable:
+                    logger.warning("decide_hub LLM 不可重试错误，放弃本次归纳: %s", exc)
+                    return None
+                logger.warning("decide_hub LLM 调用异常（将折半重试）", exc_info=True)
                 decision = None
             if decision is not None and getattr(decision, "communities", None):
                 return decision

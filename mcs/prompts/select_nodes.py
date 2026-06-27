@@ -1,6 +1,6 @@
 """purpose='select_nodes' 的 Prompt 包。
 
-用于查询管线阶段 ② 种子筛选（SeedSelectorPlugin）和
+用于查询管线阶段 ② 种子筛选（SemanticTrimPlugin）和
 阶段 ③ 遍历循环中的节点选择。输入：候选节点列表 + 查询 + 已累积摘要。
 输出：List[node_id] 选中节点的 id 列表。
 
@@ -10,7 +10,7 @@
 
 模板支持两种调用模式：
 1. 批量邻居扩展模式（_traverse）：传入 centers + neighbors
-2. 种子筛选模式（SeedSelectorPlugin）：传入 candidates
+2. 种子筛选模式（SemanticTrimPlugin）：传入 candidates
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ SYSTEM_PROMPT = (
     "已经选过的内容不要重复纳入。"
 )
 
-# 种子筛选模式模板（SeedSelectorPlugin 使用）
+# 种子筛选模式模板（SemanticTrimPlugin 使用）
 USER_TEMPLATE = (
     "查询:\n{query}\n\n"
     "候选节点:\n{material}\n\n"

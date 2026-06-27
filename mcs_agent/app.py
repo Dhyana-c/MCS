@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-import dataclasses
+import json
 import logging
 import os
 from pathlib import Path
@@ -110,9 +110,18 @@ def build_agent_from_env() -> MemoryAgent:
     """
 
     def _on_trace(chat_trace: ChatTrace) -> None:
-        # TODO: request_summary 含用户原文预览，多轮对话会重复累积；需评估脱敏/限条数
-        # TODO: 当前输出 Python dict str()，非 JSON；换 json formatter 后自动解决
-        _trace_logger.info("ChatTrace: %s", dataclasses.asdict(chat_trace))
+        # 结构化 + 脱敏：仅聚合指标（调用数 / token / 延迟 / 工具名），不含用户原文
+        # （user_message / reply / request_summary 的 content_preview 均为用户内容，MUST NOT 落日志）。
+        summary = {
+            "llm_calls": len(chat_trace.llm_calls),
+            "tool_calls": len(chat_trace.tool_calls),
+            "tool_names": [t.tool_name for t in chat_trace.tool_calls],
+            "total_latency_ms": round(chat_trace.total_latency_ms, 1),
+            "total_tokens": chat_trace.total_tokens,
+            "user_message_len": len(chat_trace.user_message),
+            "reply_len": len(chat_trace.reply),
+        }
+        _trace_logger.info("ChatTrace: %s", json.dumps(summary, ensure_ascii=False))
 
     config_path = os.environ.get("MCS_CONFIG")
     if not config_path:

@@ -76,19 +76,14 @@ The system SHALL define `TrimPluginInterface` with abstract method `trim(nodes: 
 
 ---
 
-### Requirement: 废弃 SeedSelectorPluginInterface
+### Requirement: SeedSelectorPluginInterface 已移除
 
-`SeedSelectorPluginInterface` SHALL be deprecated. 语义筛选已合并为 TrimPlugin 实现（如 `SemanticTrimPlugin`）。`SeedSelectorPluginInterface` 和 `PluginType.SEED_SELECTOR` SHALL remain for one version then be removed.
+`SeedSelectorPluginInterface` 与 `PluginType.SEED_SELECTOR` SHALL 已移除。语义筛选合并为 TrimPlugin 实现（`SemanticTrimPlugin`，purpose=`select_nodes`）。旧代码 MUST 改用 `TrimPluginInterface`。
 
-#### Scenario: 废弃接口仍可导入
+#### Scenario: 废弃接口与枚举值不再存在
 
-- **WHEN** 旧代码导入 `SeedSelectorPluginInterface`
-- **THEN** MUST 成功导入但类文档 MUST 标注 deprecated
-
-#### Scenario: SEED_SELECTOR 枚举值仍可用
-
-- **WHEN** 使用 `PluginType.SEED_SELECTOR`
-- **THEN** MUST 等价于 `"seed_selector"` 但枚举文档 MUST 标注 deprecated
+- **WHEN** 检查 `mcs.interfaces.seed_selector_plugin` 或 `PluginType.SEED_SELECTOR`
+- **THEN** MUST 不可导入 / 不存在（移除完成）
 
 ---
 
@@ -338,7 +333,7 @@ The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting 
 
 - **WHEN** 检查 `PluginType`
 - **THEN** MUST 继承 `str` 与 `Enum`
-- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、WRITE_PREPROCESS、QUERY_PREPROCESS、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE、SEED_SELECTOR
+- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、WRITE_PREPROCESS、QUERY_PREPROCESS、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE
 - **AND** MAY 含废弃值 PREPROCESS（指向 WRITE_PREPROCESS）
 
 #### Scenario: 管线按 PluginType 查找

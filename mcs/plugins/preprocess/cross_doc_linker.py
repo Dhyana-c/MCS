@@ -31,7 +31,6 @@ class CrossDocLinkCandidate:
 
 def find_cross_doc_candidates_by_name(
     graph: GraphStore,
-    min_confidence: float = 0.7,
     max_candidates: int = 1000,
 ) -> list[CrossDocLinkCandidate]:
     """Find cross-document link candidates by matching node names.
@@ -41,7 +40,6 @@ def find_cross_doc_candidates_by_name(
 
     Args:
         graph: The GraphStore to analyze
-        min_confidence: Minimum confidence threshold
         max_candidates: Maximum number of candidates to return
 
     Returns:
@@ -99,7 +97,6 @@ def find_cross_doc_candidates_by_name(
 
 def find_cross_doc_candidates_by_alias(
     graph: GraphStore,
-    min_confidence: float = 0.8,
     max_candidates: int = 1000,
 ) -> list[CrossDocLinkCandidate]:
     """Find cross-document link candidates by matching aliases.
@@ -109,7 +106,6 @@ def find_cross_doc_candidates_by_alias(
 
     Args:
         graph: The GraphStore to analyze
-        min_confidence: Minimum confidence threshold
         max_candidates: Maximum number of candidates to return
 
     Returns:
@@ -208,7 +204,7 @@ def apply_cross_doc_links(
 
 def cross_doc_link_pass(
     graph: GraphStore,
-    strategies: list[str] = ["name_match", "alias_match"],
+    strategies: list[str] | None = None,
     confidence_threshold: float = 0.8,
     max_candidates_per_strategy: int = 1000,
 ) -> tuple[int, list[Edge]]:
@@ -223,17 +219,19 @@ def cross_doc_link_pass(
     Returns:
         Tuple of (total links applied, list of new edges)
     """
+    if strategies is None:
+        strategies = ["name_match", "alias_match"]
     all_candidates = []
 
     if "name_match" in strategies:
         name_candidates = find_cross_doc_candidates_by_name(
-            graph, confidence_threshold, max_candidates_per_strategy
+            graph, max_candidates=max_candidates_per_strategy
         )
         all_candidates.extend(name_candidates)
 
     if "alias_match" in strategies:
         alias_candidates = find_cross_doc_candidates_by_alias(
-            graph, confidence_threshold, max_candidates_per_strategy
+            graph, max_candidates=max_candidates_per_strategy
         )
         all_candidates.extend(alias_candidates)
 
@@ -337,7 +335,7 @@ def persist_new_edges(db_path: str, new_edges: list[Edge]) -> int:
 def cross_doc_link_pass_from_db(
     db_path: str,
     output_db_path: str | None = None,
-    strategies: list[str] = ["name_match", "alias_match"],
+    strategies: list[str] | None = None,
     confidence_threshold: float = 0.8,
 ) -> dict[str, Any]:
     """Run cross-document linking on a graph db and persist the new edges.
@@ -356,6 +354,8 @@ def cross_doc_link_pass_from_db(
     Returns:
         Dictionary with before/after diagnostics and persistence statistics.
     """
+    if strategies is None:
+        strategies = ["name_match", "alias_match"]
     from mcs.diagnostics.graph_quality import diagnose_graph
 
     # Resolve target db: in-place vs copy-to-output.

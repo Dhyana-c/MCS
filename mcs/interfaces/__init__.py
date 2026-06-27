@@ -7,7 +7,6 @@ from mcs.interfaces.edge_extension import EdgeExtensionInterface
 from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
 from mcs.interfaces.priority_scorer import DefaultPriorityScorer, PriorityScorer
 from mcs.interfaces.query_preprocess_plugin import QueryPreprocessPluginInterface
-from mcs.interfaces.seed_selector_plugin import SeedSelectorPluginInterface
 from mcs.interfaces.write_preprocess_plugin import WritePreprocessPluginInterface
 
 # 废弃别名（一个版本后移除）
@@ -18,7 +17,6 @@ __all__ = [
     "QueryPreprocessPluginInterface",
     "PreprocessPluginInterface",  # 废弃，保留向后兼容
     "PostprocessPluginInterface",
-    "SeedSelectorPluginInterface",
     "EdgeExtensionInterface",
     "PriorityScorer",
     "DefaultPriorityScorer",

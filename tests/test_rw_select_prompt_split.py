@@ -130,6 +130,18 @@ def test_query_nodes_uses_select_facts_write(seeded_graph, mock_llm):
     )
 
 
+def test_query_nodes_does_not_mutate_max_rounds(seeded_graph, mock_llm):
+    """Q10：query_nodes(max_rounds=...) 经参数透传，不残留修改实例 self.max_rounds。"""
+    mock_llm.set_response("select_nodes", [])
+    mock_llm.set_response("select_facts_write", [])
+    engine = make_query_engine(
+        seeded_graph, mock_llm, _StaticEntry(["dl"], seeded_graph)
+    )
+    original = engine.max_rounds
+    engine.query_nodes("深度学习", max_rounds=1)
+    assert engine.max_rounds == original  # 实例态未被临时修改残留
+
+
 # === 4.3 DEFAULT_PROMPTS 注册与 parse 共享 ===
 
 

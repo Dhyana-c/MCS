@@ -39,9 +39,6 @@ class PluginType(str, Enum):
     STORAGE_SCHEMA_EXT = "storage_schema_ext"
     MAINTENANCE = "maintenance"
 
-    # 废弃别名（一个版本后移除）：语义筛选已合并为 TrimPlugin 实现
-    SEED_SELECTOR = "seed_selector"
-
 
 class Plugin(ABC):
     """所有 MCS 插件的顶级基类。

@@ -19,13 +19,15 @@ def make_openai_llm_call(
     model: str,
     api_key: str,
     base_url: str | None = None,
+    auth_token: str | None = None,
 ) -> Callable[[list[dict], list[dict]], dict]:
     """[已废弃] 构造 ``llm_call(messages, tools) -> assistant_message_dict`` callable。
 
     内部委托 ``OpenAIAgentLLM``，回填 ``_trace`` 键以保持旧 dict 口径。
-    改用 ``mcs_agent.llms.OpenAIAgentLLM``。
+    改用 ``mcs_agent.llms.OpenAIAgentLLM``。``auth_token`` 透传（openai-compat 忽略，
+    仅保持签名完整，避免未来误用丢鉴权）。
     """
-    backend = OpenAIAgentLLM(model, api_key, base_url)
+    backend = OpenAIAgentLLM(model, api_key, base_url, auth_token=auth_token)
 
     def llm_call(messages: list[dict], tools: list[dict]) -> dict:
         msg = backend.chat(messages, tools)

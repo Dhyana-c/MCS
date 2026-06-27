@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from conftest import MockLLMBuilder
 
 from mcs.core.plugin_manager import PluginContext, PluginManager
@@ -420,6 +422,80 @@ def test_real_builder_build_runs_full_assembly(mock_llm):
         assert mcs.get_plugin("mock_llm") is not None
     finally:
         mcs.shutdown()
+
+
+# === D6：写入后守门核心兜底 ===
+
+
+class _StubCompaction(CompactionPluginInterface):
+    """should_run 恒 False、记录 run() 是否被调用的压缩插件桩。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.run_called = False
+
+    def get_name(self) -> str:
+        return "stub_compaction"
+
+    def should_run(self, changed_nodes, store) -> bool:
+        return False
+
+    def run(self, changed_nodes, store, llm_caller) -> None:
+        self.run_called = True
+
+
+def _wp_with_budget(store, mock_llm, token_budget, *plugins):
+    """用指定 token_budget 构建 WritePipeline（不复用 _build_pipelines 的 8000 默认）。"""
+    pm = PluginManager()
+    pm.register(mock_llm)
+    for p in plugins:
+        pm.register(p)
+    qe = QueryEngine(
+        store=store,
+        llm=mock_llm,
+        plugin_manager=pm,
+        token_budget=token_budget,
+        max_rounds=3,
+        max_accumulated_nodes=20,
+    )
+    return WritePipeline(
+        store=store,
+        llm=mock_llm,
+        query_engine=qe,
+        plugin_manager=pm,
+        token_budget=token_budget,
+        config=MCSConfig(),
+    )
+
+
+def test_compaction_forced_when_over_budget(empty_graph, mock_llm):
+    """D6：changed_nodes 层级视图超 T 时强制运行 CompactionPlugin（忽略 should_run）。"""
+    stub = _StubCompaction()
+    wp = _wp_with_budget(empty_graph, mock_llm, TokenBudget(100), stub)
+    big = Node(id="big", name="大", content="X" * 4000, node_class=CLASS_CONCEPT)
+    empty_graph.add_node(big)
+    wp._run_compaction([big])
+    assert stub.run_called is True  # should_run=False 但超 T → 强制运行
+
+
+def test_compaction_respects_should_run_when_under_budget(empty_graph, mock_llm):
+    """D6：未超 T 时尊重 should_run（False → 不运行）。"""
+    stub = _StubCompaction()
+    wp = _wp_with_budget(empty_graph, mock_llm, TokenBudget(8000), stub)
+    small = Node(id="s", name="小", content="hi", node_class=CLASS_CONCEPT)
+    empty_graph.add_node(small)
+    wp._run_compaction([small])
+    assert stub.run_called is False
+
+
+def test_no_compaction_plugin_logs_error_when_over_budget(empty_graph, mock_llm, caplog):
+    """D6：超 T 但无 CompactionPlugin → logger.error 显式暴露（不静默）。"""
+    wp = _wp_with_budget(empty_graph, mock_llm, TokenBudget(100))
+    big = Node(id="big2", name="大", content="X" * 4000, node_class=CLASS_CONCEPT)
+    empty_graph.add_node(big)
+    with caplog.at_level(logging.ERROR):
+        wp._run_compaction([big])
+    assert any("核心不变量无法保证" in r.message for r in caplog.records)
 
 
 def test_load_on_startup_restores_graph(tmp_path, mock_llm):

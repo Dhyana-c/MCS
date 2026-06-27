@@ -152,15 +152,11 @@ class QueryEngine:
         # 阶段 ②: 种子定位
         seeds = self._locate_seeds(processed_text, ctx)
 
-        # 阶段 ③: 遍历（限制 max_rounds）
-        saved_max_rounds = self.max_rounds
-        try:
-            self.max_rounds = max_rounds
-            ctx.intermediate, _ = self._traverse(
-                seeds, processed_text, ctx, select_purpose="select_facts_write"
-            )
-        finally:
-            self.max_rounds = saved_max_rounds
+        # 阶段 ③: 遍历（限深 max_rounds，经参数透传，不修改实例态）
+        ctx.intermediate, _ = self._traverse(
+            seeds, processed_text, ctx, select_purpose="select_facts_write",
+            max_rounds=max_rounds,
+        )
 
         # 跳过 ④⑤，直接返回 result_set
         if skip_postprocess:
@@ -273,6 +269,7 @@ class QueryEngine:
             query: str,
             ctx: QueryContext,
             select_purpose: str = "select_facts",
+            max_rounds: int | None = None,
     ) -> tuple[list[Node], list[Edge]]:
         """阶段 ③：批量事实 BFS 遍历（双角色解耦 + 预算分离）。
 
@@ -302,6 +299,10 @@ class QueryEngine:
         """
         if not seeds:
             return [], []
+
+        # 深度上界：显式传入优先（query_nodes 限深用），否则用实例 max_rounds。
+        # 避免修改 self.max_rounds（非线程安全、可重入风险）。
+        rounds_limit = max_rounds if max_rounds is not None else self.max_rounds
 
         from mcs.core.context_renderer import ContextRenderer
         from mcs.core.errors import LLMParseError
@@ -443,13 +444,15 @@ class QueryEngine:
                 if child.id not in seen:
                     seen.add(child.id)
                     view_nodes.append(child)
+            # 关系边端点批量取节点（消除 N+1：一次 get_nodes 取回，缺省跳过）
+            endpoint_ids: list[str] = []
             for edge in facts:
                 for eid in (edge.source_id, edge.target_id):
                     if eid not in seen:
-                        endpoint = self.store.get_node(eid)
-                        if endpoint is not None:
-                            seen.add(eid)
-                            view_nodes.append(endpoint)
+                        seen.add(eid)
+                        endpoint_ids.append(eid)
+            for endpoint in self.store.get_nodes(endpoint_ids):
+                view_nodes.append(endpoint)
             return view_nodes, facts
 
         def _call_select(view_nodes, facts):
@@ -560,7 +563,7 @@ class QueryEngine:
             return frontier_nodes, hit_cap
 
         depth = 0
-        while frontier and depth < self.max_rounds:
+        while frontier and depth < rounds_limit:
             if (
                 len(accumulated) >= self.max_accumulated_nodes
                 or used_tokens >= budget

@@ -1,7 +1,7 @@
 """分层种子图测试（建图侧）：
 
   - 建图侧 ``fanout_reducer`` 维护**持久虚拟根** + 递归分层，产物入 ``changed_nodes`` 以便落库。
-  - 查询侧种子超预算由 SeedSelectorPlugin 链处理（见 test_pipeline_query.py）。
+  - 查询侧种子超预算由 TrimPlugin（SemanticTrimPlugin）链处理（见 test_pipeline_query.py）。
 """
 
 from __future__ import annotations

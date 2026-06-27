@@ -48,9 +48,11 @@ class OpenAIAgentLLM(AgentLLMInterface):
         client = self._get_client()
         wall_time = time.time()
         t0 = time.perf_counter()
-        resp = client.chat.completions.create(
-            model=self.model, messages=messages, tools=tools
-        )
+        # 空 tools 列表 MUST 省略（不传 tools=[]）——deepseek 等兼容端点对空 tools 报 400
+        kwargs: dict = {"model": self.model, "messages": messages}
+        if tools:
+            kwargs["tools"] = tools
+        resp = client.chat.completions.create(**kwargs)
         latency_ms = (time.perf_counter() - t0) * 1000
 
         # model_dump 保完整 tool_calls 结构（id / type / function），供多轮回放

@@ -33,13 +33,12 @@ class CompactionPluginInterface(Plugin):
         return PluginType.COMPACTION
 
     def execute(self, **kwargs) -> None:
-        """统一入口，委托给 run()。"""
-        if self.should_run(kwargs.get("changed_nodes", []), kwargs.get("store")):
-            self.run(
-                changed_nodes=kwargs["changed_nodes"],
-                store=kwargs["store"],
-                llm_caller=kwargs["llm_caller"],
-            )
+        """统一入口，委托给 run()（should_run 由调用方决定，与 MaintenanceInterface 一致）。"""
+        self.run(
+            changed_nodes=kwargs["changed_nodes"],
+            store=kwargs["store"],
+            llm_caller=kwargs["llm_caller"],
+        )
 
     @abstractmethod
     def should_run(self, changed_nodes: list[Node], store: StoreInterface) -> bool:

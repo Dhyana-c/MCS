@@ -601,13 +601,41 @@ class WritePipeline:
             self.store.add_edge(existing_id, anchor_id, type=EDGE_ASSOC)
         return self.store.get_node(existing_id)
 
+    def _hierarchy_over_budget(self, node: Node) -> bool:
+        """节点的层级视图（中心 content + 下钻成员）是否超 T（守门口径，不含关系边）。
+
+        与 fanout_reducer 的 fanout 守门同口径：decide_hub 只看节点、聚不了关系边，
+        故关系边 token 不计入（其有界由查询侧 Phase 2 priority 截断兜）。
+        """
+        if self.token_budget is None:
+            return False
+        total = self.token_budget.estimate_node(node)
+        for child in self.store.get_out_hierarchy(node.id) or []:
+            total += self.token_budget.estimate_node(child)
+            if total > self.token_budget.T:
+                return True
+        return total > self.token_budget.T
+
     def _run_compaction(self, changed_nodes: list[Node]) -> None:
-        """阶段 ⑥：每个 CompactionPlugin 检查 should_run，然后运行。"""
+        """阶段 ⑥：守门核心兜底 + CompactionPlugin 链。
+
+        核心不变量由本方法兜底：changed_nodes 中任一节点层级视图超 T 时，MUST 强制
+        运行 CompactionPlugin（忽略 should_run）；若**无任何 CompactionPlugin**而存在
+        超 T 节点，logger.error 显式暴露（不变量无法保证，不静默）。无压力时尊重各插件
+        should_run（既有行为）。
+        """
         from mcs.core.plugin import PluginType
 
         plugins = self.plugin_manager.get_all(PluginType.COMPACTION)
+        # 核心兜底：检测超 T 的层级视图（不依赖插件 should_run）
+        pressured = [n for n in changed_nodes if self._hierarchy_over_budget(n)]
+        if pressured and not plugins:
+            logger.error(
+                "写入后存在超 T 节点但无 CompactionPlugin——核心不变量无法保证: %s",
+                [n.id for n in pressured],
+            )
         for plugin in plugins:
-            if plugin.should_run(changed_nodes, self.store):
+            if pressured or plugin.should_run(changed_nodes, self.store):
                 plugin.run(changed_nodes, self.store, self.llm.call)
 
     def _run_persist(self, ctx: WriteContext) -> None:

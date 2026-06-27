@@ -10,7 +10,7 @@
 #### Scenario: 目录结构与 PluginType 一致
 
 - **WHEN** 列出 `mcs/plugins/` 目录
-- **THEN** 子目录名 MUST 与 `PluginType` 枚举值对应（小写）：`entry/`、`trim/`、`postprocess/`、`preprocess/`、`maintenance/`、`index/`、`llm/`、`seed_selector/`
+- **THEN** 子目录名 MUST 与 `PluginType` 枚举值对应（小写）：`entry/`、`trim/`、`postprocess/`、`preprocess/`、`maintenance/`、`index/`、`llm/`
 
 #### Scenario: 插件文件位于对应类型目录
 

@@ -260,11 +260,8 @@ class MemoryStore:
         那会漏 ``_render_events`` 的 ``\\n`` join 分隔符、系统性低估、致多条时超 T。
         """
         store = self._mcs.store
-        events = [
-            n
-            for n in store.get_all_nodes()
-            if n is not None and n.node_class == CLASS_EVENT
-        ]
+        # 定向取事件（不经 get_all_nodes 把核心节点也物化进列表——事件层只读近期口径）
+        events = store.get_nodes_by_class(CLASS_EVENT)
         if not events:
             return _render_events([])
         # 时间倒排 + id 次级键保确定性（无 timestamp → 空串、reverse 后排末尾）

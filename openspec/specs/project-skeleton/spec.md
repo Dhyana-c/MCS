@@ -57,7 +57,7 @@ The system SHALL provide all interfaces as ABC classes with `@abstractmethod`-de
 #### Scenario: 接口文件覆盖全部 PluginType 与扩展接口
 
 - **WHEN** 检查 `mcs/interfaces/` 目录
-- **THEN** 存在与 14 类 PluginType 对应的接口文件（如 `entry_plugin.py`, `trim_plugin.py`, `arbitration_plugin.py`, `postprocess_plugin.py`, `write_preprocess_plugin.py`, `query_preprocess_plugin.py`, `compaction_plugin.py`, `index.py`, `llm.py`, `maintenance.py`, `seed_selector_plugin.py`）
+- **THEN** 存在与 13 类 PluginType 对应的接口文件（如 `entry_plugin.py`, `trim_plugin.py`, `arbitration_plugin.py`, `postprocess_plugin.py`, `write_preprocess_plugin.py`, `query_preprocess_plugin.py`, `compaction_plugin.py`, `index.py`, `llm.py`, `maintenance.py`）
 - **AND** 存在扩展接口 `node_extension.py`, `edge_extension.py`, `storage_schema_ext.py`, `priority_scorer.py`
 - **AND** **不**存在已废弃的 `pipeline_hook.py` 或 `query_hook.py`
 

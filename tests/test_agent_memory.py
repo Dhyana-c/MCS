@@ -74,6 +74,9 @@ class FakeStore:
     def get_all_nodes(self) -> list[Node]:
         return list(self.nodes.values())
 
+    def get_nodes_by_class(self, node_class: str) -> list[Node]:
+        return [n for n in self.nodes.values() if n.node_class == node_class]
+
 
 class FakeQueryEngine:
     def __init__(self, token_budget_T: int = 8000) -> None:
