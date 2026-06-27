@@ -188,7 +188,11 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
             "type": "function",
             "function": {
                 "name": "recall",
-                "description": "回忆近期热点事件。（未实现：依赖事件节点与热点排序，暂不可用。）",
+                "description": (
+                    "回忆最近发生的事件（按时间倒排，纯近期口径）。"
+                    "用于回答「我最近记了什么 / 最近有什么」这类时间相关问题；"
+                    "返回结果受 limit 条数与上下文预算双约束。"
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
