@@ -110,7 +110,7 @@ mcs-mcp                                   # 或 python -m mcs_mcp
 
 ## 7. 启动记忆 Agent
 
-`mcs_agent` 是一个带对话界面的 ReAct 记忆助手（自有 LLM + 5 个导航工具 + FastAPI + 前端可视化）：
+`mcs_agent` 是一个带对话界面的 ReAct 记忆助手（自有 LLM + 7 个工具 = 5 导航 + generalize/arbitrate 两只读语义判断 + FastAPI + 前端可视化）：
 
 ```bash
 export MCS_CONFIG=/path/to/mcs.yaml       # MCS 图配置

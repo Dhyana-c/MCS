@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from mcs.interfaces.llm import PromptBundle
 from mcs.prompts import (
+    adjudicate,
     arbitrate,
     decide_directions,
     decide_hub,
@@ -16,6 +17,7 @@ from mcs.prompts import (
     gen_aliases,
     gen_graph_summary,
     gen_summary,
+    generalize,
     judge_relations,
     navigate_hub,
     select_facts,
@@ -93,6 +95,16 @@ DEFAULT_PROMPTS: dict[str, PromptBundle] = {
         system=select_facts.WRITE_SYSTEM_PROMPT,
         template=select_facts.WRITE_USER_TEMPLATE,
         parse=select_facts.parse,
+    ),
+    "generalize": PromptBundle(
+        system=generalize.SYSTEM_PROMPT,
+        template=generalize.USER_TEMPLATE,
+        parse=generalize.parse,
+    ),
+    "adjudicate": PromptBundle(
+        system=adjudicate.SYSTEM_PROMPT,
+        template=adjudicate.USER_TEMPLATE,
+        parse=adjudicate.parse,
     ),
 }
 

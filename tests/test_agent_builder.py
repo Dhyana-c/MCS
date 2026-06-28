@@ -68,7 +68,7 @@ def test_factory_unified_llm_reaches_mcs_plugin(tmp_db):
         assert plugin.api_key == "sk-real"
         assert plugin.model == "deepseek-chat"
         assert plugin.base_url == "https://api.deepseek.com"  # provider 默认 base_url 填充
-        assert len(agent.schemas) == 5
+        assert len(agent.schemas) == 7  # 默认 7 内置工具（5 导航 + generalize/arbitrate）
     finally:
         agent.memory.shutdown()
 
@@ -165,7 +165,7 @@ def test_from_file_unified_llm_reaches_mcs(tmp_path, tmp_db):
         plugin = agent.memory._mcs.write_manager._plugins["deepseek_llm"]
         assert plugin.api_key == "sk-yaml"
         assert plugin.model == "deepseek-chat"
-        assert len(agent.schemas) == 5
+        assert len(agent.schemas) == 7  # 默认 7 内置工具（5 导航 + generalize/arbitrate）
     finally:
         agent.memory.shutdown()
 

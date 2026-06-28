@@ -1,10 +1,12 @@
-"""记忆 agent 的 FastAPI 对话后端。
+"""记忆 agent 的 FastAPI 对话后端（基础 app）。
 
-- ``create_app(agent)``：接受任意带 ``chat(user_message) -> str`` 的 agent（可注入
-  fake，便于测试），挂 ``/chat``、``/health`` 路由 + 静态前端（``static/index.html``）。
-- ``build_agent_from_env()``：从环境变量构建生产 ``MemoryAgent``（``MemoryStore``
-  经 ``Phase1Builder`` build + openai 兼容 ``llm_call``）。
-- ``run()``：起 uvicorn。
+- ``create_app(agent)``：接受任意带 ``chat(user_message) -> str`` 的 agent，挂 ``/chat``、
+  ``/health``、``/graph/expand`` 基础路由 + 静态前端（``static/index.html``、``graph.html``）。
+  仅基础 agent 能力——个人记忆功能（碎片 / 整合 / 日记 / 召回 / 管理看板）由独立包 ``mcs_mem``
+  扩展（``mcs_mem.create_app`` 自建 app、复用本模块的 ``register_base_routes``）。
+- ``register_base_routes(app, agent)``：基础路由注册，供 ``create_app`` 与 ``mcs_mem`` 复用。
+- ``build_agent_from_env()``：从环境变量构建生产 ``MemoryAgent``（经 ``AgentBuilder``）。
+- ``run()``：起 uvicorn（基础 agent app；记忆应用入口在 ``mcs_mem.run``）。
 """
 
 from __future__ import annotations
@@ -25,7 +27,14 @@ from mcs_agent.builder import AgentBuilder, AgentConfig, LLMConfig
 from mcs_agent.loop import MemoryAgent
 from mcs_agent.trace import ChatTrace
 
-__all__ = ["create_app", "build_agent_from_env", "run", "ChatRequest", "ChatResponse"]
+__all__ = [
+    "create_app",
+    "register_base_routes",
+    "build_agent_from_env",
+    "run",
+    "ChatRequest",
+    "ChatResponse",
+]
 
 _trace_logger = logging.getLogger(__name__ + ".trace")
 _trace_logger.setLevel(logging.INFO)
@@ -48,21 +57,12 @@ class _AgentProto(Protocol):
     def chat(self, user_message: str) -> str: ...
 
 
-def create_app(agent: _AgentProto) -> FastAPI:
-    """构建 FastAPI app：``/chat``、``/health`` API + 静态前端兜底。
+def register_base_routes(app: FastAPI, agent: _AgentProto) -> None:
+    """注册基础路由（``/chat`` / ``/health`` / ``/graph/expand``）。
 
-    API 路由先注册、优先匹配；``StaticFiles`` 挂在 ``/`` 兜底（访问 ``/`` 返回
-    ``index.html``）。CORS 开发期全开，生产按域名收紧。
+    供 ``create_app`` 与 ``mcs_mem.create_app`` 复用，避免基础路由重复定义。
+    MUST 在 StaticFiles mount ``/`` **之前**调用——否则兜底 mount 会拦截这些 API 路由。
     """
-    app = FastAPI(title="MCS Memory Agent")
-    app.state.agent = agent
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -89,6 +89,25 @@ def create_app(agent: _AgentProto) -> FastAPI:
             raise HTTPException(status_code=404, detail="node not found")
         return result
 
+
+def create_app(agent: _AgentProto) -> FastAPI:
+    """构建基础 FastAPI app：``/chat``、``/health``、``/graph/expand`` + 静态前端兜底。
+
+    仅基础 agent 能力。个人记忆功能由 ``mcs_mem.create_app`` 在此基础上扩展
+    （``mcs_mem`` → ``mcs_agent`` 单向依赖；本模块不 import ``mcs_mem``）。
+    """
+    app = FastAPI(title="MCS Memory Agent")
+    app.state.agent = agent
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    register_base_routes(app, agent)
+
     # 静态前端兜底挂载（API 路由已先注册，优先匹配）
     static_dir = Path(__file__).parent / "static"
     if static_dir.is_dir():
@@ -105,13 +124,11 @@ def build_agent_from_env() -> MemoryAgent:
       - ``AGENT_LLM_API_KEY`` / ``AGENT_LLM_MODEL`` /（可选）``AGENT_LLM_BASE_URL`` /
         ``AGENT_LLM_PROVIDER``（默认 ``deepseek``）：agent chat LLM（→ ``LLMConfig``）。
 
-    缺关键变量时以非零码退出（``SystemExit``），早失败。env 契约逐字保留（change
-    memory-agent-builder D8）。
+    缺关键变量时以非零码退出（``SystemExit``），早失败。env 契约逐字保留。
     """
 
     def _on_trace(chat_trace: ChatTrace) -> None:
-        # 结构化 + 脱敏：仅聚合指标（调用数 / token / 延迟 / 工具名），不含用户原文
-        # （user_message / reply / request_summary 的 content_preview 均为用户内容，MUST NOT 落日志）。
+        # 结构化 + 脱敏：仅聚合指标（调用数 / token / 延迟 / 工具名），不含用户原文。
         summary = {
             "llm_calls": len(chat_trace.llm_calls),
             "tool_calls": len(chat_trace.tool_calls),
@@ -140,7 +157,7 @@ def build_agent_from_env() -> MemoryAgent:
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
-    """构建 agent 并启动 uvicorn（``uvicorn`` 惰性 import，测试不需）。"""
+    """构建 agent 并启动 uvicorn（基础 agent app；记忆应用入口见 ``mcs_mem.run``）。"""
     import uvicorn
 
     agent = build_agent_from_env()

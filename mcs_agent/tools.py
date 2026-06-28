@@ -1,13 +1,15 @@
 """记忆 agent 的工具注册表（可配置工具集）。
 
-5 个内置导航工具（learn / search / associate / reason / recall）落成 ``ToolSpec``
-注册表 ``BUILTIN_TOOLS``，替代旧 ``loop.py`` 硬编码的 ``MEMORY_TOOLS`` 列表 +
-``_dispatch`` if/elif。工具集经 ``ToolsetConfig`` 启用 / 禁用子集、按**工具名**覆盖参数。
+7 个内置工具落成 ``ToolSpec`` 注册表 ``BUILTIN_TOOLS``，替代旧 ``loop.py`` 硬编码的
+``MEMORY_TOOLS`` 列表 + ``_dispatch`` if/elif。其中 5 个导航 / 写入工具（learn / search /
+associate / reason / recall）+ 2 个只读语义判断工具（``generalize`` / ``arbitrate``，调
+MCS LLM 插件、不改图、不触发写 / 守门 / 裂变）。工具集经 ``ToolsetConfig`` 启用 / 禁用
+子集、按**工具名**覆盖参数。
 
-**导航决策权交给 LLM**（不变）：LLM 决定选哪个工具、哪个种子、哪种模式、哪两个节点。
-``handler`` 为纯函数（调 ``MemoryStore`` 原语、返回文本，不做 trace / 异常隔离）；
-timing + try/except + ``ToolCallTrace`` 保留在 ``MemoryAgent._dispatch`` 包装层
-（见 design D5 / 🟡#3）。
+**导航 / 判断决策权交给 LLM**（不变）：LLM 决定选哪个工具、哪个种子、哪种模式、哪两个
+节点、对哪几个节点归纳 / 仲裁。``handler`` 为纯函数（调 ``MemoryStore`` 原语、返回文本，
+不做 trace / 异常隔离）；timing + try/except + ``ToolCallTrace`` 保留在
+``MemoryAgent._dispatch`` 包装层（见 design D5 / 🟡#3）。
 """
 
 from __future__ import annotations
@@ -52,6 +54,20 @@ def _recall(memory: Any, args: dict) -> str:
     return memory.recall(args.get("limit", 5))
 
 
+def _generalize(memory: Any, args: dict) -> str:
+    return memory.generalize(args.get("node_ids", []), args.get("focus"))
+
+
+def _arbitrate(memory: Any, args: dict) -> str:
+    # events_per_fact 从合并 args 取（支持 ToolsetConfig.params 覆盖）；缺省 3（同 MemoryStore.arbitrate）
+    # 注意：本工具内部 purpose=adjudicate，与查询管线的 arbitrate purpose 无关（design D9）
+    return memory.arbitrate(
+        args.get("node_ids", []),
+        args.get("question", ""),
+        events_per_fact=args.get("events_per_fact", 3),
+    )
+
+
 @dataclass
 class ToolSpec:
     """单个工具：对 LLM 暴露的 schema + 分发到 MemoryStore 原语的纯 handler。
@@ -61,11 +77,16 @@ class ToolSpec:
             的 key——故 ToolsetConfig.params 按工具名索引，非原语名）。
         schema: openai function tool schema（``{"type": "function", "function": {...}}``）。
         handler: ``(memory, args) -> str`` 纯函数；trace / 异常隔离由 ``MemoryAgent._dispatch`` 负责。
+        readonly: 该工具是否只读（不改图）。``learn``=False（唯一写图工具）；其余 6 个默认
+            True。只读召回（``/recall``）经 ``READONLY_TOOL_NAMES`` 按 ``readonly`` 取白名单——
+            **新增写图工具 MUST 标 ``readonly=False``**，否则会被静默放进只读召回、破坏
+            "召回 MUST NOT 写图"（白名单而非 ``if name != "learn"`` 黑名单，避免漏维护）。
     """
 
     name: str
     schema: dict
     handler: Callable[[Any, dict], str]
+    readonly: bool = True
 
 
 BUILTIN_TOOLS: dict[str, ToolSpec] = {
@@ -92,6 +113,7 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
             },
         },
         handler=_learn,
+        readonly=False,  # learn 是唯一写图工具——禁出于只读召回（/recall）
     ),
     "search": ToolSpec(
         name="search",
@@ -207,7 +229,78 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
         },
         handler=_recall,
     ),
+    "generalize": ToolSpec(
+        name="generalize",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "generalize",
+                "description": (
+                    "概括若干节点的公共上位概念 / 共性（只读语义判断，不改图）。"
+                    "用于理解一组相关概念的关系。node_ids 由前序工具（search/associate）"
+                    "返回的 [id:...] 提供。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "node_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "要概括的节点 id 列表",
+                        },
+                        "focus": {
+                            "type": "string",
+                            "description": "可选聚焦语境，引导概括方向",
+                        },
+                    },
+                    "required": ["node_ids"],
+                },
+            },
+        },
+        handler=_generalize,
+    ),
+    "arbitrate": ToolSpec(
+        name="arbitrate",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "arbitrate",
+                # 命名消歧（design D9）：本工具内部 purpose=adjudicate，
+                # 与查询管线 LLMArbitrationPlugin 的 arbitrate purpose 同名不同域、无关。
+                "description": (
+                    "对若干互斥事实做仲裁裁决：反查每个事实的背书事件、由 LLM 裁决采信"
+                    "哪个事实并给出理由（只读、不改图、不写裁决回图）。"
+                    "node_ids 应为事实节点 id，由前序工具返回的 [id:...] 提供。"
+                    "（本工具内部 purpose=adjudicate，与查询管线的 arbitrate purpose 无关。）"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "node_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "互斥事实节点 id 列表（应为事实节点）",
+                        },
+                        "question": {
+                            "type": "string",
+                            "description": "裁决的问题 / 语境",
+                        },
+                    },
+                    "required": ["node_ids", "question"],
+                },
+            },
+        },
+        handler=_arbitrate,
+    ),
 }
+
+
+# 只读工具白名单：由 ``ToolSpec.readonly`` 元数据驱动（非 ``if name != "learn"`` 黑名单）。
+# 新增写图工具标 ``readonly=False`` 即自动排除出只读召回——避免黑名单漏维护、静默破坏
+# "召回 MUST NOT 写图"（详见 memory-management-ui spec「召回块」）。
+READONLY_TOOL_NAMES: tuple[str, ...] = tuple(
+    name for name, spec in BUILTIN_TOOLS.items() if spec.readonly
+)
 
 
 @dataclass
@@ -215,10 +308,11 @@ class ToolsetConfig:
     """工具集配置：启用子集 + 按工具名覆盖参数。
 
     Attributes:
-        enabled: 启用的工具名列表；None = 全部 5 个内置。含未知名时该名被忽略
+        enabled: 启用的工具名列表；None = 全部 7 个内置。含未知名时该名被忽略
             （不暴露 schema，LLM 调它 → ``[error] 未知工具``）。
         params: 按工具名（非原语名）覆盖参数；合并口径 ``handler(memory, {**llm_args, **params})``
-            ——``params`` 覆盖 LLM 同名入参。如 ``{"reason": {"max_hops": 8}}``。
+            ——``params`` 覆盖 LLM 同名入参。如 ``{"reason": {"max_hops": 8}}``
+            或 ``{"arbitrate": {"events_per_fact": 3}}``。
     """
 
     enabled: list[str] | None = None
@@ -249,6 +343,6 @@ def build_toolset(
     return schemas, dispatch
 
 
-# 已废弃别名：= 全 5 内置 schemas（保外部 ``from ... import MEMORY_TOOLS`` 不断裂）。
+# 已废弃别名：= 全 7 内置 schemas（保外部 ``from ... import MEMORY_TOOLS`` 不断裂）。
 # 逻辑已由 BUILTIN_TOOLS + build_toolset 取代；后续 change 移除。
 MEMORY_TOOLS: list[dict] = [spec.schema for spec in BUILTIN_TOOLS.values()]

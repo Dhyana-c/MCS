@@ -53,3 +53,7 @@ bench/*/config/llm*.json
 
 _debug_*.py
 _run_*.py
+
+# mcs_mem demo 测试数据 + 临时启动脚本
+mcs_mem_demo_data/
+_run_mem_demo.py

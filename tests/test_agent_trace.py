@@ -258,7 +258,7 @@ def test_llm_call_trace_timestamp_is_wall_clock():
 
 
 class _FakeMemory:
-    """暴露 5 原语的 fake memory。"""
+    """暴露 7 原语的 fake memory。"""
 
     def learn(self, text: str) -> str:
         return f"[memory] 已写入：{text}"
@@ -274,6 +274,12 @@ class _FakeMemory:
 
     def recall(self, limit: int = 5) -> str:
         return "[memory] (无热点事件)"
+
+    def generalize(self, node_ids: list, focus: str | None = None) -> str:
+        return "[memory] 概括结论"
+
+    def arbitrate(self, node_ids: list, question: str, events_per_fact: int = 3) -> str:
+        return "[memory] 裁决结论"
 
 
 def _assistant(content: str | None = None, tool_calls: list[dict] | None = None) -> dict:

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
+from mcs.core.errors import LLMParseError
+from mcs.prompts.adjudicate import parse as parse_adjudicate
 from mcs.prompts.extract_concepts import parse as parse_concepts
+from mcs.prompts.generalize import parse as parse_generalize
 from mcs.prompts.judge_relations import parse as parse_relations
 from mcs.prompts.navigate_hub import parse as parse_navigate_hub
 
@@ -109,3 +114,57 @@ def test_navigate_hub_garbage_returns_empty_not_raises():
     """完全不规整 → 返回 []，绝不抛异常（不拖垮 query）。"""
     assert parse_navigate_hub("抱歉，我无法确定") == []
     assert parse_navigate_hub("") == []
+
+
+# === generalize / adjudicate（agent 只读语义判断工具的 purpose） ===
+
+
+def test_generalize_parse_strips_text():
+    assert parse_generalize("  它们都是哺乳类宠物\n") == "它们都是哺乳类宠物"
+
+
+def test_generalize_parse_empty_raises():
+    """空白响应（无实质结论）→ LLMParseError。"""
+    with pytest.raises(LLMParseError):
+        parse_generalize("   \n  ")
+
+
+def test_generalize_parse_non_string_raises():
+    with pytest.raises(LLMParseError):
+        parse_generalize(None)  # type: ignore[arg-type]
+
+
+def test_adjudicate_parse_dict():
+    assert parse_adjudicate('{"adopt": ["f1"], "reason": "更近背书"}') == {
+        "adopt": ["f1"],
+        "reason": "更近背书",
+    }
+
+
+def test_adjudicate_parse_fenced():
+    assert parse_adjudicate('```json\n{"adopt": ["f1", "f2"], "reason": "r"}\n```') == {
+        "adopt": ["f1", "f2"],
+        "reason": "r",
+    }
+
+
+def test_adjudicate_parse_defaults_empty_fields():
+    """缺 adopt / reason → 容错为 [] / ''（非抛）。"""
+    assert parse_adjudicate("{}") == {"adopt": [], "reason": ""}
+
+
+def test_adjudicate_parse_bad_json_raises():
+    with pytest.raises(LLMParseError):
+        parse_adjudicate("not json")
+
+
+def test_adjudicate_parse_non_object_raises():
+    with pytest.raises(LLMParseError):
+        parse_adjudicate('["f1"]')
+
+
+def test_adjudicate_parse_adopt_not_string_array_raises():
+    with pytest.raises(LLMParseError):
+        parse_adjudicate('{"adopt": "f1", "reason": "r"}')  # adopt 非数组
+    with pytest.raises(LLMParseError):
+        parse_adjudicate('{"adopt": [1, 2], "reason": "r"}')  # 元素非字符串

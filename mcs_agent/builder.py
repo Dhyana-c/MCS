@@ -74,7 +74,7 @@ class AgentConfig:
         mcs_config: 完整 MCSConfig（逃逸口，优先；自带 MCS LLM）。与 db_path 同给则覆盖其
             sqlite path。
         db_path: 存储路径（统一 llm 走 create_mcs 时用；加载已有 db 数据由 SQLiteStore 自动完成）。
-        tools: 工具集配置（启用子集 / 覆盖参数）；默认全部 5 个内置。
+        tools: 工具集配置（启用子集 / 覆盖参数）；默认全部 7 个内置。
         max_turns: 单次 chat 最大 LLM 轮次。
         summary_budget: 注入 system prompt 的图摘要字符预算。
         system_prompt: 系统提示词。

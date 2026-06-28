@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MCS 记忆管理</title>
+<style>
+* { box-sizing: border-box; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: #f0f2f5; color: #1a1a1a; }
+#app { max-width: 900px; margin: 0 auto; padding: 16px; }
+header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #fff; border-radius: 10px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+nav a { margin-left: 12px; font-size: 13px; color: #2563eb; text-decoration: none; }
+.block { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.block h2 { margin: 0 0 10px 0; font-size: 15px; font-weight: 600; }
+.block.disabled { opacity: .45; pointer-events: none; }
+input, textarea, button { font-family: inherit; font-size: 14px; }
+input, textarea { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; }
+button { padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+button.secondary { background: #6b7280; }
+.row { display: flex; gap: 8px; align-items: center; }
+.row input { flex: 1; }
+.msg { padding: 4px 0; font-size: 13px; color: #555; }
+.msg.ok { color: #16a34a; }
+.msg.err { color: #dc2626; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { padding: 6px 0; border-bottom: 1px solid #f0f0f0; cursor: pointer; font-size: 13px; }
+li:hover { background: #f8f9fa; }
+li:last-child { border-bottom: none; }
+textarea { min-height: 120px; resize: vertical; }
+.calendar { display: flex; flex-wrap: wrap; gap: 4px; }
+.cal-day { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 11px; cursor: pointer; }
+.cal-day.pending { background: #f3f4f6; }
+.cal-day.done { background: #dcfce7; color: #16a34a; }
+.cal-day.failed { background: #fee2e2; color: #dc2626; }
+.cal-day.running { background: #dbeafe; color: #2563eb; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>🧠 记忆管理</h1>
+    <nav>
+      <a href="/graph.html">🕸️ 图谱</a>
+    </nav>
+  </header>
+
+  <!-- 记录块 -->
+  <div class="block" id="note-block">
+    <h2>📝 随手记</h2>
+    <div class="row">
+      <input type="text" id="note-input" placeholder="记一条..." />
+      <button id="note-btn">记录</button>
+    </div>
+    <div id="note-msg"></div>
+  </div>
+
+  <!-- 碎片列表 + 编辑 -->
+  <div class="block" id="frag-block">
+    <h2>📄 碎片</h2>
+    <div class="row" style="margin-bottom:8px">
+      <button class="secondary" id="frag-refresh">刷新</button>
+      <span id="frag-status-msg" class="msg" style="display:none"></span>
+    </div>
+    <ul id="frag-list"></ul>
+    <div id="frag-editor" style="display:none; margin-top:8px">
+      <div class="row" style="margin-bottom:6px">
+        <strong id="frag-edit-date"></strong>
+        <span id="frag-consolidated-hint" style="color:#9ca3af;font-size:12px;display:none">此日已整合，编辑不再入图</span>
+      </div>
+      <textarea id="frag-textarea"></textarea>
+      <div class="row" style="margin-top:6px">
+        <button id="frag-save-btn">保存</button>
+        <button class="secondary" id="frag-cancel-btn">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 整合块 -->
+  <div class="block" id="consolidate-block">
+    <h2>🔄 整合</h2>
+    <div class="row" style="margin-bottom:8px">
+      <button id="consolidate-btn">整合昨天</button>
+      <span id="consolidate-msg" class="msg"></span>
+    </div>
+    <div id="consolidate-calendar" class="calendar"></div>
+  </div>
+
+  <!-- 日记块 -->
+  <div class="block" id="diary-block">
+    <h2>📖 日记</h2>
+    <div class="row" style="margin-bottom:8px">
+      <input type="date" id="diary-date" />
+      <button id="diary-gen-btn">生成</button>
+      <span id="diary-msg" class="msg"></span>
+    </div>
+    <div id="diary-content" style="display:none; margin-top:8px">
+      <div style="font-size:12px;color:#888;margin-bottom:4px" id="diary-label"></div>
+      <div id="diary-text" style="white-space:pre-wrap;font-size:14px;line-height:1.6"></div>
+    </div>
+    <ul id="diary-list"></ul>
+  </div>
+
+  <!-- 召回块 -->
+  <div class="block" id="recall-block">
+    <h2>🔍 召回（只读）</h2>
+    <div class="row" style="margin-bottom:8px">
+      <input type="text" id="recall-input" placeholder="问一个关于记忆的问题..." />
+      <button id="recall-btn">召回</button>
+    </div>
+    <div id="recall-reply" style="display:none; margin-top:8px; white-space:pre-wrap;font-size:14px;line-height:1.6;background:#f8f9fa;padding:10px;border-radius:6px"></div>
+  </div>
+
+  <!-- 图谱块 -->
+  <div class="block" id="graph-block">
+    <h2>🕸️ 图谱</h2>
+    <iframe id="graph-iframe" src="/graph.html" style="width:100%;height:400px;border:1px solid #e4e6eb;border-radius:6px"></iframe>
+  </div>
+</div>
+
+<script>
+// === Helpers ===
+async function api(method, url, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(url, opts);
+  return r;
+}
+function showMsg(el, text, cls) {
+  el.textContent = text; el.className = 'msg ' + cls;
+  setTimeout(() => { el.textContent = ''; el.className = 'msg'; }, 3000);
+}
+
+// === 记录块 ===
+document.getElementById('note-btn').onclick = async () => {
+  const input = document.getElementById('note-input');
+  const msg = document.getElementById('note-msg');
+  const content = input.value.trim();
+  if (!content) return;
+  const r = await api('POST', '/note', { content });
+  if (r.ok) { const d = await r.json(); showMsg(msg, `✓ 已记录 ${d.date} ${d.time}`, 'ok'); input.value = ''; }
+  else { showMsg(msg, '✗ 记录失败', 'err'); }
+};
+document.getElementById('note-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('note-btn').click();
+});
+
+// === 碎片块 ===
+let editingDate = null;
+async function loadFragments() {
+  const r = await api('GET', '/fragments');
+  const list = document.getElementById('frag-list');
+  list.innerHTML = '';
+  if (!r.ok) return;
+  const d = await r.json();
+  d.fragments.forEach(f => {
+    const li = document.createElement('li');
+    li.textContent = f.replace('.md', '');
+    li.onclick = () => openFragment(f.replace('.md', ''));
+    list.appendChild(li);
+  });
+}
+async function openFragment(date) {
+  const r = await api('GET', '/fragments/' + date);
+  if (!r.ok) return;
+  const d = await r.json();
+  editingDate = date;
+  document.getElementById('frag-edit-date').textContent = date;
+  document.getElementById('frag-textarea').value = d.content;
+  document.getElementById('frag-editor').style.display = 'block';
+  // 检查是否已整合
+  try {
+    const sr = await api('GET', '/consolidate/status?date_param=' + date);
+    if (sr.ok) { const sd = await sr.json(); document.getElementById('frag-consolidated-hint').style.display = sd.status === 'done' ? 'inline' : 'none'; }
+  } catch { document.getElementById('frag-consolidated-hint').style.display = 'none'; }
+}
+document.getElementById('frag-refresh').onclick = loadFragments;
+document.getElementById('frag-save-btn').onclick = async () => {
+  if (!editingDate) return;
+  const content = document.getElementById('frag-textarea').value;
+  await api('PUT', '/fragments/' + editingDate, { content });
+  document.getElementById('frag-editor').style.display = 'none';
+  loadFragments();
+};
+document.getElementById('frag-cancel-btn').onclick = () => {
+  document.getElementById('frag-editor').style.display = 'none'; editingDate = null;
+};
+
+// === 整合块 ===
+document.getElementById('consolidate-btn').onclick = async () => {
+  const msg = document.getElementById('consolidate-msg');
+  msg.textContent = '整合中...'; msg.className = 'msg';
+  const r = await api('POST', '/consolidate', {});
+  if (r.ok) {
+    const d = await r.json();
+    const txt = d.status === 'already' ? `✓ ${d.date} 已整合` : `✓ ${d.date} 整合完成 (${d.events} 事件)`;
+    showMsg(msg, txt, 'ok');
+    if (d.warning) msg.textContent += ' ⚠️ ' + d.warning;
+  } else { showMsg(msg, '✗ 整合不可用', 'err'); }
+  loadConsolidationCalendar();
+};
+async function loadConsolidationCalendar() {
+  try {
+    const r = await api('GET', '/consolidate/statuses');
+    if (!r.ok) return;
+    const d = await r.json();
+    const cal = document.getElementById('consolidate-calendar');
+    cal.innerHTML = '';
+    d.slice(0, 30).forEach(s => {
+      const div = document.createElement('div');
+      div.className = 'cal-day ' + (s.status || 'pending');
+      div.textContent = s.date.slice(8); div.title = s.date + ': ' + s.status;
+      cal.appendChild(div);
+    });
+  } catch {}
+}
+
+// === 日记块 ===
+document.getElementById('diary-gen-btn').onclick = async () => {
+  const dateInput = document.getElementById('diary-date');
+  const msg = document.getElementById('diary-msg');
+  const date = dateInput.value || new Date().toISOString().slice(0, 10);
+  msg.textContent = '生成中...'; msg.className = 'msg';
+  const r = await api('POST', '/diary', { date });
+  if (r.ok) {
+    const d = await r.json();
+    if (d.ok) { showMsg(msg, `✓ ${d.date} 日记已生成`, 'ok'); loadDiary(date); }
+    else { showMsg(msg, `✗ ${d.reason || '生成失败'}`, 'err'); }
+  } else { showMsg(msg, '✗ 日记生成不可用', 'err'); }
+};
+async function loadDiary(date) {
+  const r = await api('GET', '/diary/' + date);
+  if (!r.ok) return;
+  const d = await r.json();
+  document.getElementById('diary-label').textContent = date;
+  document.getElementById('diary-text').textContent = d.content;
+  document.getElementById('diary-content').style.display = 'block';
+}
+async function loadDiaries() {
+  try {
+    const r = await api('GET', '/diaries');
+    if (!r.ok) return;
+    const d = await r.json();
+    const list = document.getElementById('diary-list');
+    list.innerHTML = '';
+    d.diaries.forEach(f => {
+      const li = document.createElement('li');
+      const date = f.replace('.md', '');
+      li.textContent = date;
+      li.onclick = () => loadDiary(date);
+      list.appendChild(li);
+    });
+  } catch {}
+}
+
+// === 召回块 ===
+document.getElementById('recall-btn').onclick = async () => {
+  const input = document.getElementById('recall-input');
+  const reply = document.getElementById('recall-reply');
+  const msg = input.value.trim();
+  if (!msg) return;
+  reply.style.display = 'block'; reply.textContent = '思考中...';
+  const r = await api('POST', '/recall', { message: msg });
+  if (r.ok) { const d = await r.json(); reply.textContent = d.reply; }
+  else { reply.textContent = '召回不可用'; }
+};
+
+// === 初始化 + 缺块降级 ===
+
+async function checkBackendAndDegrade() {
+  // 检查整合端点可用性
+  try {
+    const r = await fetch('/consolidate/statuses', { method: 'GET' });
+    if (!r.ok) document.getElementById('consolidate-block').classList.add('disabled');
+  } catch { document.getElementById('consolidate-block').classList.add('disabled'); }
+
+  // 检查召回端点可用性（不发真实请求，仅检查 /health）
+  // recall 依赖 memory + LLM，无法简单探测，暂不做降级
+
+  // 检查图谱 iframe
+  const iframe = document.getElementById('graph-iframe');
+  iframe.addEventListener('error', () => {
+    document.getElementById('graph-block').classList.add('disabled');
+  });
+}
+
+loadFragments();
+loadConsolidationCalendar();
+loadDiaries();
+checkBackendAndDegrade();
+</script>
+</body>
+</html>

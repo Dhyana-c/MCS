@@ -12,32 +12,38 @@ from mcs_agent.tools import BUILTIN_TOOLS, MEMORY_TOOLS, ToolSpec, ToolsetConfig
 # === ToolSpec / BUILTIN_TOOLS / MEMORY_TOOLS 别名 ===
 
 
-def test_builtin_tools_has_5():
-    assert set(BUILTIN_TOOLS) == {"learn", "search", "associate", "reason", "recall"}
+def test_builtin_tools_has_7():
+    assert set(BUILTIN_TOOLS) == {
+        "learn", "search", "associate", "reason", "recall", "generalize", "arbitrate",
+    }
     for spec in BUILTIN_TOOLS.values():
         assert isinstance(spec, ToolSpec)
         assert spec.schema["type"] == "function"
 
 
-def test_memory_tools_alias_is_5_schemas():
-    """MEMORY_TOOLS 废弃别名 = 全 5 内置 schemas（保 import 不断裂）。"""
-    assert len(MEMORY_TOOLS) == 5
+def test_memory_tools_alias_is_7_schemas():
+    """MEMORY_TOOLS 废弃别名 = 全 7 内置 schemas（保 import 不断裂）。"""
+    assert len(MEMORY_TOOLS) == 7
     assert [s["function"]["name"] for s in MEMORY_TOOLS] == [
         "learn",
         "search",
         "associate",
         "reason",
         "recall",
+        "generalize",
+        "arbitrate",
     ]
 
 
 # === build_toolset ===
 
 
-def test_build_toolset_default_all_5():
+def test_build_toolset_default_all_7():
     schemas, dispatch = build_toolset(BUILTIN_TOOLS, None)
     names = {s["function"]["name"] for s in schemas}
-    assert names == {"learn", "search", "associate", "reason", "recall"}
+    assert names == {
+        "learn", "search", "associate", "reason", "recall", "generalize", "arbitrate",
+    }
     assert set(dispatch) == names
     for _, params in dispatch.values():
         assert params == {}  # 默认无 params
@@ -73,6 +79,8 @@ def test_build_toolset_params_by_tool_name():
 class _Memory:
     def __init__(self) -> None:
         self.find_path_calls: list[tuple[str, str, int]] = []
+        self.generalize_calls: list[tuple[list, str | None]] = []
+        self.arbitrate_calls: list[tuple[list, str, int]] = []
 
     def find_path(self, s: str, t: str, max_hops: int = 6) -> str:
         self.find_path_calls.append((s, t, max_hops))
@@ -89,6 +97,14 @@ class _Memory:
 
     def recall(self, limit: int = 5) -> str:
         return "ok"
+
+    def generalize(self, node_ids: list, focus: str | None = None) -> str:
+        self.generalize_calls.append((list(node_ids), focus))
+        return "generalized"
+
+    def arbitrate(self, node_ids: list, question: str, events_per_fact: int = 3) -> str:
+        self.arbitrate_calls.append((list(node_ids), question, events_per_fact))
+        return "adjudicated"
 
 
 def _tc(call_id: str, name: str, args: str) -> dict:
@@ -154,3 +170,60 @@ def test_dispatch_enabled_excludes_from_schemas():
     agent = MemoryAgent(mem, llm, tools=ToolsetConfig(enabled=["search"]))
     agent.chat("x")
     assert {t["function"]["name"] for t in captured["tools"]} == {"search"}
+
+
+def test_dispatch_generalize_routes_to_memory():
+    """generalize 工具 → memory.generalize（mock）。"""
+    mem = _Memory()
+    replies = iter(
+        [_assistant(tool_calls=[_tc("1", "generalize", '{"node_ids":["c1","c2"],"focus":"宠物"}')]),
+         _assistant(content="done")]
+    )
+    agent = MemoryAgent(mem, lambda m, t: next(replies))
+    assert agent.chat("x") == "done"
+    assert mem.generalize_calls == [(["c1", "c2"], "宠物")]
+
+
+def test_dispatch_arbitrate_routes_to_memory():
+    """arbitrate 工具 → memory.arbitrate（mock）。"""
+    mem = _Memory()
+    replies = iter(
+        [_assistant(tool_calls=[_tc("1", "arbitrate", '{"node_ids":["f1","f2"],"question":"q"}')]),
+         _assistant(content="done")]
+    )
+    agent = MemoryAgent(mem, lambda m, t: next(replies))
+    agent.chat("x")
+    assert mem.arbitrate_calls == [(["f1", "f2"], "q", 3)]  # 默认 events_per_fact=3
+
+
+def test_dispatch_arbitrate_events_per_fact_override():
+    """ToolsetConfig.params.arbitrate.events_per_fact 覆盖默认 3。"""
+    mem = _Memory()
+    replies = iter(
+        [_assistant(tool_calls=[_tc("1", "arbitrate", '{"node_ids":["f1"],"question":"q"}')]),
+         _assistant(content="done")]
+    )
+    agent = MemoryAgent(
+        mem, lambda m, t: next(replies),
+        tools=ToolsetConfig(params={"arbitrate": {"events_per_fact": 1}}),
+    )
+    agent.chat("x")
+    assert mem.arbitrate_calls == [(["f1"], "q", 1)]  # params 覆盖为 1
+
+
+def test_dispatch_generalize_failure_isolated():
+    """memory.generalize 抛异常 → _dispatch 隔离为 [error]，loop 不崩。"""
+    mem = _Memory()
+    mem.generalize = lambda ids, focus=None: (_ for _ in ()).throw(RuntimeError("boom"))
+    seen: list[list[dict]] = []
+
+    def llm(msgs, tools):
+        seen.append(msgs)
+        if len(seen) == 1:
+            return _assistant(tool_calls=[_tc("1", "generalize", '{"node_ids":["c1"]}')])
+        tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+        assert any("[error]" in m["content"] for m in tool_msgs)
+        return _assistant(content="ok")
+
+    agent = MemoryAgent(mem, llm, max_turns=4)
+    assert agent.chat("x") == "ok"

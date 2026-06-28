@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MCS 记忆图谱</title>
+<!-- Cytoscape.js 本地 vendor（mcs_mem 经 mcs_agent/static 兜底可达；离线 / 墙内皆可靠） -->
+<script src="/vendor/cytoscape.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #f0f2f5; color: #1a1a1a;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    padding: 12px 18px; background: #fff; border-bottom: 1px solid #e4e6eb;
+    display: flex; align-items: baseline; gap: 16px;
+  }
+  header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  header a { font-size: 13px; color: #2563eb; text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+  #status {
+    font-size: 12px; color: #b00020; padding: 6px 18px;
+    background: #fff5f5; border-bottom: 1px solid #f3d4d4; display: none;
+  }
+  #main { flex: 1; display: flex; min-height: 0; }
+  #cy { flex: 1; background: #fff; }
+  #detail {
+    width: 240px; padding: 14px; background: #fff; overflow-y: auto;
+    border-left: 1px solid #e4e6eb;
+  }
+  #detail h2 { margin: 0 0 4px; font-size: 15px; word-break: break-word; }
+  #detail .cls {
+    display: inline-block; font-size: 11px; color: #555;
+    background: #eef2ff; border-radius: 4px; padding: 1px 6px; margin-bottom: 10px;
+  }
+  #detail .content { font-size: 13px; line-height: 1.55; white-space: pre-wrap; color: #333; }
+  #detail .hint { font-size: 12px; color: #aaa; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🧠 记忆图谱</h1>
+  <a href="/manage.html">← 管理看板</a>
+</header>
+<div id="status"></div>
+<div id="main">
+  <div id="cy"></div>
+  <aside id="detail">
+    <div class="hint">左键节点看详情 · 右键节点下钻（概念 / 事实）· 左键边看属性。滚轮缩放、拖拽平移。</div>
+  </aside>
+</div>
+<script>
+"use strict";
+
+// 统一图模型字段（后端 graph_view 输出）：
+//   node = {id, name, content, node_class, hub, degree}
+//   edge = {id, source, target, type}  type ∈ {关联, 互斥}（无 label / kind）
+// 可下钻：node_class ∈ {概念, 事实}；叶子：node_class ∈ {事件, source}。
+const DRILLABLE = new Set(["概念", "事实"]);
+
+const cy = cytoscape({
+  container: document.getElementById("cy"),
+  elements: [],
+  style: [
+    // 热力图：background-color 按 degree 着色（applyHeat 动态设）；shape/size 按 node_class / hub
+    { selector: "node", style: {
+      "label": "data(name)", "text-valign": "center", "text-halign": "center",
+      "font-size": 18, "color": "#1f2937",
+      "background-color": "#2c7fb8",
+      "width": 70, "height": 70,
+      "border-width": 2, "border-color": "#ffffff", "border-opacity": 0.9,
+      "text-outline-color": "#ffffff", "text-outline-width": 2.5,
+      "text-wrap": "ellipsis", "text-max-width": 120
+    }},
+    // node_class 形状区分：事实方、事件/source 小圆；概念默认圆。hub 放大。
+    { selector: 'node[node_class = "事实"]', style: { "shape": "round-rectangle" } },
+    { selector: 'node[node_class = "事件"]', style: { "width": 50, "height": 50, "background-color": "#94a3b8" } },
+    { selector: 'node[node_class = "source"]', style: { "width": 44, "height": 44, "background-color": "#cbd5e1" } },
+    { selector: 'node[hub = true]', style: { "width": 88, "height": 88, "border-width": 3, "border-color": "#f59e0b" } },
+    { selector: 'node[id = "__seed_root__"]', style: { "width": 100, "height": 100, "border-width": 3 } },
+    { selector: "edge", style: {
+      "width": 0.8, "line-color": "#bbb", "curve-style": "bezier"
+    }},
+    // 按 type 区分：关联实线带箭头 / 互斥虚线无箭头（统一模型边无 label）
+    { selector: 'edge[type = "关联"]', style: {
+      "line-color": "#c4c4c4", "target-arrow-shape": "triangle", "target-arrow-color": "#c4c4c4"
+    }},
+    { selector: 'edge[type = "互斥"]', style: { "line-color": "#dc2626", "line-style": "dashed" } },
+    // 叶子样式（下钻响应空时打上）
+    { selector: ".leaf", style: { "border-width": 2, "border-color": "#6b7280", "border-style": "dashed" } }
+  ],
+  layout: { name: "preset" }
+});
+
+const expandedIds = new Set(); // 已下钻过的节点，避免重复请求
+const leafIds = new Set();     // 叶子节点（响应空），后续不再请求
+const inflight = new Set();    // 正在请求中的节点，防双击并发重复 fetch
+
+function setStatus(msg) {
+  const el = document.getElementById("status");
+  el.textContent = msg || "";
+  el.style.display = msg ? "block" : "none";
+}
+
+// 热力图色阶（冷热：蓝→青→黄绿→黄→红）+ 线性插值
+const HEAT_STOPS = ["#2c7fb8", "#41b6c4", "#c7e9b4", "#fdd04d", "#d73027"];
+function _hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+function _rgbToHex(r, g, b) { return "#" + [r, g, b].map((x) => Math.round(x).toString(16).padStart(2, "0")).join(""); }
+function heatColor(degree, max) {
+  if (!max || max <= 0 || !degree) return HEAT_STOPS[0];
+  const t = Math.max(0, Math.min(1, degree / max));
+  const seg = t * (HEAT_STOPS.length - 1);
+  const i = Math.min(HEAT_STOPS.length - 2, Math.floor(seg));
+  const f = seg - i;
+  const a = _hexToRgb(HEAT_STOPS[i]);
+  const b = _hexToRgb(HEAT_STOPS[i + 1]);
+  return _rgbToHex(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f);
+}
+function applyHeat() {
+  let max = 0;
+  cy.nodes().forEach((n) => { const d = n.data("degree") || 0; if (d > max) max = d; });
+  cy.batch(() => {
+    cy.nodes().forEach((n) => {
+      // hub / 事件 / source 用固定色（不参与热力图），其余按 degree
+      const nc = n.data("node_class");
+      if (n.data("hub") || nc === "事件" || nc === "source") return;
+      n.style("background-color", heatColor(n.data("degree") || 0, max));
+    });
+  });
+}
+
+function showDetail(d) {
+  const aside = document.getElementById("detail");
+  aside.innerHTML = "";
+  const h = document.createElement("h2");
+  h.textContent = d.name || d.id;
+  aside.appendChild(h);
+  const cls = document.createElement("span");
+  cls.className = "cls";
+  const hubTag = d.hub ? "  ·  hub" : "";
+  cls.textContent = "node_class: " + (d.node_class || "?") + hubTag + "  ·  degree: " + (d.degree != null ? d.degree : "?");
+  aside.appendChild(cls);
+  const c = document.createElement("div");
+  c.className = "content";
+  c.textContent = d.content || "（无 content）";
+  aside.appendChild(c);
+}
+
+function showEdgeDetail(data, srcName, tgtName) {
+  const aside = document.getElementById("detail");
+  aside.innerHTML = "";
+  const h = document.createElement("h2");
+  h.textContent = "关系边 / " + (data.type || "?");
+  aside.appendChild(h);
+  const cls = document.createElement("span");
+  cls.className = "cls";
+  cls.textContent = "type: " + (data.type || "?");
+  aside.appendChild(cls);
+  const c = document.createElement("div");
+  c.className = "content";
+  c.textContent = (srcName || data.source) + "  —" + (data.type || "—") + "→  " + (tgtName || data.target);
+  aside.appendChild(c);
+}
+
+function ensureNode(n, bag) {
+  if (cy.getElementById(n.id).nonempty()) return; // 按 id 去重
+  bag.push({
+    group: "nodes",
+    data: { id: n.id, name: n.name, content: n.content, node_class: n.node_class, hub: !!n.hub, degree: n.degree || 0 },
+  });
+}
+
+function applyView(view) {
+  const bag = [];
+  ensureNode(view.node, bag);          // 焦点节点（首拉根 / 下钻时已存在则跳过）
+  // root 视图折叠：只显示 hub 子节点（root 直挂大量概念时折叠）；非 root 视图显示全部邻居。
+  const isRoot = view.node.id === "__seed_root__";
+  view.nodes.forEach((n) => {
+    if (isRoot && !n.hub) return;
+    ensureNode(n, bag);
+  });
+  if (bag.length) cy.add(bag);
+
+  // 加边：仅当两端都在图中（跳过悬空关系边，避免 Cytoscape 报错；前端不自造边）
+  const known = (id) => cy.getElementById(id).nonempty();
+  const ebag = [];
+  for (const e of view.edges) {
+    if (cy.getElementById(e.id).nonempty()) continue; // 按 id 去重
+    if (known(e.source) && known(e.target)) {
+      ebag.push({ group: "edges", data: { id: e.id, source: e.source, target: e.target, type: e.type } });
+    }
+  }
+  if (ebag.length) cy.add(ebag);
+
+  const added = bag.length > 0 || ebag.length > 0;
+  if (added) runLayout();
+  applyHeat();
+  return added;
+}
+
+// 力导向布局（cose）：节点间斥力散开、有连接的聚簇；randomize:false 从当前位置演化。
+function runLayout() {
+  cy.layout({
+    name: "cose",
+    animate: true,
+    animationDuration: 350,
+    randomize: false,
+    fit: true,
+    padding: 40,
+    nodeRepulsion: 9000,
+    nodeOverlap: 24,
+    idealEdgeLength: 105,
+    edgeElasticity: 100,
+    gravity: 0.45,
+    componentSpacing: 100,
+    numIter: 1000
+  }).run();
+}
+
+async function expand(id) {
+  if (inflight.has(id)) return; // 防双击并发重复请求
+  inflight.add(id);
+  try {
+    setStatus("");
+    let r;
+    try {
+      r = await fetch("/graph/expand?node_id=" + encodeURIComponent(id));
+    } catch (e) {
+      setStatus("请求失败：" + e);
+      return;
+    }
+    if (r.status === 503) { setStatus("图谱视图不可用（503：agent 无 memory / graph_view）。"); return; }
+    if (r.status === 404) { setStatus("节点不存在：" + id); return; }
+    if (!r.ok) { setStatus("出错：" + r.status); return; }
+    let view;
+    try {
+      view = await r.json();
+    } catch (e) {
+      setStatus("响应解析失败（非 JSON）：" + e);
+      return;
+    }
+    const added = applyView(view);
+    expandedIds.add(id);
+    if (!added) {
+      leafIds.add(id);
+      cy.getElementById(id).addClass("leaf");
+    }
+  } finally {
+    inflight.delete(id);
+  }
+}
+
+// 左键节点：仅显示详情（不下钻）
+cy.on("tap", "node", (evt) => {
+  showDetail(evt.target.data());
+});
+
+// 右键节点：下钻（仅 概念/事实 可下钻；事件/source 叶子、已展开 不响应）
+cy.on("cxttap", "node", (evt) => {
+  const node = evt.target;
+  const id = node.data("id");
+  if (!DRILLABLE.has(node.data("node_class"))) return; // 叶子（事件/source）不可下钻
+  if (leafIds.has(id) || expandedIds.has(id)) return;
+  expand(id);
+});
+
+// 阻止画布右键菜单，让 cxttap 干净触发
+document.getElementById("cy").addEventListener("contextmenu", (e) => e.preventDefault());
+
+// 左键边：显示属性（type / source→target）
+cy.on("tap", "edge", (evt) => {
+  const e = evt.target;
+  showEdgeDetail(e.data(), e.source().data("name"), e.target().data("name"));
+});
+
+// 打开即默认拉根子图
+expand("__seed_root__");
+</script>
+</body>
+</html>

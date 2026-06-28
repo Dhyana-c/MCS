@@ -336,6 +336,8 @@ def test_default_prompts_registry_complete() -> None:
         "select_nodes_batch",
         "select_facts",
         "select_facts_write",
+        "generalize",
+        "adjudicate",
     }
     assert set(DEFAULT_PROMPTS.keys()) == expected_purposes
 

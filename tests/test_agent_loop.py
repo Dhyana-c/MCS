@@ -20,6 +20,8 @@ class FakeMemory:
         self.associate_calls: list[tuple[str, str]] = []
         self.find_path_calls: list[tuple[str, str]] = []
         self.recall_calls: list[int] = []
+        self.generalize_calls: list[tuple[list, str | None]] = []
+        self.arbitrate_calls: list[tuple[list, str]] = []
 
     def learn(self, text: str) -> str:
         self.learn_calls.append(text)
@@ -40,6 +42,14 @@ class FakeMemory:
     def recall(self, limit: int = 5) -> str:
         self.recall_calls.append(limit)
         return "[memory] (无热点事件)"
+
+    def generalize(self, node_ids: list, focus: str | None = None) -> str:
+        self.generalize_calls.append((list(node_ids), focus))
+        return "[memory] 概括结论"
+
+    def arbitrate(self, node_ids: list, question: str, events_per_fact: int = 3) -> str:
+        self.arbitrate_calls.append((list(node_ids), question))
+        return "[memory] 裁决结论"
 
 
 # === openai 消息格式构造辅助 ===

@@ -1,7 +1,7 @@
 """记忆 agent 的 ReAct loop。
 
-agent 自有 LLM（独立于 MCS 的 read_llm），经 tool calling 调导航工具（learn / search /
-associate / reason / recall）。**导航决策权交给 LLM**：LLM 决定查什么、用哪个种子、
+agent 自有 LLM（独立于 MCS 的 read_llm），经 tool calling 调工具（learn / search /
+associate / reason / recall / generalize / arbitrate）。**导航 / 判断决策权交给 LLM**：LLM 决定查什么、用哪个种子、
 用哪种扩展模式、选哪两个节点找路径。LLM 后端实现 ``AgentLLMInterface``（裸 callable
 经 ``CallableAgentLLM`` 自动适配，保既有注入式测试零改动）。
 
@@ -41,15 +41,20 @@ DEFAULT_SYSTEM_PROMPT = (
     "- 你已有的能力足以准确作答。\n\n"
     "# 何时探索记忆图（调工具）\n"
     "只有当问题依赖「已经记下来的东西」——用户曾 learn 过、或图里存着的事实/关系——\n"
-    "才进图探索。典型：用户问「我之前记的 X」「那个和 Y 有关吗」。\n\n"
+    "才进图探索。典型：用户问「我之前记的 X」「那个和 Y 有关吗」。\n"
+    "撞见多个相关概念想找它们的共性、或撞见矛盾 / 互斥的说法时，可用 generalize / arbitrate\n"
+    "做只读语义判断（不改图）。\n\n"
     "# 工具（导航决策权在你：选哪个工具、哪个种子、哪种模式、哪两个节点）\n"
     "- search：搜索入口种子。mode=keyword 按用户输入字面匹配（主力，已实现）；"
     "mode=direct 返回顶层 hub（无明确关键词时用，已实现）；mode=vector 未实现。\n"
     "- associate：从种子联想扩展（BFS）。mode=mcs 已实现（主力）；hot、random 未实现。\n"
     "- reason：在两个已知节点间找连通路径（允许失败）。\n"
     "- recall：回忆最近发生的事件（按时间倒排），回答「最近记了什么/最近有什么」。\n"
+    "- generalize：概括若干节点的公共上位概念 / 共性，帮你理解一组概念的关系（只读）。\n"
+    "- arbitrate：对若干互斥事实反查背书事件、裁决采信哪个 + 理由（只读）。\n"
     "- learn：把信息写入记忆图（仅当用户明确要记住时）。\n"
-    "工具返回的节点带 [id:...]，后续工具用它引用。未实现的模式会返回提示，改用可用项。\n\n"
+    "工具返回的节点带 [id:...]，后续工具用它引用。generalize / arbitrate 的 node_ids 由\n"
+    "前序工具返回的 [id:...] 提供。未实现的模式会返回提示，改用可用项。\n\n"
     "# 探索策略（避免空转）\n"
     "先把相关记忆探索充分再作答；但 search 返回(无)或 associate 无相关时，\n"
     "不要无限换关键词重试——最多换 1-2 种切入（如 keyword 失败改 direct 看顶层 hub），\n"
@@ -69,9 +74,9 @@ class MemoryAgent:
     """ReAct 记忆 agent。LLM 经 tool calling 调导航工具探索记忆图。
 
     Args:
-        memory: 暴露 learn/search/associate/find_path/recall 的对象（通常是 ``MemoryStore``）。
+        memory: 暴露 learn/search/associate/find_path/recall/generalize/arbitrate 的对象（通常是 ``MemoryStore``）。
         llm: ``(messages, tools) -> dict`` 裸 callable（自动包 ``CallableAgentLLM``）或 ``AgentLLMInterface`` 后端。
-        tools: 工具集配置（启用子集 / 覆盖参数）；None = 全部 5 个内置工具。
+        tools: 工具集配置（启用子集 / 覆盖参数）；None = 全部 7 个内置工具。
         system_prompt: 系统提示词。
         max_turns: 单次 chat 的最大 LLM 轮次（防失控循环）。
         summary_budget: 注入 system prompt 的图摘要字符预算（第二道闸，防归纳超标进入上下文）。
@@ -94,7 +99,7 @@ class MemoryAgent:
         self.llm: AgentLLMInterface = (
             llm if isinstance(llm, AgentLLMInterface) else CallableAgentLLM(llm)
         )
-        # 工具集：build_toolset 产 (schemas_for_llm, dispatch)；tools=None → 全 5 内置
+        # 工具集：build_toolset 产 (schemas_for_llm, dispatch)；tools=None → 全 7 内置
         self.schemas, self.dispatch = build_toolset(BUILTIN_TOOLS, tools)
         self.system_prompt = system_prompt
         self.max_turns = max_turns
