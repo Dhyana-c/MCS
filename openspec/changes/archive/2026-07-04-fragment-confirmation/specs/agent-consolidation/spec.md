@@ -1,8 +1,70 @@
-# agent-consolidation Specification
+## ADDED Requirements
 
-## Purpose
-TBD - created by archiving change agent-consolidation. Update Purpose after archive.
-## Requirements
+### Requirement: 确认即 ingest 协调（confirm_one）
+`Consolidator` SHALL 提供 `confirm_one(id)` 协调单条碎片确认入图，串联碎片层状态原语（fragment-capture）与 `ingest`：
+
+1. `fragment_store.begin_confirm(id)` 原子抢占 `pending → confirming`；碎片非 `pending`（已 `confirming`/`confirmed`）SHALL 幂等返回（不 `ingest`、不重复入图）。
+2. `memory.ingest_structured(content, timestamp)` → 拿 `event_id`。
+3. `fragment_store.confirm_mark(id, event_id)` 落 `confirming → confirmed`。
+4. `ingest` 失败 SHALL 调 `fragment_store.abort_confirm(id)` 回退 `confirming → pending`、返回失败（可重试），MUST NOT 留 `confirming` 悬空。
+
+`ingest_structured` SHALL 经 MCS worker 线程执行（仅碰 MCS 的调用经 worker）；`begin_confirm`/`confirm_mark`/`abort_confirm` 在 `FragmentStore` 内锁执行（文件 IO 旁路、不进 worker）。
+
+#### Scenario: 确认 pending 入图
+- **WHEN** `confirm_one(id)`，碎片 pending
+- **THEN** begin_confirm 置 confirming → ingest 拿 event_id → confirm_mark 置 confirmed + event_id；返回 `{ok, id, status:"confirmed", event_id}`
+
+#### Scenario: 已 confirming/confirmed 幂等返回
+- **WHEN** `confirm_one(id)`，碎片已 confirming 或 confirmed
+- **THEN** 不 ingest，返回幂等结果（不重复入图）
+
+#### Scenario: ingest 失败回退 pending
+- **WHEN** `confirm_one(id)` 中 `ingest_structured` 抛错
+- **THEN** abort_confirm 回退 pending、event_id 保持 null，返回失败（可重试）
+
+### Requirement: 单条确认 API（POST /fragments/{id}/confirm）
+系统 SHALL 提供 `POST /fragments/{id}/confirm`：调 `Consolidator.confirm_one(id)`，返回 `{ok, id, status, event_id}`。该端点 SHALL 挂在 `mcs_mem` app，与捕获端点同居。需 `memory`；agent 无 `memory` 时 SHALL 返回 503，不影响 `/note` 等捕获路由。碎片 id 不存在 SHALL 返回 404。
+
+#### Scenario: 确认成功
+- **WHEN** `POST /fragments/{id}/confirm`，碎片 pending
+- **THEN** 调 confirm_one，返回 `{ok:true, id, status:"confirmed", event_id}`
+
+#### Scenario: 无 memory 优雅降级
+- **WHEN** app 以无 `memory` 的 fake agent 构建，调 `POST /fragments/{id}/confirm`
+- **THEN** 返回 503，MUST NOT 抛未捕获异常，且不影响 `/note` 等路由
+
+#### Scenario: 碎片不存在
+- **WHEN** `POST /fragments/{id}/confirm`，该 id 无碎片
+- **THEN** 返回 404
+
+### Requirement: 并发确认不重复入图（CAS）
+确认 SHALL 经 `begin_confirm` 的 `pending → confirming` CAS 保证：并发确认同一条碎片时，仅一个请求抢占成功并 `ingest`，其余抢占失败（碎片已 `confirming`/`confirmed`）、MUST NOT 重复 `ingest` / 建重复事件。批量整合（`consolidate`）与单条确认（`POST /fragments/{id}/confirm`）并发作用于同一条碎片时同理——仅一方 `ingest`。
+
+#### Scenario: 并发确认同一条仅一个入图
+- **WHEN** 两个请求并发 `POST /fragments/{id}/confirm` 同一条 pending 碎片
+- **THEN** 仅一个 `ingest_structured` 成功建事件，另一个抢占失败、不重复入图
+
+#### Scenario: 抢占失败者不重复入图
+- **WHEN** 一条碎片正 confirming（被某请求占用），另一请求确认它
+- **THEN** 该请求 begin_confirm 抢占失败、幂等返回，MUST NOT 调 ingest
+
+## REMOVED Requirements
+
+### Requirement: 逐行解析为碎片序列
+**Reason**: 碎片已是结构化对象（每条自带独立 timestamp），整合不再需要从 MD 逐行解析。`parse_fragments` 仅保留作 MD→JSONL 迁移用途（位于 `mcs_mem/fragments.py` 碎片层），不在整合运行路径使用。
+**Migration**: 整合直接读结构化碎片（`FragmentStore` 的 pending 碎片），无需解析步骤。
+
+### Requirement: 去噪筛选（Consolidator 应用层前置）
+**Reason**: 过滤职责交回用户——用户删除不要的 `pending` 碎片，幸存的由 scheduler 兜底 / 手动全部确认入图。自动去噪（LLM 判去留）下线，以换取入图的显式可控性（用户可见、可干预、可修正）。
+**Migration**: 删除 `Denoiser` / `LLMDenoiser` 与 `mcs_mem/prompts/denoise.py`；`Consolidator` 不再注入去噪器、不再在 ingest 前做去留判定。
+
+## RENAMED Requirements
+
+- FROM: `### Requirement: 整合 API（挂 mcs_agent app，优雅降级）`
+- TO: `### Requirement: 整合 API（挂 mcs_mem app，优雅降级）`
+
+## MODIFIED Requirements
+
 ### Requirement: 读取当天碎片 MD
 整合管线 SHALL 经 `FragmentStore` 读取指定日期的**全部 `pending` 碎片**作为待确认输入（`confirming`/`confirmed` 自然跳过 = 幂等）。该日期无碎片 / 无 pending 碎片时 SHALL 视为无可确认（不入图、返回 skipped）。
 
@@ -94,52 +156,3 @@ TBD - created by archiving change agent-consolidation. Update Purpose after arch
 #### Scenario: 无 memory 优雅降级
 - **WHEN** app 以无 `memory` 的 fake agent 构建，调 `POST /consolidate`
 - **THEN** 返回 503，MUST NOT 抛未捕获异常，且不影响 `/note` 等捕获路由
-
-### Requirement: 确认即 ingest 协调（confirm_one）
-`Consolidator` SHALL 提供 `confirm_one(id)` 协调单条碎片确认入图，串联碎片层状态原语（fragment-capture）与 `ingest`：
-
-1. `fragment_store.begin_confirm(id)` 原子抢占 `pending → confirming`；碎片非 `pending`（已 `confirming`/`confirmed`）SHALL 幂等返回（不 `ingest`、不重复入图）。
-2. `memory.ingest_structured(content, timestamp)` → 拿 `event_id`。
-3. `fragment_store.confirm_mark(id, event_id)` 落 `confirming → confirmed`。
-4. `ingest` 失败 SHALL 调 `fragment_store.abort_confirm(id)` 回退 `confirming → pending`、返回失败（可重试），MUST NOT 留 `confirming` 悬空。
-
-`ingest_structured` SHALL 经 MCS worker 线程执行（仅碰 MCS 的调用经 worker）；`begin_confirm`/`confirm_mark`/`abort_confirm` 在 `FragmentStore` 内锁执行（文件 IO 旁路、不进 worker）。
-
-#### Scenario: 确认 pending 入图
-- **WHEN** `confirm_one(id)`，碎片 pending
-- **THEN** begin_confirm 置 confirming → ingest 拿 event_id → confirm_mark 置 confirmed + event_id；返回 `{ok, id, status:"confirmed", event_id}`
-
-#### Scenario: 已 confirming/confirmed 幂等返回
-- **WHEN** `confirm_one(id)`，碎片已 confirming 或 confirmed
-- **THEN** 不 ingest，返回幂等结果（不重复入图）
-
-#### Scenario: ingest 失败回退 pending
-- **WHEN** `confirm_one(id)` 中 `ingest_structured` 抛错
-- **THEN** abort_confirm 回退 pending、event_id 保持 null，返回失败（可重试）
-
-### Requirement: 单条确认 API（POST /fragments/{id}/confirm）
-系统 SHALL 提供 `POST /fragments/{id}/confirm`：调 `Consolidator.confirm_one(id)`，返回 `{ok, id, status, event_id}`。该端点 SHALL 挂在 `mcs_mem` app，与捕获端点同居。需 `memory`；agent 无 `memory` 时 SHALL 返回 503，不影响 `/note` 等捕获路由。碎片 id 不存在 SHALL 返回 404。
-
-#### Scenario: 确认成功
-- **WHEN** `POST /fragments/{id}/confirm`，碎片 pending
-- **THEN** 调 confirm_one，返回 `{ok:true, id, status:"confirmed", event_id}`
-
-#### Scenario: 无 memory 优雅降级
-- **WHEN** app 以无 `memory` 的 fake agent 构建，调 `POST /fragments/{id}/confirm`
-- **THEN** 返回 503，MUST NOT 抛未捕获异常，且不影响 `/note` 等路由
-
-#### Scenario: 碎片不存在
-- **WHEN** `POST /fragments/{id}/confirm`，该 id 无碎片
-- **THEN** 返回 404
-
-### Requirement: 并发确认不重复入图（CAS）
-确认 SHALL 经 `begin_confirm` 的 `pending → confirming` CAS 保证：并发确认同一条碎片时，仅一个请求抢占成功并 `ingest`，其余抢占失败（碎片已 `confirming`/`confirmed`）、MUST NOT 重复 `ingest` / 建重复事件。批量整合（`consolidate`）与单条确认（`POST /fragments/{id}/confirm`）并发作用于同一条碎片时同理——仅一方 `ingest`。
-
-#### Scenario: 并发确认同一条仅一个入图
-- **WHEN** 两个请求并发 `POST /fragments/{id}/confirm` 同一条 pending 碎片
-- **THEN** 仅一个 `ingest_structured` 成功建事件，另一个抢占失败、不重复入图
-
-#### Scenario: 抢占失败者不重复入图
-- **WHEN** 一条碎片正 confirming（被某请求占用），另一请求确认它
-- **THEN** 该请求 begin_confirm 抢占失败、幂等返回，MUST NOT 调 ingest
-

@@ -1,7 +1,7 @@
-"""捕获 API 集成测试（Slice 1）。
+"""捕获 API 集成测试（结构化逐条碎片 + 三态）。
 
-通过 TestClient 测试 /note、/fragments、/fragments/{date}、PUT /fragments/{date}。
-验证端到端流程 + 边界情况（空内容 422、不存在的日期 404、覆盖、列表）。
+通过 TestClient 测试 /note、/fragments、/fragments/{date}、PUT/DELETE /fragments/{id}。
+验证端到端 + 边界（空内容 422、不存在 404、非 pending 改/删 409、状态门控）。
 """
 
 from __future__ import annotations
@@ -13,187 +13,165 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mcs_mem.app import create_app
-from mcs_mem.fragments import FragmentStore
+from mcs_mem.fragments import Fragment, FragmentStore
 
 
 @pytest.fixture
 def frag_dir(tmp_path: Path) -> Path:
-    """测试用碎片目录。"""
     return tmp_path / "fragments"
 
 
 @pytest.fixture
 def store(frag_dir: Path) -> FragmentStore:
-    """FragmentStore 指向临时目录。"""
     return FragmentStore(fragments_dir=frag_dir)
 
 
 @pytest.fixture
 def client(store: FragmentStore) -> TestClient:
-    """TestClient：agent 是 mock，FragmentStore 用临时目录。"""
+    """TestClient：agent 是 mock（无 memory），FragmentStore 用临时目录。"""
     mock_agent = MagicMock()
     mock_agent.chat.return_value = "mock reply"
+    del mock_agent.memory  # 捕获端点不依赖 memory
     app = create_app(agent=mock_agent, fragment_store=store)
     return TestClient(app)
 
 
-class TestNoteEndpoint:
-    """POST /note 端点测试。"""
+def _seed(frag_dir: Path, date: str, frags: list[Fragment]) -> None:
+    frag_dir.mkdir(parents=True, exist_ok=True)
+    (frag_dir / f"{date}.jsonl").write_text(
+        "".join(f.to_json_line() + "\n" for f in frags), encoding="utf-8"
+    )
 
-    def test_note_creates_fragment(self, client: TestClient) -> None:
-        """记录一条消息，返回 ok + date + time。"""
+
+class TestNoteEndpoint:
+    def test_note_returns_id(self, client: TestClient) -> None:
         resp = client.post("/note", json={"content": "和团队讨论了新方案"})
         assert resp.status_code == 200
         data = resp.json()
         assert data["ok"] is True
-        assert "date" in data
-        assert "time" in data
+        assert data["id"] and "date" in data and "time" in data
+        assert data["id"].startswith(data["date"] + "T")
 
-    def test_note_appends_multiple(self, client: TestClient, store: FragmentStore) -> None:
-        """追加多条消息，碎片文件中都有。"""
-        client.post("/note", json={"content": "第一条"})
-        r = client.post("/note", json={"content": "第二条"})
+    def test_note_creates_pending(self, client: TestClient, store: FragmentStore) -> None:
+        r = client.post("/note", json={"content": "第一条"})
         date = r.json()["date"]
-        content = store.read(date)
-        assert content is not None
-        assert "第一条" in content
-        assert "第二条" in content
+        frags = store.read_all(date)
+        assert len(frags) == 1
+        assert frags[0].status == "pending" and frags[0].event_id is None
 
-    def test_note_empty_content_422(self, client: TestClient) -> None:
-        """空内容返回 422。"""
-        resp = client.post("/note", json={"content": ""})
-        assert resp.status_code == 422
+    def test_note_empty_422(self, client: TestClient) -> None:
+        assert client.post("/note", json={"content": ""}).status_code == 422
 
-    def test_note_whitespace_only_422(self, client: TestClient) -> None:
-        """纯空白内容返回 422。"""
-        resp = client.post("/note", json={"content": "   \t\n  "})
-        assert resp.status_code == 422
+    def test_note_whitespace_422(self, client: TestClient) -> None:
+        assert client.post("/note", json={"content": "  \t\n "}).status_code == 422
 
     def test_note_chinese(self, client: TestClient) -> None:
-        """中文内容正确处理。"""
-        resp = client.post("/note", json={"content": "学习了《深度学习》第三章🎉"})
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
+        resp = client.post("/note", json={"content": "学习了《深度学习》🎉"})
+        assert resp.status_code == 200 and resp.json()["ok"] is True
 
 
-class TestFragmentsListEndpoint:
-    """GET /fragments 端点测试。"""
-
+class TestFragmentsList:
     def test_empty(self, client: TestClient) -> None:
-        """无碎片时返回空列表。"""
-        resp = client.get("/fragments")
-        assert resp.status_code == 200
-        assert resp.json()["fragments"] == []
+        assert client.get("/fragments").json()["fragments"] == []
 
     def test_after_note(self, client: TestClient) -> None:
-        """追加后列表非空。"""
         client.post("/note", json={"content": "test"})
-        resp = client.get("/fragments")
-        data = resp.json()
-        assert len(data["fragments"]) >= 1
+        assert len(client.get("/fragments").json()["fragments"]) >= 1
 
-    def test_descending_order(self, client: TestClient, store: FragmentStore) -> None:
-        """列表按日期倒排。"""
-        store.overwrite("2026-06-25", "A\n")
-        store.overwrite("2026-06-27", "B\n")
-        store.overwrite("2026-06-26", "C\n")
-        resp = client.get("/fragments")
-        dates = resp.json()["fragments"]
-        assert dates == ["2026-06-27", "2026-06-26", "2026-06-25"]
+    def test_descending(self, client: TestClient, frag_dir: Path) -> None:
+        for d in ("2026-06-25", "2026-06-27", "2026-06-26"):
+            _seed(frag_dir, d, [Fragment(id=f"{d}T09:00:00", date=d, time="09:00", content="x")])
+        assert client.get("/fragments").json()["fragments"] == [
+            "2026-06-27", "2026-06-26", "2026-06-25"
+        ]
 
 
-class TestFragmentsReadEndpoint:
-    """GET /fragments/{date} 端点测试。"""
-
-    def test_read_existing(self, client: TestClient) -> None:
-        """读取已有碎片。"""
-        r = client.post("/note", json={"content": "可读内容"})
-        date = r.json()["date"]
-        resp = client.get(f"/fragments/{date}")
+class TestFragmentsRead:
+    def test_read_status_list(self, client: TestClient, frag_dir: Path) -> None:
+        _seed(
+            frag_dir, "2026-06-27",
+            [
+                Fragment(id="2026-06-27T09:00:00", date="2026-06-27", time="09:00", content="待确认", status="pending"),
+                Fragment(id="2026-06-27T10:00:00", date="2026-06-27", time="10:00", content="已确认", status="confirmed", event_id="ev_1"),
+            ],
+        )
+        resp = client.get("/fragments/2026-06-27")
         assert resp.status_code == 200
-        assert "可读内容" in resp.json()["content"]
+        data = resp.json()
+        assert data["date"] == "2026-06-27"
+        items = data["fragments"]
+        assert len(items) == 2
+        by_status = {it["status"]: it for it in items}
+        assert by_status["pending"]["content"] == "待确认" and by_status["pending"]["event_id"] is None
+        assert by_status["confirmed"]["event_id"] == "ev_1"
 
     def test_read_nonexistent_404(self, client: TestClient) -> None:
-        """读取不存在的日期返回 404。"""
-        resp = client.get("/fragments/2099-01-01")
-        assert resp.status_code == 404
+        assert client.get("/fragments/2099-01-01").status_code == 404
 
 
-class TestFragmentsPutEndpoint:
-    """PUT /fragments/{date} 端点测试。"""
-
-    def test_overwrite_existing(self, client: TestClient, store: FragmentStore) -> None:
-        """覆盖已有碎片。"""
+class TestFragmentsPut:
+    def test_edit_pending(self, client: TestClient, store: FragmentStore) -> None:
         r = client.post("/note", json={"content": "旧内容"})
-        date = r.json()["date"]
-        resp = client.put(f"/fragments/{date}", json={"content": "14:30 新内容\n"})
-        assert resp.status_code == 200
-        assert resp.json()["ok"] is True
-        # 读取确认
-        content = store.read(date)
-        assert "新内容" in content
-        assert "旧内容" not in content
+        fid = r.json()["id"]
+        resp = client.put(f"/fragments/{fid}", json={"content": "新内容"})
+        assert resp.status_code == 200 and resp.json()["ok"] is True
+        assert store.get(fid).content == "新内容"
 
-    def test_overwrite_creates_new(self, client: TestClient, store: FragmentStore) -> None:
-        """覆盖不存在的日期则创建。"""
-        resp = client.put("/fragments/2099-12-31", json={"content": "15:00 未来\n"})
-        assert resp.status_code == 200
-        content = store.read("2099-12-31")
-        assert content is not None
-        assert "未来" in content
-
-
-class TestFragmentsOptimisticLock:
-    """PUT 乐观锁（防载入后 /note 追加致覆盖丢行）。"""
-
-    def test_get_returns_mtime(self, client: TestClient) -> None:
-        """GET /fragments/{date} 响应含 mtime。"""
-        r = client.post("/note", json={"content": "一条"})
-        date = r.json()["date"]
-        resp = client.get(f"/fragments/{date}")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "mtime" in body
-        assert body["mtime"] is not None
-
-    def test_put_409_on_stale_mtime(self, client: TestClient, store: FragmentStore) -> None:
-        """PUT 带 stale expected_mtime（文件已被改）→ 409、不覆盖。"""
-        r = client.post("/note", json={"content": "原内容"})
-        date = r.json()["date"]
-        # GET 得当前 mtime（文件上次写时间）
-        stale_mtime = client.get(f"/fragments/{date}").json()["mtime"]
-        # 期间文件被改（store 直接写，模拟 /note 追加 / 人工编辑）→ mtime 更新（写操作必改 mtime）
-        store.overwrite(date, "09:00 原内容\n10:00 追加内容\n")
-        # PUT 用 stale_mtime（GET 时的旧值）→ 当前 mtime 已变 → 409
-        resp = client.put(
-            f"/fragments/{date}",
-            json={"content": "11:00 覆盖\n", "expected_mtime": stale_mtime},
-        )
+    def test_edit_non_pending_409(self, client: TestClient, store: FragmentStore) -> None:
+        r = client.post("/note", json={"content": "x"})
+        fid = r.json()["id"]
+        store.begin_confirm(fid)  # → confirming
+        resp = client.put(f"/fragments/{fid}", json={"content": "改"})
         assert resp.status_code == 409
-        # 文件 MUST NOT 被覆盖（保留追加内容）
-        assert "追加内容" in store.read(date)
-        assert "覆盖" not in store.read(date)
 
-    def test_put_without_mtime_overwrites(self, client: TestClient, store: FragmentStore) -> None:
-        """不带 expected_mtime → 直接覆盖（向后兼容）。"""
-        r = client.post("/note", json={"content": "原"})
-        date = r.json()["date"]
-        resp = client.put(f"/fragments/{date}", json={"content": "11:00 覆盖\n"})
-        assert resp.status_code == 200
-        assert "覆盖" in store.read(date)
+    def test_edit_missing_404(self, client: TestClient) -> None:
+        assert client.put("/fragments/2099-01-01T00:00:00", json={"content": "x"}).status_code == 404
+
+    def test_edit_empty_422(self, client: TestClient) -> None:
+        r = client.post("/note", json={"content": "x"})
+        fid = r.json()["id"]
+        assert client.put(f"/fragments/{fid}", json={"content": "  "}).status_code == 422
 
 
-class TestCaptureIsIndependentOfAgent:
-    """捕获端点不依赖 agent / MCS。"""
+class TestFragmentsDelete:
+    def test_delete_pending(self, client: TestClient, store: FragmentStore) -> None:
+        r = client.post("/note", json={"content": "待删"})
+        fid = r.json()["id"]
+        resp = client.delete(f"/fragments/{fid}")
+        assert resp.status_code == 200 and resp.json()["ok"] is True
+        assert store.get(fid) is None
+
+    def test_delete_non_pending_409(self, client: TestClient, store: FragmentStore) -> None:
+        r = client.post("/note", json={"content": "x"})
+        fid = r.json()["id"]
+        store.begin_confirm(fid)
+        assert client.delete(f"/fragments/{fid}").status_code == 409
+
+    def test_delete_missing_404(self, client: TestClient) -> None:
+        assert client.delete("/fragments/2099-01-01T00:00:00").status_code == 404
+
+
+class TestCaptureIndependentOfAgent:
+    """捕获 / 状态原语是文件 IO 旁路，无 memory 也工作、不触发 agent.chat。"""
 
     def test_note_does_not_call_agent(self, client: TestClient) -> None:
-        """POST /note 不触发 agent.chat()。"""
-        mock_agent = client.app.state.agent
-        client.post("/note", json={"content": "纯文件追加"})
-        mock_agent.chat.assert_not_called()
+        client.post("/note", json={"content": "纯文件"})
+        client.app.state.agent.chat.assert_not_called()
 
-    def test_fragments_does_not_call_agent(self, client: TestClient) -> None:
-        """GET /fragments 不触发 agent.chat()。"""
-        mock_agent = client.app.state.agent
-        client.get("/fragments")
-        mock_agent.chat.assert_not_called()
+    def test_crud_works_without_memory(self, client: TestClient) -> None:
+        r = client.post("/note", json={"content": "x"})
+        fid = r.json()["id"]
+        assert client.put(f"/fragments/{fid}", json={"content": "y"}).status_code == 200
+        assert client.delete(f"/fragments/{fid}").status_code == 200
+
+
+class TestFragIdValidation:
+    """非法 frag_id（路径穿越 / 非日期前缀）→ 400，不触达 fragments_dir 之外。"""
+
+    def test_put_traversal_400(self, client: TestClient) -> None:
+        r = client.put("/fragments/notadateT00:00:00", json={"content": "x"})
+        assert r.status_code == 400
+
+    def test_delete_traversal_400(self, client: TestClient) -> None:
+        r = client.delete("/fragments/..T00:00:00")
+        assert r.status_code == 400

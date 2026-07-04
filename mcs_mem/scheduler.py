@@ -51,11 +51,19 @@ class ConsolidationScheduler:
             )
             return
 
+        # cron 来自 env（MCS_CONSOLIDATION_CRON），配错不应炸掉整个 app 启动
+        # （start 在 lifespan 里跑）——降级为禁用 + 显式报错。
+        try:
+            cron_kwargs = self._parse_cron(self._cron)
+        except ValueError:
+            logger.error("无效 cron 表达式 %r，定时整合未启用", self._cron)
+            return
+
         self._scheduler = BackgroundScheduler()
         self._scheduler.add_job(
             self._run_yesterday,
             "cron",
-            **self._parse_cron(self._cron),
+            **cron_kwargs,
             id="consolidation_daily",
             replace_existing=True,
         )
@@ -69,21 +77,20 @@ class ConsolidationScheduler:
             logger.info("整合调度器已关闭")
 
     def _run_yesterday(self) -> None:
-        """整合昨天的碎片（定时任务回调）。"""
+        """兜底确认昨天剩余 pending 碎片（定时任务回调）。"""
         yesterday = (date.today() - timedelta(days=1)).isoformat()
         t0 = time.perf_counter()
         try:
             result = self._consolidator.consolidate(yesterday)
             elapsed = time.perf_counter() - t0
-            if result.get("status") == "already":
-                logger.info("整合跳过(已整合): date=%s", yesterday)
-            else:
-                logger.info(
-                    "Consolidation done: date=%s, events=%d, elapsed=%.1fs",
-                    yesterday,
-                    result.get("events", 0),
-                    elapsed,
-                )
+            logger.info(
+                "Consolidation done: date=%s, confirmed=%d, skipped=%d, failed=%d, elapsed=%.1fs",
+                yesterday,
+                result.get("confirmed", 0),
+                result.get("skipped", 0),
+                result.get("failed", 0),
+                elapsed,
+            )
         except Exception:
             elapsed = time.perf_counter() - t0
             logger.error(

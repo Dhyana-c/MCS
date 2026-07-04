@@ -6,289 +6,586 @@
 <title>MCS 记忆管理</title>
 <style>
 * { box-sizing: border-box; }
-body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 0; background: #f0f2f5; color: #1a1a1a; }
-#app { max-width: 900px; margin: 0 auto; padding: 16px; }
-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #fff; border-radius: 10px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-header h1 { margin: 0; font-size: 17px; font-weight: 600; }
-nav a { margin-left: 12px; font-size: 13px; color: #2563eb; text-decoration: none; }
-.block { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-.block h2 { margin: 0 0 10px 0; font-size: 15px; font-weight: 600; }
-.block.disabled { opacity: .45; pointer-events: none; }
+:root {
+  --bg: #f5f6f8;
+  --bg-grad: radial-gradient(1100px 520px at 100% -8%, #ecefff 0%, rgba(236,239,255,0) 55%), #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f8f9fb;
+  --border: #e8eaee;
+  --border-strong: #d9dce2;
+  --text: #1b1f27;
+  --text-2: #5a616e;
+  --text-3: #99a0ac;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-active: #3730a3;
+  --primary-soft: #eef2ff;
+  --primary-ring: rgba(79,70,229,.28);
+  --success: #15a34a;
+  --success-soft: #e7f8ee;
+  --danger: #e0413a;
+  --danger-soft: #fdecec;
+  --r-sm: 7px; --r-md: 12px; --r-lg: 16px; --r-pill: 999px;
+  --shadow-sm: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.05);
+  --shadow-md: 0 8px 24px -10px rgba(16,24,40,.20), 0 2px 6px -2px rgba(16,24,40,.07);
+  --font: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
+}
+html, body { height: 100%; }
+body {
+  font-family: var(--font); margin: 0; background: var(--bg); color: var(--text);
+  line-height: 1.5; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+}
+.ico { display: inline-flex; align-items: center; color: inherit; }
+.ico svg { display: block; }
+
+/* === 应用外壳 === */
+#app { display: flex; height: 100vh; }
+.sidebar {
+  width: 224px; flex: none; background: var(--surface); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; padding: 14px 12px; gap: 1px; overflow-y: auto;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 14px; font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+.brand .logo { width: 30px; height: 30px; flex: none; border-radius: 9px; background: var(--primary); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 650; }
+.navlabel { font-size: 11px; color: var(--text-3); padding: 13px 9px 4px; letter-spacing: .06em; font-weight: 600; }
+.navitem {
+  display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 9px;
+  font-size: 13.5px; color: var(--text-2); cursor: pointer; text-decoration: none;
+  transition: background .12s, color .12s;
+}
+.navitem:hover { background: var(--surface-2); color: var(--text); }
+.navitem.active { background: var(--primary-soft); color: var(--primary); font-weight: 550; }
+.navitem .ico { flex: none; width: 20px; justify-content: center; }
+.navitem .count { margin-left: auto; font-size: 11px; background: var(--surface-2); color: var(--text-3); padding: 1px 8px; border-radius: var(--r-pill); }
+.navitem.active .count { background: #fff; color: var(--primary); }
+.side-foot { margin-top: auto; padding: 12px 9px 2px; font-size: 11px; color: var(--text-3); }
+
+.content { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-grad); }
+.topbar {
+  display: flex; align-items: center; gap: 12px; padding: 13px 22px; border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,.72); backdrop-filter: saturate(180%) blur(10px);
+}
+.topbar .vtitle { font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 9px; letter-spacing: -.01em; }
+.topbar .vtitle .ico { color: var(--text-2); }
+.topbar .pill { font-size: 11px; font-weight: 500; color: var(--text-3); background: var(--surface-2); padding: 3px 10px; border-radius: var(--r-pill); }
+.topbar .spacer { flex: 1; }
+.view { flex: 1; overflow-y: auto; padding: 22px; }
+.view-inner { max-width: 820px; margin: 0 auto; }
+
+/* === 通用控件 === */
 input, textarea, button { font-family: inherit; font-size: 14px; }
-input, textarea { width: 100%; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; }
-button { padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
-button:disabled { opacity: .5; cursor: default; }
-button.secondary { background: #6b7280; }
+input, textarea {
+  width: 100%; padding: 10px 12px; color: var(--text); background: var(--surface);
+  border: 1px solid var(--border-strong); border-radius: var(--r-sm); outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+input::placeholder, textarea::placeholder { color: var(--text-3); }
+input:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-ring); }
+button {
+  padding: 9px 16px; font-weight: 550; color: #fff; cursor: pointer; white-space: nowrap;
+  background: var(--primary); border: 1px solid transparent; border-radius: var(--r-sm);
+  transition: background .15s, box-shadow .15s, transform .05s;
+}
+button:hover { background: var(--primary-hover); }
+button:active { background: var(--primary-active); transform: translateY(.5px); }
+button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--primary-ring); }
+button:disabled { opacity: .5; cursor: default; transform: none; }
+button.secondary { background: var(--surface); color: var(--text-2); border-color: var(--border-strong); }
+button.secondary:hover { background: var(--surface-2); color: var(--text); }
+button.danger { background: var(--danger); }
+button.danger:hover { background: #c5352f; }
 .row { display: flex; gap: 8px; align-items: center; }
 .row input { flex: 1; }
-.msg { padding: 4px 0; font-size: 13px; color: #555; }
-.msg.ok { color: #16a34a; }
-.msg.err { color: #dc2626; }
-ul { list-style: none; padding: 0; margin: 0; }
-li { padding: 6px 0; border-bottom: 1px solid #f0f0f0; cursor: pointer; font-size: 13px; }
-li:hover { background: #f8f9fa; }
-li:last-child { border-bottom: none; }
-textarea { min-height: 120px; resize: vertical; }
-.calendar { display: flex; flex-wrap: wrap; gap: 4px; }
-.cal-day { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 11px; cursor: pointer; }
-.cal-day.pending { background: #f3f4f6; }
-.cal-day.done { background: #dcfce7; color: #16a34a; }
-.cal-day.failed { background: #fee2e2; color: #dc2626; }
-.cal-day.running { background: #dbeafe; color: #2563eb; }
+.msg { padding: 2px 0; font-size: 13px; color: var(--text-2); min-height: 18px; transition: color .15s; }
+.msg.ok { color: var(--success); }
+.msg.err { color: var(--danger); }
+.link { font-size: 12px; color: var(--primary); text-decoration: none; }
+.link:hover { text-decoration: underline; }
+.sect { font-size: 14px; font-weight: 650; margin: 0 0 10px; display: flex; align-items: center; gap: 7px; }
+.sect .ico { color: var(--text-2); }
+.sect-row { display: flex; align-items: center; justify-content: space-between; margin: 0 0 8px; }
+.hint { font-size: 12px; color: var(--text-3); line-height: 1.55; }
+.hint code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 11px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow-sm); }
+.empty { padding: 24px; text-align: center; color: var(--text-3); font-size: 13px; background: var(--surface); border: 1px dashed var(--border-strong); border-radius: var(--r-md); }
+
+/* === 指标卡 === */
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 0 0 20px; }
+.metric { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 14px 16px; box-shadow: var(--shadow-sm); }
+.metric .n { font-size: 26px; font-weight: 650; letter-spacing: -.02em; }
+.metric .l { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+
+/* === 对话/召回气泡 === */
+.thread { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; min-height: 140px; }
+.brow { display: flex; }
+.brow.me { justify-content: flex-end; }
+.bub { max-width: 80%; padding: 10px 13px; border-radius: 13px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.bub.me { background: var(--primary); color: #fff; border-bottom-right-radius: 4px; }
+.bub.bot { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-bottom-left-radius: 4px; }
+.bub.err { color: var(--danger); }
+.badge-ro, .badge-rw { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 5px 11px; border-radius: var(--r-pill); margin-bottom: 14px; }
+.badge-ro { background: var(--surface-2); color: var(--text-2); }
+.badge-rw { background: #fff4e6; color: #b45309; }
+
+/* === 碎片（分天 + 三态） === */
+.frag-group { margin-bottom: 18px; }
+.frag-group:last-child { margin-bottom: 0; }
+.frag-date { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; color: var(--text); margin: 4px 0 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+.frag-counts { color: var(--text-3); font-size: 11px; font-weight: 500; }
+.frag-item { display: flex; gap: 10px; align-items: center; padding: 8px; margin: 0 -8px; border-radius: var(--r-sm); font-size: 13px; transition: background .12s; }
+.frag-item:hover { background: var(--surface-2); }
+.frag-time { color: var(--text-3); font-size: 11px; min-width: 38px; font-variant-numeric: tabular-nums; }
+.frag-text { flex: 1; color: var(--text); }
+.frag-text input { padding: 5px 8px; }
+.frag-item.confirmed .frag-text, .frag-item.confirming .frag-text { color: var(--text-3); }
+.frag-badge { font-size: 13px; }
+.frag-item.confirmed .frag-badge { color: var(--success); }
+.frag-item.confirming .frag-badge { color: var(--primary); }
+.frag-evid { color: var(--text-3); font-size: 11px; font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }
+.frag-actions { display: flex; gap: 4px; }
+.frag-actions button { padding: 4px 10px; font-size: 12px; }
+#frag-groups:empty::before { content: "暂无碎片"; display: block; padding: 6px 0; color: var(--text-3); font-size: 13px; }
+
+/* === 时间轴 === */
+.tl-date { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 16px 0 6px; }
+.tl-item { display: flex; align-items: center; gap: 11px; position: relative; padding: 8px 0 8px 20px; border-left: 2px solid var(--border); margin-left: 5px; }
+.tl-dot { position: absolute; left: -6px; width: 9px; height: 9px; border-radius: 50%; background: var(--primary); border: 2px solid var(--surface); }
+.tl-time { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; min-width: 38px; }
+.tl-text { flex: 1; font-size: 13px; }
+
+/* === 日历 === */
+.calendar { display: flex; flex-wrap: wrap; gap: 5px; }
+.cal-day { width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; border-radius: var(--r-sm); font-size: 11px; font-weight: 500; color: var(--text-3); background: var(--surface-2); border: 1px solid var(--border); cursor: default; transition: transform .12s, box-shadow .12s; }
+.cal-day:hover { transform: translateY(-2px); box-shadow: var(--shadow-sm); }
+.cal-day.done { background: var(--success-soft); color: var(--success); border-color: transparent; }
+.cal-day.failed { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+
+/* === 日记 / 召回 输出面 === */
+.surface-readout { margin-top: 12px; padding: 14px 16px; border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--border); white-space: pre-wrap; font-size: 14px; line-height: 1.75; color: var(--text); }
+.readout-label { font-size: 12px; font-weight: 600; color: var(--text-3); margin-bottom: 6px; letter-spacing: .02em; }
+ul.diary-list { list-style: none; padding: 0; margin: 8px 0 0; }
+ul.diary-list li { padding: 9px 10px; margin: 0 -10px; border-radius: var(--r-sm); cursor: pointer; font-size: 13px; color: var(--text-2); transition: background .12s, color .12s; }
+ul.diary-list li:hover { background: var(--primary-soft); color: var(--primary); }
+
+/* === 图谱内嵌 === */
+.graph-frame { width: 100%; height: calc(100vh - 150px); min-height: 420px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2); }
+
+/* === 系统信息 === */
+.kv { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.kv:last-child { border-bottom: none; }
+.kv .k { color: var(--text-2); }
+.kv .v { color: var(--text); font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px; }
+
+/* === toast === */
+#toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(12px); background: #1b1f27; color: #fff; font-size: 13px; padding: 10px 16px; border-radius: 10px; opacity: 0; pointer-events: none; transition: .2s; z-index: 100; box-shadow: var(--shadow-md); }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.ok { background: var(--success); }
+#toast.err { background: var(--danger); }
+
+@media (max-width: 760px) {
+  .sidebar { width: 60px; padding: 12px 7px; }
+  .brand span.bt, .navlabel, .navitem span.lbl, .navitem .count, .side-foot { display: none; }
+  .brand { justify-content: center; }
+  .navitem { justify-content: center; }
+  .navitem .ico { width: auto; }
+}
 </style>
 </head>
 <body>
+<!-- 主入口：记忆管理 看板（app-shell + hash 路由） -->
 <div id="app">
-  <header>
-    <h1>🧠 记忆管理</h1>
-    <nav>
-      <a href="/graph.html">🕸️ 图谱</a>
-    </nav>
-  </header>
-
-  <!-- 记录块 -->
-  <div class="block" id="note-block">
-    <h2>📝 随手记</h2>
-    <div class="row">
-      <input type="text" id="note-input" placeholder="记一条..." />
-      <button id="note-btn">记录</button>
-    </div>
-    <div id="note-msg"></div>
-  </div>
-
-  <!-- 碎片列表 + 编辑 -->
-  <div class="block" id="frag-block">
-    <h2>📄 碎片</h2>
-    <div class="row" style="margin-bottom:8px">
-      <button class="secondary" id="frag-refresh">刷新</button>
-      <span id="frag-status-msg" class="msg" style="display:none"></span>
-    </div>
-    <ul id="frag-list"></ul>
-    <div id="frag-editor" style="display:none; margin-top:8px">
-      <div class="row" style="margin-bottom:6px">
-        <strong id="frag-edit-date"></strong>
-        <span id="frag-consolidated-hint" style="color:#9ca3af;font-size:12px;display:none">此日已整合，编辑不再入图</span>
-      </div>
-      <textarea id="frag-textarea"></textarea>
-      <div class="row" style="margin-top:6px">
-        <button id="frag-save-btn">保存</button>
-        <button class="secondary" id="frag-cancel-btn">取消</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 整合块 -->
-  <div class="block" id="consolidate-block">
-    <h2>🔄 整合</h2>
-    <div class="row" style="margin-bottom:8px">
-      <button id="consolidate-btn">整合昨天</button>
-      <span id="consolidate-msg" class="msg"></span>
-    </div>
-    <div id="consolidate-calendar" class="calendar"></div>
-  </div>
-
-  <!-- 日记块 -->
-  <div class="block" id="diary-block">
-    <h2>📖 日记</h2>
-    <div class="row" style="margin-bottom:8px">
-      <input type="date" id="diary-date" />
-      <button id="diary-gen-btn">生成</button>
-      <span id="diary-msg" class="msg"></span>
-    </div>
-    <div id="diary-content" style="display:none; margin-top:8px">
-      <div style="font-size:12px;color:#888;margin-bottom:4px" id="diary-label"></div>
-      <div id="diary-text" style="white-space:pre-wrap;font-size:14px;line-height:1.6"></div>
-    </div>
-    <ul id="diary-list"></ul>
-  </div>
-
-  <!-- 召回块 -->
-  <div class="block" id="recall-block">
-    <h2>🔍 召回（只读）</h2>
-    <div class="row" style="margin-bottom:8px">
-      <input type="text" id="recall-input" placeholder="问一个关于记忆的问题..." />
-      <button id="recall-btn">召回</button>
-    </div>
-    <div id="recall-reply" style="display:none; margin-top:8px; white-space:pre-wrap;font-size:14px;line-height:1.6;background:#f8f9fa;padding:10px;border-radius:6px"></div>
-  </div>
-
-  <!-- 图谱块 -->
-  <div class="block" id="graph-block">
-    <h2>🕸️ 图谱</h2>
-    <iframe id="graph-iframe" src="/graph.html" style="width:100%;height:400px;border:1px solid #e4e6eb;border-radius:6px"></iframe>
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">m</span><span class="bt">记忆</span></div>
+    <div class="navlabel">捕获</div>
+    <a class="navitem" data-id="today" href="#/today"><span class="ico" data-icon="sun"></span><span class="lbl">今日</span></a>
+    <a class="navitem" data-id="inbox" href="#/inbox"><span class="ico" data-icon="inbox"></span><span class="lbl">收件箱</span><span class="count" style="display:none">0</span></a>
+    <div class="navlabel">对话</div>
+    <a class="navitem" data-id="ask" href="#/ask"><span class="ico" data-icon="message"></span><span class="lbl">召回</span></a>
+    <a class="navitem" data-id="chat" href="#/chat"><span class="ico" data-icon="robot"></span><span class="lbl">对话</span></a>
+    <div class="navlabel">知识</div>
+    <a class="navitem" data-id="graph" href="#/graph"><span class="ico" data-icon="graph"></span><span class="lbl">图谱</span></a>
+    <a class="navitem" data-id="timeline" href="#/timeline"><span class="ico" data-icon="timeline"></span><span class="lbl">时间轴</span></a>
+    <a class="navitem" data-id="journal" href="#/journal"><span class="ico" data-icon="book"></span><span class="lbl">日记</span></a>
+    <div class="navlabel">系统</div>
+    <a class="navitem" data-id="consolidate" href="#/consolidate"><span class="ico" data-icon="calendar"></span><span class="lbl">整合</span></a>
+    <a class="navitem" data-id="settings" href="#/settings"><span class="ico" data-icon="sliders"></span><span class="lbl">设置</span></a>
+    <div class="side-foot">MCS 个人记忆系统</div>
+  </aside>
+  <div class="content">
+    <header class="topbar">
+      <span class="vtitle" id="vtitle"></span>
+      <span class="pill" id="vtag" style="display:none"></span>
+      <span class="spacer"></span>
+      <button class="secondary" id="quick-note-btn" style="font-size:13px;padding:7px 12px">记一条</button>
+    </header>
+    <main class="view"><div class="view-inner" id="view"></div></main>
   </div>
 </div>
 
 <script>
-// === Helpers ===
+// === 内联 SVG 图标（零外部依赖、离线 / 墙内可靠，不走 CDN） ===
+const ICONS = {
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  inbox: '<path d="M4 13l2-7h12l2 7"/><path d="M4 13v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5h-5l-1.5 2h-3L9 13H4z"/>',
+  message: '<path d="M21 12a8 8 0 0 1-11.5 7.2L4 20.5l1.3-4.3A8 8 0 1 1 21 12z"/>',
+  robot: '<rect x="5" y="9" width="14" height="9" rx="2"/><path d="M12 5v4M9 13.5h.01M15 13.5h.01M3 12v3M21 12v3"/><circle cx="12" cy="4" r="1"/>',
+  graph: '<circle cx="6" cy="7" r="2.4"/><circle cx="18" cy="6" r="2.4"/><circle cx="13" cy="17" r="2.4"/><path d="M8.2 8l4 7.2M15.7 7.6l-2.2 7.2M8.3 6.6l7.3-.4"/>',
+  timeline: '<path d="M6 4v16"/><circle cx="6" cy="8" r="1.8"/><circle cx="6" cy="16" r="1.8"/><path d="M10 8h9M10 16h9"/>',
+  book: '<path d="M6 4h10a2 2 0 0 1 2 2v14H8a2 2 0 0 1-2-2z"/><path d="M10 4v14M6 18h12"/>',
+  calendar: '<rect x="4" y="5" width="16" height="16" rx="2"/><path d="M4 10h16M8 3v4M16 3v4M9 15l2 2 3.5-4"/>',
+  sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2.3"/><circle cx="7" cy="17" r="2.3"/>',
+  bolt: '<path d="M13 3L5 13h6l-1 8 8-12h-6z"/>',
+  lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  write: '<path d="M4 20l4-1L18.5 8.5a2 2 0 0 0-3-3L5 16z"/><path d="M14 7l3 3"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+  server: '<rect x="4" y="5" width="16" height="6" rx="1"/><rect x="4" y="13" width="16" height="6" rx="1"/><path d="M8 8h.01M8 16h.01"/>',
+  brain: '<path d="M9.5 18.5h5M10.5 21h3"/><path d="M12 3a5.5 5.5 0 0 0-4 9.3c.9.9 1 1.7 1 2.7h6c0-1 .1-1.8 1-2.7A5.5 5.5 0 0 0 12 3z"/>'
+};
+function icon(name, size) {
+  const p = ICONS[name]; if (!p) return '';
+  const s = size || 18;
+  return '<svg viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + p + '</svg>';
+}
+function fillIcons(root, size) { (root || document).querySelectorAll('[data-icon]').forEach(e => { e.innerHTML = icon(e.dataset.icon, size); }); }
+
+// === 通用 ===
 async function api(method, url, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
   if (body) opts.body = JSON.stringify(body);
-  const r = await fetch(url, opts);
-  return r;
+  return fetch(url, opts);
 }
-function showMsg(el, text, cls) {
-  el.textContent = text; el.className = 'msg ' + cls;
-  setTimeout(() => { el.textContent = ''; el.className = 'msg'; }, 3000);
+function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+function escapeHtml(s) { return (s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function todayStr() { const d = new Date(), p = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); }
+function toast(text, cls) {
+  let t = document.getElementById('toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+  t.textContent = text; t.className = 'show ' + (cls || '');
+  clearTimeout(t._t); t._t = setTimeout(() => { t.className = ''; }, 2200);
+}
+function showMsg(elm, text, cls) { if (!elm) return; elm.textContent = text; elm.className = 'msg ' + (cls || ''); setTimeout(() => { elm.textContent = ''; elm.className = 'msg'; }, 3000); }
+
+// === 碎片渲染（三态，复用于 今日 / 收件箱） ===
+function renderFragment(f) {
+  const row = document.createElement('div');
+  row.className = 'frag-item ' + f.status;
+  const time = document.createElement('span');
+  time.className = 'frag-time'; time.textContent = f.time; row.appendChild(time);
+  const text = document.createElement('span');
+  text.className = 'frag-text'; text.textContent = f.content; row.appendChild(text);
+  if (f.status === 'pending') {
+    const actions = document.createElement('span');
+    actions.className = 'frag-actions';
+    const bConfirm = document.createElement('button');
+    bConfirm.textContent = '确认'; bConfirm.onclick = () => confirmFragment(f.id); actions.appendChild(bConfirm);
+    const bEdit = document.createElement('button');
+    bEdit.className = 'secondary'; bEdit.textContent = '编辑'; bEdit.onclick = () => startEdit(row, f); actions.appendChild(bEdit);
+    const bDel = document.createElement('button');
+    bDel.className = 'danger'; bDel.textContent = '删除'; bDel.onclick = () => deleteFragment(f.id); actions.appendChild(bDel);
+    row.appendChild(actions);
+  } else {
+    const badge = document.createElement('span');
+    badge.className = 'frag-badge';
+    badge.textContent = f.status === 'confirmed' ? '✓' : '⏳'; badge.title = f.status; row.appendChild(badge);
+    if (f.event_id) { const ev = document.createElement('span'); ev.className = 'frag-evid'; ev.textContent = f.event_id; row.appendChild(ev); }
+  }
+  return row;
+}
+function startEdit(row, f) {
+  const text = row.querySelector('.frag-text');
+  const actions = row.querySelector('.frag-actions');
+  const input = document.createElement('input');
+  input.type = 'text'; input.value = f.content;
+  text.textContent = ''; text.appendChild(input); input.focus();
+  actions.innerHTML = '';
+  const bSave = document.createElement('button');
+  bSave.textContent = '保存';
+  bSave.onclick = async () => {
+    const content = input.value.trim(); if (!content) return;
+    const r = await api('PUT', '/fragments/' + encodeURIComponent(f.id), { content });
+    if (r.ok) refreshFrags(); else toast(r.status === 409 ? '仅 pending 可编辑' : '编辑失败', 'err');
+  };
+  const bCancel = document.createElement('button');
+  bCancel.className = 'secondary'; bCancel.textContent = '取消'; bCancel.onclick = refreshFrags;
+  actions.appendChild(bSave); actions.appendChild(bCancel);
+}
+async function confirmFragment(id) {
+  const r = await api('POST', '/fragments/' + encodeURIComponent(id) + '/confirm');
+  if (r.ok) { toast('已确认入图', 'ok'); refreshFrags(); loadConsolidationCalendar(); updateInboxBadge(); }
+  else { toast(r.status === 503 ? '确认不可用（无记忆）' : '确认失败', 'err'); }
+}
+async function deleteFragment(id) {
+  const r = await api('DELETE', '/fragments/' + encodeURIComponent(id));
+  if (r.ok) { refreshFrags(); updateInboxBadge(); }
+  else toast(r.status === 409 ? '仅 pending 可删除' : '删除失败', 'err');
+}
+function refreshFrags() {
+  if (document.getElementById('frag-groups')) loadFragments();
+  if (document.getElementById('today-frags')) loadToday();
 }
 
-// === 记录块 ===
-document.getElementById('note-btn').onclick = async () => {
-  const input = document.getElementById('note-input');
-  const msg = document.getElementById('note-msg');
-  const content = input.value.trim();
-  if (!content) return;
-  const r = await api('POST', '/note', { content });
-  if (r.ok) { const d = await r.json(); showMsg(msg, `✓ 已记录 ${d.date} ${d.time}`, 'ok'); input.value = ''; }
-  else { showMsg(msg, '✗ 记录失败', 'err'); }
-};
-document.getElementById('note-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('note-btn').click();
-});
-
-// === 碎片块 ===
-let editingDate = null;
+// === 收件箱：分天分组 ===
 async function loadFragments() {
-  const r = await api('GET', '/fragments');
-  const list = document.getElementById('frag-list');
-  list.innerHTML = '';
-  if (!r.ok) return;
-  const d = await r.json();
-  d.fragments.forEach(f => {
-    const li = document.createElement('li');
-    li.textContent = f.replace('.md', '');
-    li.onclick = () => openFragment(f.replace('.md', ''));
-    list.appendChild(li);
+  const groups = document.getElementById('frag-groups'); if (!groups) return;
+  groups.innerHTML = '';
+  const r = await api('GET', '/fragments'); if (!r.ok) return;
+  const { fragments: dates } = await r.json();
+  for (const date of dates) {
+    const dr = await api('GET', '/fragments/' + date); if (!dr.ok) continue;
+    const { fragments } = await dr.json();
+    const pend = fragments.filter(f => f.status === 'pending').length;
+    const conf = fragments.filter(f => f.status === 'confirmed').length;
+    const section = document.createElement('div'); section.className = 'frag-group';
+    const head = document.createElement('div'); head.className = 'frag-date';
+    head.innerHTML = '<strong>' + date + '</strong><span class="frag-counts">pending ' + pend + ' · confirmed ' + conf + '</span>';
+    section.appendChild(head);
+    fragments.forEach(f => section.appendChild(renderFragment(f)));
+    groups.appendChild(section);
+  }
+  const q = document.getElementById('frag-search');
+  if (q && q.value) applyFragFilter(q.value);
+}
+function applyFragFilter(q) {
+  q = (q || '').trim().toLowerCase();
+  document.querySelectorAll('#frag-groups .frag-group').forEach(g => {
+    let any = false;
+    g.querySelectorAll('.frag-item').forEach(it => {
+      const t = it.querySelector('.frag-text').textContent.toLowerCase();
+      const show = !q || t.includes(q); it.style.display = show ? '' : 'none'; if (show) any = true;
+    });
+    g.style.display = any ? '' : 'none';
   });
 }
-async function openFragment(date) {
-  const r = await api('GET', '/fragments/' + date);
-  if (!r.ok) return;
-  const d = await r.json();
-  editingDate = date;
-  document.getElementById('frag-edit-date').textContent = date;
-  document.getElementById('frag-textarea').value = d.content;
-  document.getElementById('frag-editor').style.display = 'block';
-  // 检查是否已整合
-  try {
-    const sr = await api('GET', '/consolidate/status?date_param=' + date);
-    if (sr.ok) { const sd = await sr.json(); document.getElementById('frag-consolidated-hint').style.display = sd.status === 'done' ? 'inline' : 'none'; }
-  } catch { document.getElementById('frag-consolidated-hint').style.display = 'none'; }
-}
-document.getElementById('frag-refresh').onclick = loadFragments;
-document.getElementById('frag-save-btn').onclick = async () => {
-  if (!editingDate) return;
-  const content = document.getElementById('frag-textarea').value;
-  await api('PUT', '/fragments/' + editingDate, { content });
-  document.getElementById('frag-editor').style.display = 'none';
-  loadFragments();
-};
-document.getElementById('frag-cancel-btn').onclick = () => {
-  document.getElementById('frag-editor').style.display = 'none'; editingDate = null;
-};
 
-// === 整合块 ===
-document.getElementById('consolidate-btn').onclick = async () => {
-  const msg = document.getElementById('consolidate-msg');
-  msg.textContent = '整合中...'; msg.className = 'msg';
-  const r = await api('POST', '/consolidate', {});
-  if (r.ok) {
-    const d = await r.json();
-    const txt = d.status === 'already' ? `✓ ${d.date} 已整合` : `✓ ${d.date} 整合完成 (${d.events} 事件)`;
-    showMsg(msg, txt, 'ok');
-    if (d.warning) msg.textContent += ' ⚠️ ' + d.warning;
-  } else { showMsg(msg, '✗ 整合不可用', 'err'); }
-  loadConsolidationCalendar();
-};
+// === 今日 ===
+async function loadToday() {
+  const metricsEl = document.getElementById('today-metrics');
+  const box = document.getElementById('today-frags');
+  if (!box) return;
+  const today = todayStr();
+  const dres = await api('GET', '/fragments');
+  const dates = dres.ok ? (await dres.json()).fragments : [];
+  let frags = [];
+  if (dates.includes(today)) { const r = await api('GET', '/fragments/' + today); if (r.ok) frags = (await r.json()).fragments; }
+  const pend = frags.filter(f => f.status === 'pending').length;
+  const conf = frags.filter(f => f.status === 'confirmed').length;
+  if (metricsEl) metricsEl.innerHTML =
+    '<div class="metric"><div class="n">' + pend + '</div><div class="l">今日待确认</div></div>' +
+    '<div class="metric"><div class="n">' + conf + '</div><div class="l">今日已入图</div></div>' +
+    '<div class="metric"><div class="n">' + dates.length + '</div><div class="l">记录天数</div></div>';
+  box.innerHTML = '';
+  if (!frags.length) { box.appendChild(el('<div class="empty">今天还没有记录 — 在上方记一条吧</div>')); return; }
+  frags.forEach(f => box.appendChild(renderFragment(f)));
+}
+
+// === 时间轴（从 confirmed 碎片真实派生：confirmed = 已入图事件） ===
+async function loadTimeline() {
+  const body = document.getElementById('timeline-body'); if (!body) return;
+  body.innerHTML = '<div class="hint">加载中…</div>';
+  const dres = await api('GET', '/fragments');
+  const dates = dres.ok ? (await dres.json()).fragments : [];
+  let items = [];
+  for (const d of dates.slice(0, 14)) {
+    const r = await api('GET', '/fragments/' + d); if (!r.ok) continue;
+    (await r.json()).fragments.filter(f => f.status === 'confirmed').forEach(f => items.push({ date: d, time: f.time, content: f.content, event_id: f.event_id }));
+  }
+  items.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  body.innerHTML = '';
+  if (!items.length) { body.appendChild(el('<div class="empty">还没有已入图的事件 — 在「收件箱」确认碎片后会出现在这里</div>')); return; }
+  let cur = null;
+  items.forEach(it => {
+    if (it.date !== cur) { cur = it.date; const h = document.createElement('div'); h.className = 'tl-date'; h.textContent = it.date; body.appendChild(h); }
+    const row = el('<div class="tl-item"><span class="tl-dot"></span><span class="tl-time">' + it.time + '</span><span class="tl-text">' + escapeHtml(it.content) + '</span>' + (it.event_id ? '<span class="frag-evid">' + escapeHtml(it.event_id) + '</span>' : '') + '</div>');
+    body.appendChild(row);
+  });
+}
+
+// === 整合日历（纯观测；批量由 scheduler 兜底，逐条确认在收件箱） ===
 async function loadConsolidationCalendar() {
+  const cal = document.getElementById('consolidate-calendar'); if (!cal) return;
   try {
-    const r = await api('GET', '/consolidate/statuses');
-    if (!r.ok) return;
-    const d = await r.json();
-    const cal = document.getElementById('consolidate-calendar');
-    cal.innerHTML = '';
+    const r = await api('GET', '/consolidate/statuses'); if (!r.ok) { cal.innerHTML = '<div class="hint">整合观测不可用（无记忆）</div>'; return; }
+    const d = await r.json(); cal.innerHTML = '';
     d.slice(0, 30).forEach(s => {
       const div = document.createElement('div');
-      div.className = 'cal-day ' + (s.status || 'pending');
-      div.textContent = s.date.slice(8); div.title = s.date + ': ' + s.status;
+      let cls = 'pending';
+      if (s.failed > 0) cls = 'failed'; else if (s.pending === 0 && s.confirmed > 0) cls = 'done';
+      div.className = 'cal-day ' + cls; div.textContent = s.date.slice(8);
+      div.title = s.date + ': pending ' + s.pending + ', confirmed ' + s.confirmed + (s.failed ? ', failed ' + s.failed : '');
       cal.appendChild(div);
     });
-  } catch {}
+    if (!d.length) cal.appendChild(el('<div class="hint">暂无整合记录</div>'));
+  } catch { cal.innerHTML = '<div class="hint">整合观测不可用</div>'; }
 }
 
-// === 日记块 ===
-document.getElementById('diary-gen-btn').onclick = async () => {
-  const dateInput = document.getElementById('diary-date');
-  const msg = document.getElementById('diary-msg');
-  const date = dateInput.value || new Date().toISOString().slice(0, 10);
-  msg.textContent = '生成中...'; msg.className = 'msg';
-  const r = await api('POST', '/diary', { date });
-  if (r.ok) {
-    const d = await r.json();
-    if (d.ok) { showMsg(msg, `✓ ${d.date} 日记已生成`, 'ok'); loadDiary(date); }
-    else { showMsg(msg, `✗ ${d.reason || '生成失败'}`, 'err'); }
-  } else { showMsg(msg, '✗ 日记生成不可用', 'err'); }
-};
+// === 日记 ===
 async function loadDiary(date) {
-  const r = await api('GET', '/diary/' + date);
-  if (!r.ok) return;
+  const r = await api('GET', '/diary/' + date); if (!r.ok) return;
   const d = await r.json();
   document.getElementById('diary-label').textContent = date;
   document.getElementById('diary-text').textContent = d.content;
   document.getElementById('diary-content').style.display = 'block';
 }
 async function loadDiaries() {
+  const list = document.getElementById('diary-list'); if (!list) return;
   try {
-    const r = await api('GET', '/diaries');
-    if (!r.ok) return;
-    const d = await r.json();
-    const list = document.getElementById('diary-list');
-    list.innerHTML = '';
-    d.diaries.forEach(f => {
-      const li = document.createElement('li');
-      const date = f.replace('.md', '');
-      li.textContent = date;
-      li.onclick = () => loadDiary(date);
-      list.appendChild(li);
-    });
+    const r = await api('GET', '/diaries'); if (!r.ok) return;
+    const d = await r.json(); list.innerHTML = '';
+    if (!d.diaries.length) { list.appendChild(el('<li style="cursor:default;color:var(--text-3)">暂无日记</li>')); return; }
+    d.diaries.forEach(date => { const li = document.createElement('li'); li.textContent = date; li.onclick = () => loadDiary(date); list.appendChild(li); });
   } catch {}
 }
 
-// === 召回块 ===
-document.getElementById('recall-btn').onclick = async () => {
-  const input = document.getElementById('recall-input');
-  const reply = document.getElementById('recall-reply');
-  const msg = input.value.trim();
-  if (!msg) return;
-  reply.style.display = 'block'; reply.textContent = '思考中...';
-  const r = await api('POST', '/recall', { message: msg });
-  if (r.ok) { const d = await r.json(); reply.textContent = d.reply; }
-  else { reply.textContent = '召回不可用'; }
-};
-
-// === 初始化 + 缺块降级 ===
-
-async function checkBackendAndDegrade() {
-  // 检查整合端点可用性
+// === 召回 / 对话 气泡 ===
+function addBubble(threadId, who, text) {
+  const t = document.getElementById(threadId); if (!t) return null;
+  const row = document.createElement('div'); row.className = 'brow ' + who;
+  const b = document.createElement('div'); b.className = 'bub ' + who; b.textContent = text;
+  row.appendChild(b); t.appendChild(row); t.scrollTop = t.scrollHeight; return b;
+}
+async function sendTo(endpoint, inputId, threadId) {
+  const inp = document.getElementById(inputId); const m = inp.value.trim(); if (!m) return;
+  addBubble(threadId, 'me', m); inp.value = '';
+  const b = addBubble(threadId, 'bot', '思考中…');
   try {
-    const r = await fetch('/consolidate/statuses', { method: 'GET' });
-    if (!r.ok) document.getElementById('consolidate-block').classList.add('disabled');
-  } catch { document.getElementById('consolidate-block').classList.add('disabled'); }
-
-  // 检查召回端点可用性（不发真实请求，仅检查 /health）
-  // recall 依赖 memory + LLM，无法简单探测，暂不做降级
-
-  // 检查图谱 iframe
-  const iframe = document.getElementById('graph-iframe');
-  iframe.addEventListener('error', () => {
-    document.getElementById('graph-block').classList.add('disabled');
-  });
+    const r = await api('POST', endpoint, { message: m });
+    if (r.ok) { b.textContent = (await r.json()).reply; }
+    else { b.textContent = r.status === 503 ? '服务不可用（无记忆 / LLM）' : '请求失败（' + r.status + '）'; b.classList.add('err'); }
+  } catch (e) { b.textContent = '网络错误：' + e; b.classList.add('err'); }
 }
 
-loadFragments();
-loadConsolidationCalendar();
-loadDiaries();
-checkBackendAndDegrade();
+// === 收件箱 pending 徽标 ===
+async function updateInboxBadge() {
+  try {
+    const dres = await api('GET', '/fragments'); if (!dres.ok) return;
+    const dates = (await dres.json()).fragments; let p = 0;
+    for (const d of dates.slice(0, 30)) { const r = await api('GET', '/fragments/' + d); if (r.ok) p += (await r.json()).fragments.filter(f => f.status === 'pending').length; }
+    const elc = document.querySelector('.navitem[data-id="inbox"] .count');
+    if (elc) { elc.textContent = p; elc.style.display = p ? '' : 'none'; }
+  } catch {}
+}
+
+// === 视图 ===
+const ROUTES = {
+  today: { title: '今日', icon: 'sun', render() {
+    document.getElementById('view').innerHTML =
+      '<div class="card"><div class="sect"><span class="ico" data-icon="bolt"></span>快速捕获</div>' +
+      '<div class="row"><input id="note-input" placeholder="记一条想法、待办、见闻…"><button id="note-btn">记录</button></div>' +
+      '<div id="note-msg" class="msg"></div>' +
+      '<div class="hint">一条记录 = 一个 pending 碎片；确认后入图成一个事件（纯文件捕获、零 LLM）。</div></div>' +
+      '<div class="metrics" id="today-metrics"></div>' +
+      '<div class="sect-row"><span class="sect" style="margin:0">今日碎片</span><a class="link" href="#/inbox">全部碎片 →</a></div>' +
+      '<div id="today-frags"></div>';
+    const submit = async () => {
+      const input = document.getElementById('note-input'); const content = input.value.trim(); if (!content) return;
+      const r = await api('POST', '/note', { content });
+      if (r.ok) { const d = await r.json(); showMsg(document.getElementById('note-msg'), '✓ 已记录 ' + d.time, 'ok'); input.value = ''; loadToday(); updateInboxBadge(); }
+      else showMsg(document.getElementById('note-msg'), '✗ 记录失败', 'err');
+    };
+    document.getElementById('note-btn').onclick = submit;
+    document.getElementById('note-input').addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    loadToday();
+  }},
+  inbox: { title: '收件箱', icon: 'inbox', render() {
+    document.getElementById('view').innerHTML =
+      '<div class="row" style="margin-bottom:12px"><input id="frag-search" placeholder="搜索碎片…"><button class="secondary" id="frag-refresh">刷新</button></div>' +
+      '<div id="frag-groups"></div>';
+    document.getElementById('frag-refresh').onclick = loadFragments;
+    document.getElementById('frag-search').addEventListener('input', e => applyFragFilter(e.target.value));
+    loadFragments();
+  }},
+  ask: { title: '召回', icon: 'message', tag: '只读', render() {
+    document.getElementById('view').innerHTML =
+      '<div class="badge-ro"><span class="ico" data-icon="lock"></span> 只读召回 · 不写图谱（ReAct over 记忆图）</div>' +
+      '<div class="thread" id="ask-thread"></div>' +
+      '<div class="row"><input id="recall-input" placeholder="问一个关于记忆的问题…"><button id="recall-btn">召回</button></div>';
+    const go = () => sendTo('/recall', 'recall-input', 'ask-thread');
+    document.getElementById('recall-btn').onclick = go;
+    document.getElementById('recall-input').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  }},
+  chat: { title: '对话', icon: 'robot', tag: '可写图谱', render() {
+    document.getElementById('view').innerHTML =
+      '<div class="badge-rw"><span class="ico" data-icon="write"></span> 全功能对话 · Claude 可在对话中把新知识写入图谱（learn）</div>' +
+      '<div class="thread" id="chat-thread"></div>' +
+      '<div class="row"><input id="chat-input" placeholder="和你的记忆助手聊聊…"><button id="chat-btn">发送</button></div>';
+    const go = () => sendTo('/chat', 'chat-input', 'chat-thread');
+    document.getElementById('chat-btn').onclick = go;
+    document.getElementById('chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  }},
+  graph: { title: '图谱', icon: 'graph', render() {
+    document.getElementById('view').innerHTML =
+      '<div class="hint" style="margin-bottom:10px">左键节点看详情 · 右键下钻（概念 / 事实）· 滚轮缩放、拖拽平移</div>' +
+      '<iframe class="graph-frame" src="/graph.html"></iframe>';
+  }},
+  timeline: { title: '时间轴', icon: 'timeline', render() {
+    document.getElementById('view').innerHTML =
+      '<div class="hint" style="margin-bottom:14px"><span class="ico" data-icon="timeline"></span> 已入图事件（已确认碎片），按时间倒排</div>' +
+      '<div id="timeline-body"></div>';
+    loadTimeline();
+  }},
+  journal: { title: '日记', icon: 'book', render() {
+    document.getElementById('view').innerHTML =
+      '<div class="row" style="margin-bottom:8px"><input type="date" id="diary-date"><button id="diary-gen-btn">生成</button><span id="diary-msg" class="msg"></span></div>' +
+      '<div id="diary-content" class="surface-readout" style="display:none"><div class="readout-label" id="diary-label"></div><div id="diary-text"></div></div>' +
+      '<div class="sect" style="margin:18px 0 4px">历史日记</div><ul class="diary-list" id="diary-list"></ul>';
+    document.getElementById('diary-date').value = todayStr();
+    document.getElementById('diary-gen-btn').onclick = async () => {
+      const date = document.getElementById('diary-date').value || todayStr();
+      const msg = document.getElementById('diary-msg'); msg.textContent = '生成中...'; msg.className = 'msg';
+      const r = await api('POST', '/diary', { date });
+      if (r.ok) { const d = await r.json(); if (d.ok) { showMsg(msg, '✓ 日记已生成', 'ok'); loadDiary(date); loadDiaries(); } else showMsg(msg, '✗ ' + (d.reason || '生成失败'), 'err'); }
+      else showMsg(msg, '✗ 日记生成不可用', 'err');
+    };
+    loadDiaries();
+  }},
+  consolidate: { title: '整合', icon: 'calendar', render() {
+    document.getElementById('view').innerHTML =
+      '<div class="hint" style="margin-bottom:14px">每日 pending / confirmed 计数。逐条确认在「收件箱」；未处理的 pending 由调度器次日 00:30 兜底确认。</div>' +
+      '<div class="sect">近 30 天</div><div id="consolidate-calendar" class="calendar"></div>' +
+      '<div style="display:flex;gap:14px;margin-top:14px" class="hint">' +
+      '<span><span style="display:inline-block;width:12px;height:12px;border-radius:4px;background:var(--success-soft);vertical-align:-1px"></span> 已完成</span>' +
+      '<span><span style="display:inline-block;width:12px;height:12px;border-radius:4px;background:var(--surface-2);border:1px solid var(--border);vertical-align:-1px"></span> 有待确认</span>' +
+      '<span><span style="display:inline-block;width:12px;height:12px;border-radius:4px;background:var(--danger-soft);vertical-align:-1px"></span> 有失败</span></div>';
+    loadConsolidationCalendar();
+  }},
+  settings: { title: '设置', icon: 'sliders', tag: '系统信息', render() {
+    document.getElementById('view').innerHTML =
+      '<div class="card"><div class="sect"><span class="ico" data-icon="info"></span>系统信息</div>' +
+      '<div class="kv"><span class="k">主入口</span><span class="v">/ · /manage.html</span></div>' +
+      '<div class="kv"><span class="k">图谱视图</span><span class="v">/graph.html</span></div>' +
+      '<div class="kv"><span class="k">健康检查</span><span class="v">/health</span></div>' +
+      '<div class="kv"><span class="k">捕获 / 召回 / 对话</span><span class="v">/note · /recall · /chat</span></div>' +
+      '</div>' +
+      '<div class="card"><div class="sect"><span class="ico" data-icon="server"></span>服务端配置</div>' +
+      '<div class="hint">存储目录、整合调度 cron、对话模型由服务端环境变量配置（<code>MCS_MEMORY_*</code> / <code>MCS_CONSOLIDATION_*</code> / <code>AGENT_LLM_*</code>）；前端可视化配置为规划项。</div>' +
+      '</div>' +
+      '<div class="card" style="margin-bottom:0"><div class="sect"><span class="ico" data-icon="brain"></span>关于</div>' +
+      '<div class="hint">MCS 个人记忆系统 —— 捕获 → 整合 → 组织 → 回顾。把日常碎片沉淀为可召回、可推理的记忆图。</div></div>';
+  }}
+};
+
+function navTo() {
+  const id = (location.hash.replace('#/', '') || 'today');
+  const route = ROUTES[id] ? id : 'today';
+  const r = ROUTES[route];
+  document.querySelectorAll('.navitem').forEach(n => n.classList.toggle('active', n.dataset.id === route));
+  const vt = document.getElementById('vtitle');
+  vt.innerHTML = '<span class="ico">' + icon(r.icon, 19) + '</span> ' + r.title;
+  const tag = document.getElementById('vtag');
+  if (r.tag) { tag.textContent = r.tag; tag.style.display = ''; } else tag.style.display = 'none';
+  document.querySelector('.view').scrollTop = 0;
+  r.render();
+  fillIcons(document.getElementById('view'), 17);
+}
+
+document.getElementById('quick-note-btn').onclick = () => {
+  if ((location.hash.replace('#/', '') || 'today') !== 'today') location.hash = '#/today';
+  setTimeout(() => { const i = document.getElementById('note-input'); if (i) i.focus(); }, 60);
+};
+
+fillIcons(document.querySelector('.sidebar'), 18);
+window.addEventListener('hashchange', navTo);
+if (!location.hash) location.hash = '#/today'; else navTo();
+updateInboxBadge();
 </script>
 </body>
 </html>

@@ -1,8 +1,5 @@
-# consolidation-scheduler Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change agent-consolidation. Update Purpose after archive.
-## Requirements
 ### Requirement: 定时整合「昨天」
 系统 SHALL 支持配置定时确认，默认 cron `30 0 * * *`（每天 00:30）确认**前一日**剩余的 `pending` 碎片（即兜底确认昨天用户未手动确认 / 未删除的碎片）。调度时间用 cron 表达式配置；定时作业的目标日期 SHALL 为「昨天」。
 
@@ -20,28 +17,6 @@ TBD - created by archiving change agent-consolidation. Update Purpose after arch
 - **WHEN** 配置 `schedule: null` 或 `enabled: false`
 - **THEN** 不注册定时任务，仅支持手动触发
 
-### Requirement: 整合执行互斥
-同一时刻 SHALL 只允许一个整合任务执行。运行中再触发 SHALL 返回"正在整合中"、不排队。此互斥与 MCS worker 线程串行化是两层（互斥锁防重入整合，worker 保线程安全）。
-
-#### Scenario: 整合中再触发
-- **WHEN** 整合正在执行，再收到整合请求
-- **THEN** 返回 `{"ok": false, "status": "running", "message": "整合正在进行中"}`
-
-#### Scenario: 整合完成后触发
-- **WHEN** 上次整合已完成，收到新请求
-- **THEN** 正常执行
-
-### Requirement: 调度器生命周期
-调度器 SHALL 随 `mcs_agent` 的 FastAPI app 启动而启动、随关闭而关闭（FastAPI lifespan 管理）。
-
-#### Scenario: app 启动
-- **WHEN** app 启动
-- **THEN** APScheduler 启动，注册定时任务
-
-#### Scenario: app 关闭
-- **WHEN** app 关闭
-- **THEN** APScheduler 优雅关闭，等当前任务完成
-
 ### Requirement: 整合完成日志
 整合完成后 SHALL 记 INFO 日志（日期、`confirmed`/`skipped`/`failed`、耗时）；失败记 ERROR。
 
@@ -52,4 +27,3 @@ TBD - created by archiving change agent-consolidation. Update Purpose after arch
 #### Scenario: 失败
 - **WHEN** 整合中出错
 - **THEN** 记 ERROR
-

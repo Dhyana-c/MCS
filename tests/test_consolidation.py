@@ -1,393 +1,294 @@
-"""整合管线测试（Slice 2）。
+"""整合管线测试（确认即 ingest）。
 
-覆盖：parse_fragments、ConsolidationTracker、Consolidator 整合主流程。
-边界情况：空碎片 / 单日锁定 / 去噪 / 单条失败容错 / 互斥 running。
+覆盖：ConsolidationTracker（观测、无锁定）、Consolidator.confirm_one / consolidate、
+并发 CAS 不重复入图、ConsolidationScheduler。
+边界：空 pending / 幂等可重入 / 单条失败容错续跑 / 事件时间忠实 / 互斥 running。
 """
 
 from __future__ import annotations
 
-import json
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from mcs_mem.consolidation import (
-    ConsolidationStatus,
-    ConsolidationTracker,
-    Consolidator,
-    parse_fragments,
-)
+from mcs_mem.consolidation import ConsolidationTracker, Consolidator
+from mcs_mem.fragments import Fragment, FragmentNotFound, FragmentStore
 
 
-# === parse_fragments ===
+def _seed(frag_dir: Path, date: str, frags: list[Fragment]) -> None:
+    frag_dir.mkdir(parents=True, exist_ok=True)
+    (frag_dir / f"{date}.jsonl").write_text(
+        "".join(f.to_json_line() + "\n" for f in frags), encoding="utf-8"
+    )
 
 
-class TestParseFragments:
-    def test_normal_multi_line(self) -> None:
-        """正常多行解析。"""
-        md = "09:00 早上讨论了架构\n14:30 下午写了代码"
-        result = parse_fragments(md, "2026-06-27")
-        assert len(result) == 2
-        assert result[0] == ("2026-06-27T09:00:00", "早上讨论了架构")
-        assert result[1] == ("2026-06-27T14:30:00", "下午写了代码")
-
-    def test_skip_malformed_line(self) -> None:
-        """格式错误行跳过。"""
-        md = "09:00 正确行\n这是一段描述没有时间\n10:00 另一正确行"
-        result = parse_fragments(md, "2026-06-27")
-        assert len(result) == 2
-
-    def test_empty_content_skipped(self) -> None:
-        """空内容行跳过。"""
-        md = "09:00    \n10:00 有内容"
-        result = parse_fragments(md, "2026-06-27")
-        assert len(result) == 1
-        assert result[0][1] == "有内容"
-
-    def test_chinese_and_special_chars(self) -> None:
-        """中文和特殊字符。"""
-        md = "14:30 学习了《深度学习》🎉"
-        result = parse_fragments(md, "2026-06-27")
-        assert len(result) == 1
-        assert "《深度学习》🎉" in result[0][1]
-
-    def test_content_no_time_prefix(self) -> None:
-        """content 不含时间前缀。"""
-        md = "14:30 今天完成了设计文档"
-        result = parse_fragments(md, "2026-06-27")
-        assert result[0][1] == "今天完成了设计文档"
-        assert "14:30" not in result[0][1]
-
-    def test_empty_input(self) -> None:
-        """空输入返回空列表。"""
-        assert parse_fragments("", "2026-06-27") == []
-        assert parse_fragments("\n\n", "2026-06-27") == []
+def _pending(date: str, *items: tuple[str, str]) -> list[Fragment]:
+    """构造 pending 碎片列表：items 为 (time, content)。"""
+    return [
+        Fragment(id=f"{date}T{t}:00", date=date, time=t, content=c, status="pending")
+        for t, c in items
+    ]
 
 
-# === ConsolidationTracker ===
+# === ConsolidationTracker（观测、无锁定） ===
 
 
 class TestConsolidationTracker:
-    def test_initial_pending(self, tmp_path: Path) -> None:
-        """未整合日期返回 pending。"""
-        tracker = ConsolidationTracker(path=tmp_path / "status.json")
+    def test_default_empty(self, tmp_path: Path) -> None:
+        tracker = ConsolidationTracker(path=tmp_path / "s.json")
         s = tracker.get("2026-06-27")
-        assert s.status == "pending"
+        assert s.confirmed == 0 and s.failed == 0 and s.last_run == ""
 
-    def test_set_running(self, tmp_path: Path) -> None:
-        """设为 running。"""
-        tracker = ConsolidationTracker(path=tmp_path / "status.json")
-        assert tracker.set_running("2026-06-27") is True
-        assert tracker.get("2026-06-27").status == "running"
-
-    def test_set_done(self, tmp_path: Path) -> None:
-        """设为 done + 事件数。"""
-        tracker = ConsolidationTracker(path=tmp_path / "status.json")
-        tracker.set_running("2026-06-27")
-        tracker.set_done("2026-06-27", 5)
+    def test_record_and_get(self, tmp_path: Path) -> None:
+        tracker = ConsolidationTracker(path=tmp_path / "s.json")
+        tracker.record("2026-06-27", confirmed=3, failed=1)
         s = tracker.get("2026-06-27")
-        assert s.status == "done"
-        assert s.events == 5
+        assert s.confirmed == 3 and s.failed == 1 and s.last_run
 
-    def test_done_locks_reentry(self, tmp_path: Path) -> None:
-        """done 后 set_running 返回 False（锁定）。"""
-        tracker = ConsolidationTracker(path=tmp_path / "status.json")
-        tracker.set_running("2026-06-27")
-        tracker.set_done("2026-06-27", 3)
-        assert tracker.set_running("2026-06-27") is False
+    def test_record_overwrites(self, tmp_path: Path) -> None:
+        tracker = ConsolidationTracker(path=tmp_path / "s.json")
+        tracker.record("2026-06-27", confirmed=1, failed=2)
+        tracker.record("2026-06-27", confirmed=5, failed=0)
+        s = tracker.get("2026-06-27")
+        assert s.confirmed == 5 and s.failed == 0
 
-    def test_running_locks_reentry(self, tmp_path: Path) -> None:
-        """running 时 set_running 返回 False。"""
-        tracker = ConsolidationTracker(path=tmp_path / "status.json")
-        tracker.set_running("2026-06-27")
-        assert tracker.set_running("2026-06-27") is False
-
-    def test_persist_and_reload(self, tmp_path: Path) -> None:
-        """持久化后重启恢复。"""
-        path = tmp_path / "status.json"
-        tracker = ConsolidationTracker(path=path)
-        tracker.set_running("2026-06-27")
-        tracker.set_done("2026-06-27", 7)
-        # 新 tracker 加载同一文件
-        tracker2 = ConsolidationTracker(path=path)
-        s = tracker2.get("2026-06-27")
-        assert s.status == "done"
-        assert s.events == 7
-
-    def test_set_failed(self, tmp_path: Path) -> None:
-        """设为 failed。"""
-        tracker = ConsolidationTracker(path=tmp_path / "status.json")
-        tracker.set_running("2026-06-27")
-        tracker.set_failed("2026-06-27")
-        assert tracker.get("2026-06-27").status == "failed"
+    def test_persist_reload(self, tmp_path: Path) -> None:
+        path = tmp_path / "s.json"
+        ConsolidationTracker(path=path).record("2026-06-27", confirmed=7, failed=0)
+        s = ConsolidationTracker(path=path).get("2026-06-27")
+        assert s.confirmed == 7
 
     def test_get_all(self, tmp_path: Path) -> None:
-        """获取所有日期状态。"""
-        tracker = ConsolidationTracker(path=tmp_path / "status.json")
-        tracker.set_running("2026-06-25")
-        tracker.set_done("2026-06-25", 2)
-        tracker.set_running("2026-06-27")
-        tracker.set_done("2026-06-27", 5)
-        all_statuses = tracker.get_all()
-        dates = {s.date for s in all_statuses}
-        assert "2026-06-25" in dates
-        assert "2026-06-27" in dates
+        tracker = ConsolidationTracker(path=tmp_path / "s.json")
+        tracker.record("2026-06-25", confirmed=2, failed=0)
+        tracker.record("2026-06-27", confirmed=5, failed=0)
+        assert {s.date for s in tracker.get_all()} == {"2026-06-25", "2026-06-27"}
 
 
-# === Consolidator 整合主流程 ===
+# === Consolidator ===
 
 
-def _make_consolidator(
-    tmp_path: Path,
-    fragments_content: str | None = None,
-    denoiser=None,
-):
-    """构造 Consolidator + mock 依赖。"""
-    from mcs_mem.fragments import FragmentStore
-
-    frag_dir = tmp_path / "fragments"
-    frag_store = FragmentStore(fragments_dir=frag_dir)
-    if fragments_content is not None:
-        frag_store.overwrite("2026-06-27", fragments_content)
-
-    mock_memory = MagicMock()
-    mock_memory.ingest_structured.return_value = "ev_test_id"
-
-    tracker = ConsolidationTracker(path=tmp_path / "consolidation_status.json")
-    consolidator = Consolidator(
-        fragment_store=frag_store,
-        memory=mock_memory,
-        tracker=tracker,
-        denoiser=denoiser,
-    )
-    return consolidator, mock_memory, tracker
+def _make(tmp_path: Path):
+    store = FragmentStore(fragments_dir=tmp_path / "fragments")
+    mem = MagicMock()
+    mem.ingest_structured.side_effect = [f"ev_{i}" for i in range(1, 100)]
+    tracker = ConsolidationTracker(path=tmp_path / "cons.json")
+    return Consolidator(fragment_store=store, memory=mem, tracker=tracker), store, mem, tracker
 
 
-class TestConsolidator:
-    def test_empty_fragments_no_ingest(self, tmp_path: Path) -> None:
-        """空碎片不入图。"""
-        c, mock_mem, tracker = _make_consolidator(tmp_path, fragments_content="")
-        result = c.consolidate("2026-06-27")
-        assert result["status"] == "done"
-        assert result["events"] == 0
-        mock_mem.ingest_structured.assert_not_called()
+class TestConfirmOne:
+    def test_confirm_pending(self, tmp_path: Path) -> None:
+        c, store, mem, _ = _make(tmp_path)
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "消息A")))
+        store = c._fragments
+        fid = store.read_all("2026-06-27")[0].id
+        res = c.confirm_one(fid)
+        assert res["status"] == "confirmed" and res["event_id"] == "ev_1"
+        f = store.get(fid)
+        assert f.status == "confirmed" and f.event_id == "ev_1"
+        mem.ingest_structured.assert_called_once()
 
-    def test_retained_fragments_ingested(self, tmp_path: Path) -> None:
-        """保留碎片逐条入图（不合成）。"""
-        md = "09:00 消息A\n14:30 消息B"
-        c, mock_mem, _ = _make_consolidator(tmp_path, fragments_content=md)
-        result = c.consolidate("2026-06-27")
-        assert result["status"] == "done"
-        assert result["events"] == 2
-        assert mock_mem.ingest_structured.call_count == 2
+    def test_confirm_already_idempotent(self, tmp_path: Path) -> None:
+        c, _, mem, _ = _make(tmp_path)
+        store = c._fragments
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "A")))
+        fid = store.read_all("2026-06-27")[0].id
+        c.confirm_one(fid)
+        mem.ingest_structured.reset_mock()
+        res = c.confirm_one(fid)  # 已 confirmed
+        assert res.get("already") is True
+        mem.ingest_structured.assert_not_called()
 
-    def test_event_timestamp_matches_fragment(self, tmp_path: Path) -> None:
-        """事件时间 = 碎片时间，无塌缩。"""
-        md = "14:30 测试内容"
-        c, mock_mem, _ = _make_consolidator(tmp_path, fragments_content=md)
+    def test_ingest_failure_aborts_and_raises(self, tmp_path: Path) -> None:
+        store = FragmentStore(fragments_dir=tmp_path / "fragments")
+        mem = MagicMock()
+        mem.ingest_structured.side_effect = RuntimeError("ingest down")
+        tracker = ConsolidationTracker(path=tmp_path / "c.json")
+        c = Consolidator(fragment_store=store, memory=mem, tracker=tracker)
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "A")))
+        fid = store.read_all("2026-06-27")[0].id
+        with pytest.raises(RuntimeError, match="ingest down"):
+            c.confirm_one(fid)
+        # 回退 pending、event_id 仍 None（可重试）
+        f = store.get(fid)
+        assert f.status == "pending" and f.event_id is None
+
+    def test_confirm_missing_raises(self, tmp_path: Path) -> None:
+        c, _, _, _ = _make(tmp_path)
+        with pytest.raises(FragmentNotFound):
+            c.confirm_one("2099-01-01T00:00:00")
+
+    def test_event_timestamp_is_fragment_time(self, tmp_path: Path) -> None:
+        c, _, mem, _ = _make(tmp_path)
+        store = c._fragments
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("14:30", "内容")))
+        fid = store.read_all("2026-06-27")[0].id
+        c.confirm_one(fid)
+        assert mem.ingest_structured.call_args[0][1] == "2026-06-27T14:30:00"
+        assert mem.ingest_structured.call_args[0][0] == "内容"  # 正文，无时间前缀
+
+    def test_uses_current_content_after_cas(self, tmp_path: Path) -> None:
+        """TOCTOU 防护：begin_confirm 前的并发编辑后，ingest 用 CAS 后的当前内容（非旧快照）。"""
+
+        class _EditingStore(FragmentStore):
+            def begin_confirm(self, frag_id: str) -> bool:
+                # 模拟「初次读取 → begin_confirm」窗口内的并发编辑（碎片仍 pending）
+                self.update(frag_id, "编辑后")
+                return super().begin_confirm(frag_id)
+
+        store = _EditingStore(fragments_dir=tmp_path / "fragments")
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "原始")))
+        fid = store.read_all("2026-06-27")[0].id
+        mem = MagicMock()
+        mem.ingest_structured.return_value = "ev_1"
+        tracker = ConsolidationTracker(path=tmp_path / "c.json")
+        c = Consolidator(fragment_store=store, memory=mem, tracker=tracker)
+        c.confirm_one(fid)
+        # ingest 的是 CAS 后冻结的当前内容，而非旧快照"原始"
+        assert mem.ingest_structured.call_args[0][0] == "编辑后"
+        assert store.get(fid).content == "编辑后"
+
+
+class TestConsolidate:
+    def test_n_pending_n_events(self, tmp_path: Path) -> None:
+        c, _, mem, tracker = _make(tmp_path)
+        _seed(tmp_path / "fragments", "2026-06-27",
+              _pending("2026-06-27", ("09:00", "A"), ("10:00", "B"), ("11:00", "C")))
+        res = c.consolidate("2026-06-27")
+        assert res == {"ok": True, "date": "2026-06-27", "confirmed": 3, "skipped": 0, "failed": 0}
+        assert mem.ingest_structured.call_count == 3
+        assert tracker.get("2026-06-27").confirmed == 3
+
+    def test_empty_no_ingest(self, tmp_path: Path) -> None:
+        c, _, mem, _ = _make(tmp_path)
+        res = c.consolidate("2099-01-01")
+        assert res["confirmed"] == 0 and res["skipped"] == 0 and res["failed"] == 0
+        mem.ingest_structured.assert_not_called()
+
+    def test_skipped_counts_already_confirmed(self, tmp_path: Path) -> None:
+        c, _, mem, _ = _make(tmp_path)
+        store = c._fragments
+        _seed(tmp_path / "fragments", "2026-06-27", [
+            Fragment(id="2026-06-27T09:00:00", date="2026-06-27", time="09:00", content="A", status="confirmed", event_id="ev_x"),
+            Fragment(id="2026-06-27T10:00:00", date="2026-06-27", time="10:00", content="B", status="pending"),
+        ])
+        res = c.consolidate("2026-06-27")
+        assert res["confirmed"] == 1 and res["skipped"] == 1 and res["failed"] == 0
+
+    def test_idempotent_rerun_no_double_ingest(self, tmp_path: Path) -> None:
+        c, _, mem, _ = _make(tmp_path)
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "A"), ("10:00", "B")))
         c.consolidate("2026-06-27")
-        # 验证 ingest_structured 的 timestamp 参数
-        call_args = mock_mem.ingest_structured.call_args
-        assert call_args[0][1] == "2026-06-27T14:30:00"
+        mem.ingest_structured.reset_mock()
+        res2 = c.consolidate("2026-06-27")  # 无单日锁定，但全 confirmed → skipped
+        assert res2["confirmed"] == 0 and res2["skipped"] == 2
+        mem.ingest_structured.assert_not_called()
 
-    def test_single_day_lock(self, tmp_path: Path) -> None:
-        """单日锁定：done 后再触发返回 already。"""
-        md = "09:00 测试"
-        c, _, _ = _make_consolidator(tmp_path, fragments_content=md)
-        r1 = c.consolidate("2026-06-27")
-        assert r1["status"] == "done"
-        r2 = c.consolidate("2026-06-27")
-        assert r2["status"] == "already"
+    def test_no_single_day_lock_new_pending_confirmable(self, tmp_path: Path) -> None:
+        """无单日锁定：整合后当天再记的 pending 可再次整合入图。"""
+        c, _, mem, _ = _make(tmp_path)
+        store = c._fragments
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "A")))
+        c.consolidate("2026-06-27")  # 确认 A
+        # 追加新 pending（同日，直接写入模拟当天后续 /note）
+        _seed(tmp_path / "fragments", "2026-06-27", store.read_all("2026-06-27") + _pending("2026-06-27", ("12:00", "B")))
+        # 启动清理不涉入；重读
+        store2 = FragmentStore(fragments_dir=tmp_path / "fragments")
+        c2 = Consolidator(fragment_store=store2, memory=mem, tracker=c.tracker)
+        res = c2.consolidate("2026-06-27")
+        assert res["confirmed"] == 1 and res["skipped"] == 1  # 仅新 B 入图、A 跳过
 
-    def test_single_ingest_failure_marks_failed(self, tmp_path: Path) -> None:
-        """单条 ingest 失败：不再掩盖为 done，标 failed + 记录成功条数与已成功 ts。"""
-        md = "09:00 消息A\n10:00 消息B\n11:00 消息C"
-        c, mock_mem, tracker = _make_consolidator(tmp_path, fragments_content=md)
-        # 第二条失败
-        mock_mem.ingest_structured.side_effect = [
-            "ev1",
-            RuntimeError("ingest failed"),
-            "ev3",
-        ]
-        result = c.consolidate("2026-06-27")
-        assert result["status"] == "failed"  # 部分失败 → failed（不再掩盖为 done）
-        assert result["events"] == 2  # 成功 2 条（A、C）
-        assert result["failures"] == 1  # 失败 1 条（B）
-        # 持久化已成功碎片 ts（A、C），供重试幂等去重
-        st = tracker.get("2026-06-27")
-        assert st.status == "failed"
-        assert set(st.succeeded_ts) == {"2026-06-27T09:00:00", "2026-06-27T11:00:00"}
+    def test_single_failure_continues(self, tmp_path: Path) -> None:
+        store = FragmentStore(fragments_dir=tmp_path / "fragments")
+        mem = MagicMock()
+        mem.ingest_structured.side_effect = ["ev1", RuntimeError("x"), "ev3"]
+        tracker = ConsolidationTracker(path=tmp_path / "c.json")
+        c = Consolidator(fragment_store=store, memory=mem, tracker=tracker)
+        _seed(tmp_path / "fragments", "2026-06-27",
+              _pending("2026-06-27", ("09:00", "A"), ("10:00", "B"), ("11:00", "C")))
+        res = c.consolidate("2026-06-27")
+        assert res["confirmed"] == 2 and res["failed"] == 1
+        # 失败那条回退 pending、可重试
+        statuses = {f.content: f.status for f in store.read_all("2026-06-27")}
+        assert statuses == {"A": "confirmed", "B": "pending", "C": "confirmed"}
+        assert tracker.get("2026-06-27").failed == 1
 
-    def test_failed_retry_skips_succeeded(self, tmp_path: Path) -> None:
-        """failed 重试幂等：跳过已成功碎片、不重复入图；全补齐后标 done。"""
-        md = "09:00 消息A\n10:00 消息B\n11:00 消息C"
-        c, mock_mem, tracker = _make_consolidator(tmp_path, fragments_content=md)
-        # 第一次：B 失败 → failed（A、C 成功）
-        mock_mem.ingest_structured.side_effect = ["ev1", RuntimeError("x"), "ev3"]
-        r1 = c.consolidate("2026-06-27")
-        assert r1["status"] == "failed"
-        assert mock_mem.ingest_structured.call_count == 3
-        # 重试：B 这次成功。set_running 从 failed 重入、保留 succeeded_ts，
-        # 跳过 A、C（已成功），仅对 B 调 ingest_structured → 不重复入图。
-        mock_mem.ingest_structured.reset_mock()
-        mock_mem.ingest_structured.side_effect = None  # 清上轮耗尽的 side_effect
-        mock_mem.ingest_structured.return_value = "ev2"
-        r2 = c.consolidate("2026-06-27")
-        assert r2["status"] == "done"
-        assert mock_mem.ingest_structured.call_count == 1  # 只 B（A、C 被跳过）
-        assert r2["events"] == 3  # 全部 3 条成功
-        # done 后 succeeded_ts 清空（全成功、无需保留）
-        assert tracker.get("2026-06-27").succeeded_ts == []
-
-    def test_failed_retry_still_failing_stays_failed(self, tmp_path: Path) -> None:
-        """failed 重试若仍失败：保持 failed，已成功 ts 不丢、不重复入图。"""
-        md = "09:00 消息A\n10:00 消息B\n11:00 消息C"
-        c, mock_mem, _ = _make_consolidator(tmp_path, fragments_content=md)
-        mock_mem.ingest_structured.side_effect = ["ev1", RuntimeError("x"), "ev3"]
-        c.consolidate("2026-06-27")  # failed（A、C 成功）
-        # 重试：B 仍失败
-        mock_mem.ingest_structured.reset_mock()
-        mock_mem.ingest_structured.side_effect = RuntimeError("still")
-        r2 = c.consolidate("2026-06-27")
-        assert r2["status"] == "failed"
-        assert mock_mem.ingest_structured.call_count == 1  # 只 B（A、C 跳过）
+    def test_failed_retry_only_pending(self, tmp_path: Path) -> None:
+        store = FragmentStore(fragments_dir=tmp_path / "fragments")
+        mem = MagicMock()
+        mem.ingest_structured.side_effect = ["ev1", RuntimeError("x"), "ev3"]
+        tracker = ConsolidationTracker(path=tmp_path / "c.json")
+        c = Consolidator(fragment_store=store, memory=mem, tracker=tracker)
+        _seed(tmp_path / "fragments", "2026-06-27",
+              _pending("2026-06-27", ("09:00", "A"), ("10:00", "B"), ("11:00", "C")))
+        c.consolidate("2026-06-27")  # B 失败
+        mem.ingest_structured.reset_mock()
+        mem.ingest_structured.side_effect = None
+        mem.ingest_structured.return_value = "ev2"
+        res2 = c.consolidate("2026-06-27")
+        assert mem.ingest_structured.call_count == 1  # 仅 B（A、C 已 confirmed 跳过）
+        assert res2["confirmed"] == 1 and res2["skipped"] == 2
+        assert all(f.status == "confirmed" for f in store.read_all("2026-06-27"))
 
     def test_mutex_running(self, tmp_path: Path) -> None:
-        """互斥锁：运行中再触发返回 running。"""
-        c, _, _ = _make_consolidator(tmp_path, fragments_content="")
-        # 手动获取互斥锁模拟运行中
+        c, _, _, _ = _make(tmp_path)
         c._mutex.acquire()
         try:
-            result = c.consolidate("2026-06-27")
-            assert result["status"] == "running"
+            res = c.consolidate("2026-06-27")
+            assert res["ok"] is False and res.get("warning")
         finally:
             c._mutex.release()
 
-    def test_denoiser_filters_noise(self, tmp_path: Path) -> None:
-        """去噪器过滤噪声碎片。"""
-        md = "09:00 喝了杯咖啡\n10:00 完成了架构设计\n11:00 随便聊聊"
-        calls = []
 
-        def denoiser(content: str) -> bool:
-            calls.append(content)
-            return "设计" in content  # 只保留含"设计"的
+class TestConcurrentCAS:
+    """并发确认同一条碎片：仅一个 ingest，其余抢占失败、不重复入图。"""
 
-        c, mock_mem, _ = _make_consolidator(tmp_path, fragments_content=md,
-                                             denoiser=denoiser)
-        result = c.consolidate("2026-06-27")
-        assert result["events"] == 1
-        # 验证只 ingest 了保留的碎片
-        call_args = mock_mem.ingest_structured.call_args
-        assert "架构设计" in call_args[0][0]
+    def test_concurrent_confirm_single_ingest(self, tmp_path: Path) -> None:
+        store = FragmentStore(fragments_dir=tmp_path / "fragments")
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "并发")))
+        fid = store.read_all("2026-06-27")[0].id
 
-    def test_denoiser_does_not_merge(self, tmp_path: Path) -> None:
-        """去噪不合成不归并——多条同事各自保留为独立碎片。"""
-        md = "09:00 讨论了方案A\n09:30 讨论了方案B"
-        c, mock_mem, _ = _make_consolidator(tmp_path, fragments_content=md)
-        result = c.consolidate("2026-06-27")
-        assert result["events"] == 2  # 两条都保留，不合成
+        class _SlowMem:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, str]] = []
+                self.lock = threading.Lock()
 
-    def test_denoiser_conservative(self, tmp_path: Path) -> None:
-        """去噪保守——拿不准就保留。"""
-        md = "09:00 模糊内容"
-        c, mock_mem, _ = _make_consolidator(tmp_path, fragments_content=md)
-        result = c.consolidate("2026-06-27")
-        assert result["events"] == 1  # 默认去噪器全保留
+            def ingest_structured(self, content: str, ts: str) -> str:
+                with self.lock:
+                    self.calls.append((content, ts))
+                    n = len(self.calls)
+                time.sleep(0.02)  # 拉宽竞态窗口
+                return f"ev_{n}"
 
-    def test_denoise_does_not_rewrite_content(self, tmp_path: Path) -> None:
-        """去噪不改写 content：去噪器收到 + 送 ingest 的 content 都是解析原文（无时间前缀），
-        去噪只判去留、不参与 content 构造。"""
-        md = "09:30 完成了架构设计"
-        seen_by_denoiser: list[str] = []
+        mem = _SlowMem()
+        tracker = ConsolidationTracker(path=tmp_path / "c.json")
+        c = Consolidator(fragment_store=store, memory=mem, tracker=tracker)
 
-        def denoiser(content: str) -> bool:
-            seen_by_denoiser.append(content)
-            return True  # 保留
+        results: list[object] = []
+        rlock = threading.Lock()
 
-        c, mock_mem, _ = _make_consolidator(tmp_path, fragments_content=md, denoiser=denoiser)
-        c.consolidate("2026-06-27")
-        # 去噪器收到解析原文（不含时间前缀）
-        assert seen_by_denoiser == ["完成了架构设计"]
-        # 送 ingest 的 content 也是原文（未被改写 / 润色）
-        assert mock_mem.ingest_structured.call_args[0][0] == "完成了架构设计"
+        def _worker() -> None:
+            try:
+                r = c.confirm_one(fid)
+            except Exception as e:  # pragma: no cover
+                r = e
+            with rlock:
+                results.append(r)
 
-    def test_nonexistent_date_treated_as_empty(self, tmp_path: Path) -> None:
-        """不存在的日期视为空，不入图。"""
-        c, mock_mem, _ = _make_consolidator(tmp_path, fragments_content=None)
-        result = c.consolidate("2099-01-01")
-        assert result["status"] == "done"
-        assert result["events"] == 0
+        threads = [threading.Thread(target=_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
-
-# === LLMDenoiser ===
-
-
-class _FakeLLMResponse:
-    def __init__(self, content: str) -> None:
-        self.content = content
-        self.tool_calls = None
-        self.trace = None
-
-
-class _FakeDenoiseLLM:
-    """模拟 LLM 后端——返回预定义内容。"""
-
-    def __init__(self, response: str = "保留") -> None:
-        self._response = response
-        self.calls: list[list[dict]] = []
-
-    def chat(self, messages, tools):
-        self.calls.append(messages)
-        return _FakeLLMResponse(self._response)
-
-
-class TestLLMDenoiser:
-    def test_retain_fragment(self) -> None:
-        """LLM 判"保留"——碎片保留。"""
-        from mcs_mem.consolidation import LLMDenoiser
-
-        denoiser = LLMDenoiser(llm=_FakeDenoiseLLM("保留"))
-        assert denoiser("今天完成了架构设计") is True
-
-    def test_discard_noise(self) -> None:
-        """LLM 判"丢弃"——碎片被丢。"""
-        from mcs_mem.consolidation import LLMDenoiser
-
-        denoiser = LLMDenoiser(llm=_FakeDenoiseLLM("丢弃"))
-        assert denoiser("哈哈") is False
-
-    def test_llm_failure_conservative(self) -> None:
-        """LLM 调用失败——保守保留。"""
-        from mcs_mem.consolidation import LLMDenoiser
-
-        broken_llm = MagicMock()
-        broken_llm.chat.side_effect = RuntimeError("LLM down")
-        denoiser = LLMDenoiser(llm=broken_llm)
-        assert denoiser("任何内容") is True  # 保守保留
-
-    def test_denoiser_does_not_merge(self, tmp_path: Path) -> None:
-        """LLM 去噪不合成不归并——多条各自独立保留。"""
-        from mcs_mem.consolidation import LLMDenoiser
-
-        llm = _FakeDenoiseLLM("保留")
-        denoiser = LLMDenoiser(llm=llm)
-        md = "09:00 讨论了方案A\n09:30 讨论了方案B"
-        c, mock_mem, _ = _make_consolidator(tmp_path, fragments_content=md,
-                                             denoiser=denoiser)
-        result = c.consolidate("2026-06-27")
-        assert result["events"] == 2  # 两条都保留，不合成
-
-    def test_agent_learn_not_affected(self, tmp_path: Path) -> None:
-        """去噪只作用整合路径，agent 直接 learn 不经去噪。"""
-        from mcs_mem.consolidation import LLMDenoiser
-
-        denoiser = LLMDenoiser(llm=_FakeDenoiseLLM("丢弃"))
-        # denoiser 判全丢，但这只影响 Consolidator 的整合流程
-        # agent 直接调 memory.learn() 不走 Consolidator
-        assert denoiser("重要内容") is False  # 去噪器说丢
-        # 但 learn 路径完全不经去噪器——这是设计保证，不是代码保证
-        # 此测试仅确认去噪器接口本身不影响 learn
+        assert len(mem.calls) == 1  # 仅一次 ingest
+        confirmed = [r for r in results if isinstance(r, dict) and not r.get("already")]
+        already = [r for r in results if isinstance(r, dict) and r.get("already")]
+        assert len(confirmed) == 1 and len(already) == 7
+        assert store.get(fid).status == "confirmed"
 
 
 # === ConsolidationScheduler ===
@@ -395,59 +296,172 @@ class TestLLMDenoiser:
 
 class TestConsolidationScheduler:
     def test_parse_cron(self) -> None:
-        """cron 表达式正确解析。"""
         from mcs_mem.scheduler import ConsolidationScheduler
 
-        result = ConsolidationScheduler._parse_cron("30 0 * * *")
-        assert result == {
-            "minute": "30", "hour": "0", "day": "*",
-            "month": "*", "day_of_week": "*",
+        assert ConsolidationScheduler._parse_cron("30 0 * * *") == {
+            "minute": "30", "hour": "0", "day": "*", "month": "*", "day_of_week": "*",
         }
 
     def test_parse_cron_invalid(self) -> None:
-        """无效 cron 表达式抛异常。"""
         from mcs_mem.scheduler import ConsolidationScheduler
 
         with pytest.raises(ValueError, match="无效"):
             ConsolidationScheduler._parse_cron("30 0 *")
 
-    def test_disabled_scheduler(self) -> None:
-        """enabled=False 不启动调度器。"""
+    def test_disabled(self) -> None:
         from mcs_mem.scheduler import ConsolidationScheduler
 
-        mock_consolidator = MagicMock()
-        scheduler = ConsolidationScheduler(
-            consolidator=mock_consolidator, enabled=False,
-        )
-        scheduler.start()
-        # 不注册定时任务——_scheduler 为 None
-        assert scheduler._scheduler is None
+        s = ConsolidationScheduler(consolidator=MagicMock(), enabled=False)
+        s.start()
+        assert s._scheduler is None
 
-    def test_start_and_shutdown(self) -> None:
-        """启动后可正常关闭。"""
+    def test_start_shutdown(self) -> None:
         pytest.importorskip("apscheduler")
         from mcs_mem.scheduler import ConsolidationScheduler
 
-        mock_consolidator = MagicMock()
-        scheduler = ConsolidationScheduler(
-            consolidator=mock_consolidator, cron="0 1 * * *",
-        )
-        scheduler.start()
-        assert scheduler._scheduler is not None
-        scheduler.shutdown()
-        # shutdown 后 scheduler 已停
+        s = ConsolidationScheduler(consolidator=MagicMock(), cron="0 1 * * *")
+        s.start()
+        assert s._scheduler is not None
+        s.shutdown()
 
     def test_run_yesterday(self) -> None:
-        """_run_yesterday 调 consolidator.consolidate(昨天)。"""
-        from mcs_mem.scheduler import ConsolidationScheduler
-
         from datetime import date as date_type, timedelta
 
-        mock_consolidator = MagicMock()
-        mock_consolidator.consolidate.return_value = {
-            "ok": True, "date": "2026-06-26", "status": "done", "events": 3,
+        from mcs_mem.scheduler import ConsolidationScheduler
+
+        mock = MagicMock()
+        mock.consolidate.return_value = {
+            "ok": True, "date": "2026-06-26", "confirmed": 3, "skipped": 0, "failed": 0,
         }
-        scheduler = ConsolidationScheduler(consolidator=mock_consolidator)
-        scheduler._run_yesterday()
+        ConsolidationScheduler(consolidator=mock)._run_yesterday()
         yesterday = (date_type.today() - timedelta(days=1)).isoformat()
-        mock_consolidator.consolidate.assert_called_once_with(yesterday)
+        mock.consolidate.assert_called_once_with(yesterday)
+
+
+# === 重复入图自愈 + tracker 封装 ===
+
+
+class TestConfirmOneSelfHeal:
+    """attach_event 后 confirm_mark 失败：保留 confirming+event_id（不清锚点、防重复入图）。"""
+
+    def test_attach_then_confirm_mark_fail_keeps_event_id(self, tmp_path: Path) -> None:
+        store = FragmentStore(fragments_dir=tmp_path / "fragments")
+        mem = MagicMock()
+        mem.ingest_structured.return_value = "ev_1"
+        c = Consolidator(
+            fragment_store=store,
+            memory=mem,
+            tracker=ConsolidationTracker(path=tmp_path / "c.json"),
+        )
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "A")))
+        fid = store.read_all("2026-06-27")[0].id
+        # 模拟 attach_event 已成功落 event_id 后、confirm_mark 崩（本地写故障）
+        store.confirm_mark = MagicMock(side_effect=OSError("disk"))
+        with pytest.raises(OSError):
+            c.confirm_one(fid)
+        f = store.get(fid)
+        # event_id 已落（ingest 成功）、状态仍 confirming（未 abort）——重启 _cleanup_confirming 自愈 confirmed
+        assert f.status == "confirming" and f.event_id == "ev_1"
+        mem.ingest_structured.assert_called_once()
+
+
+class TestTrackerProperty:
+    def test_tracker_property_exposes_tracker(self, tmp_path: Path) -> None:
+        c, _, _, tracker = _make(tmp_path)
+        assert c.tracker is tracker  # 公共 property 返回同一 tracker（路由层不再探 _tracker）
+
+
+class TestAttachEventFailure:
+    """attach_event 抛错（本地 IO 故障）：事件已建，MUST NOT abort（防重复入图）。"""
+
+    def test_attach_fail_confirm_mark_succeeds(self, tmp_path: Path) -> None:
+        """attach 失败但 confirm_mark 成功：最终 confirmed + event_id 完整、单次 ingest。"""
+        store = FragmentStore(fragments_dir=tmp_path / "fragments")
+        mem = MagicMock()
+        mem.ingest_structured.return_value = "ev_1"
+        c = Consolidator(
+            fragment_store=store,
+            memory=mem,
+            tracker=ConsolidationTracker(path=tmp_path / "c.json"),
+        )
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "A")))
+        fid = store.read_all("2026-06-27")[0].id
+        store.attach_event = MagicMock(side_effect=OSError("disk"))
+        res = c.confirm_one(fid)
+        assert res["status"] == "confirmed" and res["event_id"] == "ev_1"
+        f = store.get(fid)
+        assert f.status == "confirmed" and f.event_id == "ev_1"
+        mem.ingest_structured.assert_called_once()
+
+    def test_attach_and_mark_both_fail_no_abort(self, tmp_path: Path) -> None:
+        """attach 与 confirm_mark 均失败：不 abort（修复前误判「事件未建」回退 pending
+        → 重试重复入图）；状态留 confirming、单次 ingest。"""
+        store = FragmentStore(fragments_dir=tmp_path / "fragments")
+        mem = MagicMock()
+        mem.ingest_structured.return_value = "ev_1"
+        c = Consolidator(
+            fragment_store=store,
+            memory=mem,
+            tracker=ConsolidationTracker(path=tmp_path / "c.json"),
+        )
+        _seed(tmp_path / "fragments", "2026-06-27", _pending("2026-06-27", ("09:00", "A")))
+        fid = store.read_all("2026-06-27")[0].id
+        store.attach_event = MagicMock(side_effect=OSError("disk"))
+        store.confirm_mark = MagicMock(side_effect=OSError("disk"))
+        with pytest.raises(OSError):
+            c.confirm_one(fid)
+        f = store.get(fid)
+        assert f.status == "confirming"  # 未回退 pending → 不会重 ingest
+        mem.ingest_structured.assert_called_once()
+
+
+class TestFragmentTimestampSeconds:
+    """碎片入图事件时间：优先取 id 中的秒级时间（同一分钟多条保真实次序）。"""
+
+    def test_seconds_from_id(self, tmp_path: Path) -> None:
+        c, _, mem, _ = _make(tmp_path)
+        store = c._fragments
+        frag = Fragment(
+            id="2026-06-27T09:00:33",
+            date="2026-06-27",
+            time="09:00",
+            content="秒级",
+            status="pending",
+        )
+        _seed(tmp_path / "fragments", "2026-06-27", [frag])
+        c.confirm_one(frag.id)
+        assert mem.ingest_structured.call_args[0][1] == "2026-06-27T09:00:33"
+
+    def test_seconds_from_id_with_conflict_suffix(self, tmp_path: Path) -> None:
+        """同秒冲突后缀 ``-2`` 不进时间戳。"""
+        c, _, mem, _ = _make(tmp_path)
+        frag = Fragment(
+            id="2026-06-27T09:00:33-2",
+            date="2026-06-27",
+            time="09:00",
+            content="冲突后缀",
+            status="pending",
+        )
+        _seed(tmp_path / "fragments", "2026-06-27", [frag])
+        c.confirm_one(frag.id)
+        assert mem.ingest_structured.call_args[0][1] == "2026-06-27T09:00:33"
+
+    def test_fallback_minute_precision(self, tmp_path: Path) -> None:
+        """id 形态异常（老数据）→ 退回 time 补 :00 的旧口径。"""
+        from mcs_mem.consolidation import _fragment_timestamp
+
+        frag = Fragment(
+            id="legacy-id", date="2026-06-27", time="14:30", content="旧", status="pending"
+        )
+        assert _fragment_timestamp(frag) == "2026-06-27T14:30:00"
+
+
+class TestSchedulerInvalidCron:
+    def test_invalid_cron_disables_not_crashes(self) -> None:
+        """非法 cron（env 配错）：start() 不抛、定时禁用（不炸 app lifespan）。"""
+        from mcs_mem.scheduler import ConsolidationScheduler
+
+        s = ConsolidationScheduler(consolidator=MagicMock(), cron="bad cron expr")
+        s.start()  # 不应 raise
+        assert s._scheduler is None
+        s.shutdown()  # 幂等无害

@@ -136,6 +136,32 @@ class TestManagePage:
         assert "记忆管理" in r.text
 
 
+class TestManageUIBlocks:
+    """碎片块两态 + 整合块无批量按钮（静态页结构校验）。"""
+
+    @pytest.fixture
+    def html(self, store: FragmentStore) -> str:
+        mock_agent = MagicMock()
+        mock_agent.chat.return_value = "ok"
+        app = create_app(agent=mock_agent, fragment_store=store)
+        return TestClient(app).get("/manage.html").text
+
+    def test_no_batch_consolidate_button(self, html: str) -> None:
+        """整合块无批量确认入口（批量由 scheduler 兜底）。"""
+        assert "整合昨天" not in html
+        assert "确认当天全部" not in html
+
+    def test_per_fragment_confirm_present(self, html: str) -> None:
+        """逐条确认入口存在（确认按钮 + confirm 端点）。"""
+        assert "/confirm" in html
+        assert "confirmFragment" in html
+
+    def test_fragment_states_rendered(self, html: str) -> None:
+        """分天分组 + 两态渲染逻辑存在。"""
+        assert "frag-groups" in html
+        assert "confirmed" in html and "pending" in html
+
+
 class TestMemFrontend:
     """mcs_mem 自建前端入口（剥离 mcs_agent 前端）。"""
 
@@ -160,3 +186,13 @@ class TestMemFrontend:
         assert "text/html" in r.headers.get("content-type", "")
         assert "node_class" in r.text  # 统一模型字段
         assert "relation_model" not in r.text  # 旧字段已删
+
+    def test_vendor_cytoscape_served(self, store: FragmentStore) -> None:
+        """mcs_mem 自带 vendor：/vendor/cytoscape.min.js 由自己的 static 提供（200，不 404）。"""
+        mock_agent = MagicMock()
+        mock_agent.chat.return_value = "ok"
+        app = create_app(agent=mock_agent, fragment_store=store)
+        client = TestClient(app)
+        r = client.get("/vendor/cytoscape.min.js")
+        assert r.status_code == 200
+        assert "javascript" in r.headers.get("content-type", "").lower()

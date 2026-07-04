@@ -1,6 +1,7 @@
 """日记生成——当天碎片概括成一篇人读的日记 Markdown。
 
-输入：当天 MD 碎片（Slice 1 FragmentStore.read(date)）。
+输入：当天**全部碎片**（``FragmentStore.read_all(date)``——pending / confirming /
+confirmed 各态全量，按 time 排序），拼成 ``HH:MM 内容`` 文本。
 输出：一篇日记 Markdown，存独立目录（~/.mcs_memory/diaries/），不进图。
 LLM：复用 mcs_agent 的 llm_call，独立的"概括"prompt。
 
@@ -38,8 +39,8 @@ _DIARY_PROMPT = """\
 _DIARY_MAX_CHARS = 4000
 
 _DIARY_MERGE_PROMPT = """\
-以下是同一天碎片按时间段分段概括出的草稿（已各自成文）。请把它们合并成一篇连贯的第一人称日记，
-保留每段关键信息、按时间顺序、不杜撰、不遗漏：
+以下是 {date} 当天碎片按时间段分段概括出的草稿（已各自成文）。请把它们合并成一篇连贯的第一人称日记，
+保留每段关键信息、按时间顺序、不杜撰、不遗漏；**日期 / 星期必须用给定的 {date}**，MUST NOT 编造其他日期：
 
 草稿：
 {parts}
@@ -104,8 +105,13 @@ class _LLMProto(Protocol):
     def chat(self, messages: list[dict], tools: list[dict]) -> Any: ...
 
 
+class _FragmentProto(Protocol):
+    time: str
+    content: str
+
+
 class _FragmentStoreProto(Protocol):
-    def read(self, date: str) -> Optional[str]: ...
+    def read_all(self, date: str) -> list[_FragmentProto]: ...
 
 
 class DiaryGenerator:
@@ -119,9 +125,9 @@ class DiaryGenerator:
 
     def __init__(
         self,
-        fragment_store: Any,
+        fragment_store: _FragmentStoreProto,
         diary_store: DiaryStore,
-        llm: Any,
+        llm: _LLMProto,
     ) -> None:
         self._fragments = fragment_store
         self._diary = diary_store
@@ -136,8 +142,12 @@ class DiaryGenerator:
         Returns:
             日记文本；当天无碎片返回 None。
         """
-        md_text = self._fragments.read(date)
-        if not md_text or not md_text.strip():
+        frags = self._fragments.read_all(date)
+        if not frags:
+            return None
+        # 全部碎片（各态）拼 ``HH:MM 内容`` 文本，与旧 MD 行格式一致。
+        md_text = "\n".join(f"{f.time} {f.content}" for f in frags)
+        if not md_text.strip():
             return None
 
         if len(md_text) <= _DIARY_MAX_CHARS:
@@ -188,7 +198,7 @@ class DiaryGenerator:
         parts = [self._summarize(c, date) for c in chunks]
         try:
             return self._call_llm(
-                _DIARY_MERGE_PROMPT.format(parts="\n\n---\n\n".join(parts)),
+                _DIARY_MERGE_PROMPT.format(parts="\n\n---\n\n".join(parts), date=date),
                 system="你是日记撰写助手，负责把分段草稿合并成一篇连贯日记。",
             )
         except Exception:
