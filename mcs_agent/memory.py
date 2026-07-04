@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from mcs.core.plugin import PluginType
 from mcs.entities.decisions import IngestInput
-from mcs.entities.graph import CLASS_EVENT, EDGE_ASSOC, Edge, Node
+from mcs.entities.graph import CLASS_EVENT, Edge, Node
 from mcs.rendering import format_ingest_status, render_query_result
 from mcs.utils.timestamps import event_sort_key
 
@@ -511,7 +511,8 @@ class MemoryStore:
 
         返回 ``{node, nodes, edges}``：
           - nodes = 下钻成员 ∪ 关系边另一端节点，按 id 去重、不含焦点；
-          - edges = 下钻关联边（焦点→各下钻成员）∪ 关系边（关联 / 互斥，get_relations 反查）。
+          - edges = 焦点的关系边（``get_relations``，关联 / 互斥）；统一模型下层级即关联边，
+            焦点→各下钻成员的连线已含其中，不再另造虚拟边。
         关系边端点随响应返回（端点不在下钻成员中，必须单独收集才能连线）。
         焦点节点不存在返回 None（不抛）；悬空关系边（另一端 get_node 返 None）跳过
         端点节点、但该边仍保留进 edges。
@@ -557,23 +558,10 @@ class MemoryStore:
                 continue  # 悬空边：跳过端点、边仍保留
             nodes_by_id[other_node.id] = _node_with_degree(other_node)
 
-        # 边集：下钻关联边（焦点→各下钻成员，确定性 id 供前端去重）∪ 关系边
-        edges: list[dict] = []
-        for child in children:
-            if child.id == node_id:
-                continue
-            edges.append(
-                _edge_to_dict(
-                    Edge(
-                        source_id=node_id,
-                        target_id=child.id,
-                        id=f"hierarchy::{node_id}::{child.id}",
-                        type=EDGE_ASSOC,
-                    )
-                )
-            )
-        for edge in rel_edges:
-            edges.append(_edge_to_dict(edge))
+        # 边集 = 焦点的关系边（get_relations，关联 / 互斥）。统一模型下层级即关联边，
+        # 焦点→各下钻成员的连线已含其中——不再另造虚拟 hierarchy 边（旧模型层级独立 kind
+        # 时才需自造；unified-graph-schema 后残留成多边 bug，现已清除）。
+        edges = [_edge_to_dict(edge) for edge in rel_edges]
 
         return {
             "node": _node_with_degree(focus),

@@ -5,12 +5,12 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 ## Requirements
 ### Requirement: MemoryStore graph_view 只读原语
 
-`MemoryStore` SHALL 提供只读原语 `graph_view(node_id) -> dict | None`，经单 worker 线程（`_submit`）执行：取焦点节点（`get_node`）、其下钻成员（`get_out_hierarchy`）、其关系边（`get_relations`，关联 / 互斥）、关系边的**另一端节点**，序列化为 `{node, nodes, edges}` 返回（`nodes` = 下钻成员 ∪ 关系边端点按 id 去重、不含焦点；`edges` = 下钻边 `焦点→成员` ∪ 关系边）。节点不存在时返回 `None`。**调用方线程 MUST NOT 直接读 `store` / `mcs`**（线程安全铁律）。MUST NOT 再返回 `relation_model` 键。
+`MemoryStore` SHALL 提供只读原语 `graph_view(node_id) -> dict | None`，经单 worker 线程（`_submit`）执行：取焦点节点（`get_node`）、其下钻成员（`get_out_hierarchy`）、其关系边（`get_relations`，关联 / 互斥）、关系边的**另一端节点**，序列化为 `{node, nodes, edges}` 返回（`nodes` = 下钻成员 ∪ 关系边端点按 id 去重、不含焦点；`edges` = 焦点的关系边（`get_relations`，统一模型层级即关联边，焦点→下钻成员的连线已含其中，不再另造虚拟边））。节点不存在时返回 `None`。**调用方线程 MUST NOT 直接读 `store` / `mcs`**（线程安全铁律）。MUST NOT 再返回 `relation_model` 键。
 
 #### Scenario: 根视图返回焦点、邻居节点、边
 
 - **WHEN** 调用 `graph_view("__seed_root__")`
-- **THEN** MUST 返回 dict，其中 `node.id == "__seed_root__"`、`nodes` 为下钻成员与（若有）关系边端点的并集、`edges` 含下钻边与关系边
+- **THEN** MUST 返回 dict，其中 `node.id == "__seed_root__"`、`nodes` 为下钻成员与（若有）关系边端点的并集、`edges` 为焦点的关系边（含焦点→下钻成员的连线）
 - **AND** MUST NOT 含 `relation_model` 键
 
 #### Scenario: 节点不存在返回 None
@@ -37,7 +37,7 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 
 ### Requirement: graph_view 返回结构为 JSON 友好纯 dict
 
-`graph_view` 返回的 `node` 与 `nodes[*]` MUST 为 `{id, name, content, node_class, degree}`（`degree` = 下钻成员数 + 关系边度数，int，供热力图）；`edges[*]` MUST 为 `{id, source, target, type}`（`id` 取 `edge.id`，供前端按 id 去重）。所有字段 MUST 为 JSON 可序列化纯值，MUST NOT 携带 dataclass 实例 / 内部引用。`nodes` MUST 按 id 去重。下钻（组织）边 MUST 为 `{source: 焦点.id, target: 成员.id, type: "关联"}`。MUST NOT 含 `relation_model` / `kind` / `label` / `role` 字段。
+`graph_view` 返回的 `node` 与 `nodes[*]` MUST 为 `{id, name, content, node_class, degree}`（`degree` = 下钻成员数 + 关系边度数，int，供热力图）；`edges[*]` MUST 为 `{id, source, target, type}`（`id` 取 `edge.id`，供前端按 id 去重）。所有字段 MUST 为 JSON 可序列化纯值，MUST NOT 携带 dataclass 实例 / 内部引用。`nodes` MUST 按 id 去重。焦点→下钻成员的连线即焦点作 source 的关联边（`get_relations` 已含，统一模型层级=关联），同一对节点 MUST NOT 因另造虚拟边而出现多条。MUST NOT 含 `relation_model` / `kind` / `label` / `role` 字段。
 
 #### Scenario: 节点序列化字段
 
@@ -55,10 +55,11 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 - **WHEN** 某节点既是焦点节点的下钻成员、又是其关系边端点
 - **THEN** 该节点在 `nodes` 中 MUST 只出现一次
 
-#### Scenario: 下钻边由后端给出
+#### Scenario: 下钻连线即关联边、同对节点无重复
 
-- **WHEN** 焦点节点有下钻成员
-- **THEN** `edges` MUST 含对应下钻边，其 `source` 为焦点 `id`、`target` 为该成员 `id`、`type == "关联"`
+- **WHEN** 焦点节点有下钻成员（经关联边挂载，统一模型层级=关联）
+- **THEN** `edges` MUST 含焦点→该成员的关联边（`source` 为焦点 `id`、`target` 为成员 `id`、`type == "关联"`，来自 `get_relations`）
+- **AND** 同一对 `(source, target, type)` MUST 只出现一条（MUST NOT 另造虚拟 hierarchy 边导致多边）
 
 ---
 

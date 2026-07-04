@@ -83,7 +83,7 @@
 <body>
 <header>
   <h1>🧠 记忆图谱</h1>
-  <a href="/manage.html">← 管理看板</a>
+  <a href="/manage.html" target="_top">← 管理看板</a>
 </header>
 <div id="status"></div>
 <div id="main">
@@ -217,11 +217,14 @@ function showEdgeDetail(data, srcName, tgtName) {
   aside.appendChild(c);
 }
 
+// root 友好显示名（数据层 name="__seed_root__" 不变，纯呈现层映射；用户记忆图入口）
+const ROOT_DISPLAY_NAME = "我的记忆";
 function ensureNode(n, bag) {
   if (cy.getElementById(n.id).nonempty()) return; // 按 id 去重
+  const name = n.id === "__seed_root__" ? ROOT_DISPLAY_NAME : n.name;
   bag.push({
     group: "nodes",
-    data: { id: n.id, name: n.name, content: n.content, node_class: n.node_class, hub: !!n.hub, degree: n.degree || 0 },
+    data: { id: n.id, name, content: n.content, node_class: n.node_class, hub: !!n.hub, degree: n.degree || 0 },
   });
 }
 
@@ -230,8 +233,9 @@ function applyView(view) {
   ensureNode(view.node, bag);          // 焦点节点（首拉根 / 下钻时已存在则跳过）
   // root 视图折叠：只显示 hub 子节点（root 直挂大量概念时折叠）；非 root 视图显示全部邻居。
   const isRoot = view.node.id === "__seed_root__";
+  const hasHubChild = view.nodes.some((n) => n.hub);
   view.nodes.forEach((n) => {
-    if (isRoot && !n.hub) return;
+    if (isRoot && !n.hub && hasHubChild) return; // 有 hub 子节点才折叠非 hub；无 hub 全显（防空图）
     ensureNode(n, bag);
   });
   if (bag.length) cy.add(bag);

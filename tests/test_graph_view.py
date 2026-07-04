@@ -34,12 +34,16 @@ def _n(
 
 
 class FakeStore:
-    """内存图：节点 dict + 下钻边 + 关系边 list；读方法记录执行线程 id。"""
+    """内存图：节点 dict + 单一 edges 列表（统一模型：层级即关联边，无独立层级存储）。
+
+    忠实反映真实 store——``get_out_hierarchy`` 取关联出边目标、``get_relations`` 取作任一端
+    的边，二者同源于 ``edges``。读方法记录执行线程 id。**不做载重过滤**（载重由真实 store
+    覆盖，见 ``test_unified_graph_schema``）。
+    """
 
     def __init__(self) -> None:
         self.nodes: dict[str, Node] = {}
-        self.hierarchy: list[Edge] = []   # 下钻成员（关联出边）
-        self.relations: list[Edge] = []   # 关系边（关联 / 互斥）
+        self.edges: list[Edge] = []   # 全部边（关联 / 互斥；层级=关联，无独立层级存储）
         self.read_threads: set[int] = set()
         self.get_node_counts: dict[str, int] = {}
 
@@ -55,13 +59,13 @@ class FakeStore:
         self.read_threads.add(threading.get_ident())
         return [
             self.nodes[e.target_id]
-            for e in self.hierarchy
-            if e.source_id == nid and e.target_id in self.nodes
+            for e in self.edges
+            if e.source_id == nid and e.type == EDGE_ASSOC and e.target_id in self.nodes
         ]
 
     def get_relations(self, nid: str, limit: int | None = None) -> list[Edge]:
         self.read_threads.add(threading.get_ident())
-        es = [e for e in self.relations if e.source_id == nid or e.target_id == nid]
+        es = [e for e in self.edges if e.source_id == nid or e.target_id == nid]
         return es[:limit] if limit else es
 
 
@@ -89,9 +93,9 @@ def test_root_view_focus_nodes_edges():
     store.add_node(_n("c1", "概念甲"))
     store.add_node(_n("c2", "概念乙"))
     store.add_node(_n("f1", "事实端点"))
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c2", type=EDGE_ASSOC))
-    store.relations.append(Edge(source_id="__seed_root__", target_id="f1", type=EDGE_ASSOC))
+    store.edges.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
+    store.edges.append(Edge(source_id="__seed_root__", target_id="c2", type=EDGE_ASSOC))
+    store.edges.append(Edge(source_id="__seed_root__", target_id="f1", type=EDGE_ASSOC))
     ms = _make(store)
     try:
         out = ms.graph_view("__seed_root__")
@@ -118,8 +122,7 @@ def test_node_not_found_returns_none():
 def test_isolated_leaf_empty_nodes_and_edges():
     store = FakeStore()
     store.add_node(_n("__seed_root__", hub=True))
-    store.add_node(_n("leaf"))
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="leaf", type=EDGE_ASSOC))
+    store.add_node(_n("leaf"))  # 孤立叶子：既无下钻成员、又无关系边（spec 定义）
     ms = _make(store)
     try:
         out = ms.graph_view("leaf")
@@ -138,7 +141,7 @@ def test_relation_edge_endpoint_in_nodes():
     store = FakeStore()
     store.add_node(_n("a"))
     store.add_node(_n("b"))
-    store.relations.append(Edge(source_id="a", target_id="b", type=EDGE_ASSOC))
+    store.edges.append(Edge(source_id="a", target_id="b", type=EDGE_ASSOC))
     ms = _make(store)
     try:
         out = ms.graph_view("a")
@@ -155,7 +158,7 @@ def test_relation_edge_reverse_endpoint():
     store = FakeStore()
     store.add_node(_n("a"))
     store.add_node(_n("b"))
-    store.relations.append(Edge(source_id="a", target_id="b", type=EDGE_MUTEX))
+    store.edges.append(Edge(source_id="a", target_id="b", type=EDGE_MUTEX))
     ms = _make(store)
     try:
         out = ms.graph_view("b")
@@ -172,9 +175,8 @@ def test_relation_edge_reverse_endpoint():
 def test_dict_fields_types_dedup_and_drill_contract():
     store = FakeStore()
     store.add_node(_n("__seed_root__", hub=True))
-    store.add_node(_n("c1"))  # 既是下钻成员、又是关系端点（测去重）
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
-    store.relations.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
+    store.add_node(_n("c1"))  # 统一模型：root→c1 一条关联边兼「下钻成员」与「关系端点」
+    store.edges.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
     ms = _make(store)
     try:
         out = ms.graph_view("__seed_root__")
@@ -193,9 +195,10 @@ def test_dict_fields_types_dedup_and_drill_contract():
         assert "relation_model" not in out
         # nodes 按 id 去重：c1 既下钻成员又关系端点 → 只一份
         assert sum(1 for n in out["nodes"] if n["id"] == "c1") == 1
-        # 下钻边契约（root→c1）
+        # 下钻连线契约（root→c1）：统一模型层级=关联，同一条关联边兼下钻边与关系边，
+        # MUST 只渲染一条（钉死旧虚拟 hierarchy 边残留导致的多边 bug）
         drill = [e for e in out["edges"] if e["source"] == "__seed_root__" and e["target"] == "c1"]
-        assert drill
+        assert len(drill) == 1
         # 纯 JSON 可序列化（不含 dataclass / 内部对象）
         json.dumps(out)
     finally:
@@ -208,7 +211,7 @@ def test_dict_fields_types_dedup_and_drill_contract():
 def test_dangling_relation_edge_kept_without_endpoint():
     store = FakeStore()
     store.add_node(_n("a"))
-    store.relations.append(Edge(source_id="a", target_id="ghost", type=EDGE_ASSOC))
+    store.edges.append(Edge(source_id="a", target_id="ghost", type=EDGE_ASSOC))
     ms = _make(store)
     try:
         out = ms.graph_view("a")
@@ -226,9 +229,9 @@ def test_dangling_endpoint_queried_once_across_edges():
     store = FakeStore()
     store.add_node(_n("a"))
     # 三条关系边都指向不存在的 ghost（悬空）
-    store.relations.append(Edge(source_id="a", target_id="ghost", type=EDGE_ASSOC))
-    store.relations.append(Edge(source_id="a", target_id="ghost", type=EDGE_MUTEX))
-    store.relations.append(Edge(source_id="ghost", target_id="a", type=EDGE_ASSOC))
+    store.edges.append(Edge(source_id="a", target_id="ghost", type=EDGE_ASSOC))
+    store.edges.append(Edge(source_id="a", target_id="ghost", type=EDGE_MUTEX))
+    store.edges.append(Edge(source_id="ghost", target_id="a", type=EDGE_ASSOC))
     ms = _make(store)
     try:
         out = ms.graph_view("a")
@@ -248,7 +251,7 @@ def test_reads_run_in_single_worker_thread_not_caller():
     store = FakeStore()
     store.add_node(_n("__seed_root__", hub=True))
     store.add_node(_n("c1"))
-    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
+    store.edges.append(Edge(source_id="__seed_root__", target_id="c1", type=EDGE_ASSOC))
     ms = _make(store)
     try:
         ms.graph_view("__seed_root__")
