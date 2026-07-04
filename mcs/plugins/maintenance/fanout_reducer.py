@@ -22,6 +22,7 @@ from mcs.entities.graph import (
     SEED_ROOT_NAME,
 )
 from mcs.interfaces.compaction_plugin import CompactionPluginInterface
+from mcs.utils.tokenizer import ChineseTokenizer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -57,6 +58,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         self.maintain_root: bool = bool(cfg.get("maintain_root", True))
         # 单次 ingest 递归归纳的硬上限，防止 decide_hub 抖动导致失控
         self.max_reorg: int = int(cfg.get("max_reorg", 200))
+        # hub 摘要相似度用的分词器（懒初始化，见 _tokenize）
+        self._sim_tokenizer: ChineseTokenizer | None = None
 
     # === Plugin 基类方法 ===
 
@@ -184,6 +187,11 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         取中心 + 全部一跳子节点一次性喂 decide_hub（不分批、不折半重试），
         递归直到邻域 ≤ T 或达 max_reorg 上限。
         """
+        # 宪法：裂变只动组织层级。中心限**概念**节点——事实的出边是"命题→端点"语义边
+        # （重挂会断两端可达）、事件/source 的出边是背书边（重挂会断 get_related_events
+        # 反查），统一模型下三者与层级边同 type、只能按中心 node_class 区分。
+        if getattr(node, "node_class", CLASS_CONCEPT) != CLASS_CONCEPT:
+            return []
         new_hubs: list[Node] = []
         reorgs = 0
         while reorgs < self.max_reorg:
@@ -366,6 +374,10 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             for node in nodes:
                 if node.id == hub.id or node.hub:
                     continue  # hub 不吸收其他 hub 的边（避免层级缠绕）
+                if node.node_class != CLASS_CONCEPT:
+                    # 宪法：只吸收组织层级边。事实的出边是"命题→端点"语义边、
+                    # 事件/source 的出边是背书边——改连 hub 会断两端可达 / 背书反查。
+                    continue
                 children = out_children.get(node.id)
                 if not children or not hub_members.issubset(children):
                     continue
@@ -486,14 +498,23 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 return True
         return False
 
+    def _tokenize(self, text: str) -> set[str]:
+        """摘要相似度用的词集：ChineseTokenizer（jieba）分词、小写、去空白。
+
+        空格切词对中文失效（整句一个 token、Jaccard 恒 0），必须过分词器。
+        """
+        if self._sim_tokenizer is None:
+            self._sim_tokenizer = ChineseTokenizer()
+        return {t.lower() for t in self._sim_tokenizer.tokenize(text) if t.strip()}
+
     def _find_similar_hub(
         self, summary: str, store: StoreInterface, threshold: float = 0.7
     ) -> Node | None:
-        """查找与给定摘要近似的既有 hub（简单词重叠）。
+        """查找与给定摘要近似的既有 hub（分词后 Jaccard 词重叠）。
 
         返回第一个相似度 >= threshold 的 hub，否则 None。
         """
-        summary_words = set(summary.lower().split())
+        summary_words = self._tokenize(summary)
         if not summary_words:
             return None
         for node in store.get_all_nodes():
@@ -501,7 +522,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 continue
             if not node.content:
                 continue
-            node_words = set(node.content.lower().split())
+            node_words = self._tokenize(node.content)
             if not node_words:
                 continue
             overlap = len(summary_words & node_words)
@@ -784,13 +805,15 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             strategy = "summarize"
 
         if strategy == "merge":
-            if not community.member_ids:
-                return None
-            rep_id = community.member_ids[0]
-            if store.get_node(rep_id):
-                store.update_node(rep_id, {"hub": True})
-                return store.get_node(rep_id)
-            return None
+            # 代表必须是**概念**——事实只重组不合并（宪法）；若代表是事实，
+            # 概念 content 会被并进事实节点、污染命题语义。取首个概念成员为代表；
+            # 全为事实（或全不存在）则退化为 summarize（新建概括 hub、成员只重挂）。
+            for rep_id in community.member_ids:
+                rep = store.get_node(rep_id)
+                if rep is not None and rep.node_class == CLASS_CONCEPT:
+                    store.update_node(rep_id, {"hub": True})
+                    return store.get_node(rep_id)
+            strategy = "summarize"
 
         # summarize：新建概括性 hub（概念节点 + hub 标记）
         summary = getattr(community, "summary", None) or getattr(community, "theme", "")

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.errors import InvalidDecisionError, UnknownActionError
@@ -151,47 +151,54 @@ class WritePipeline:
         #   先建，使其 id 可用于 ⑤ 的背书连边；即便 content 抽取为空仍入库（记录行为已发生）。
         ctx.event_node, ctx.source_nodes = self._rule_ingest(data)
 
-        # 阶段 ①: 前置插件链（幂等检查/摘要等）——只作用于 content
-        processed = self._run_preprocess(data.content, ctx)
-        ctx.processed = processed
+        # ①-⑥ 任一阶段异常（多为 LLM 故障）→ 回滚 ⓪ 建的事件 / source 节点后 re-raise。
+        # 否则孤儿事件残留内存并被后续 flush 落盘；调用方（如 Consolidator）重试又会
+        # 再建一条同内容事件 → 重复。「记录行为已发生」只适用于成功完成的 ingest。
+        try:
+            # 阶段 ①: 前置插件链（幂等检查/摘要等）——只作用于 content
+            processed = self._run_preprocess(data.content, ctx)
+            ctx.processed = processed
 
-        # 阶段 ②: 关联节点定位（轻量查询模式）
-        ctx.related = self.query_engine.query_nodes(processed)
+            # 阶段 ②: 关联节点定位（轻量查询模式）
+            ctx.related = self.query_engine.query_nodes(processed)
 
-        # 阶段 ③: 概念提取（LLM，仅 content）
-        concepts = self.llm.call(
-            purpose="extract_concepts",
-            nodes_in=ctx.related,
-            free_args={"text": processed},
-        ) or []
-        ctx.concepts = concepts
-        if not concepts:
-            # 概念数为 0：跳过 ④⑤⑥，但事件 / source 已在 ⓪ 建好（add_node 自动跟踪），
-            # 仍随 ⑦ 落盘（记录行为已发生）。
-            self._run_persist(ctx)
-            self._mark_ingested_if_success(ctx)
-            return ctx
+            # 阶段 ③: 概念提取（LLM，仅 content）
+            concepts = self.llm.call(
+                purpose="extract_concepts",
+                nodes_in=ctx.related,
+                free_args={"text": processed},
+            ) or []
+            ctx.concepts = concepts
+            if not concepts:
+                # 概念数为 0：跳过 ④⑤⑥，但事件 / source 已在 ⓪ 建好（add_node 自动跟踪），
+                # 仍随 ⑦ 落盘（记录行为已发生）。
+                self._run_persist(ctx)
+                self._mark_ingested_if_success(ctx)
+                return ctx
 
-        # 阶段 ④: 关系判定
-        decisions = self.llm.call(
-            purpose="judge_relations",
-            nodes_in=ctx.related,
-            free_args={"concepts": _format_concepts(concepts)},
-        ) or []
-        # 重新附加完整的 ConceptDraft 对象（解析器只知道名称）
-        _reattach_concepts(decisions, concepts)
-        # 丢弃结构上无法应用的坏决策（LLM 偶发 target_id=null），避免整次摄入失败
-        decisions = self._sanitize_decisions(decisions)
-        ctx.decisions = decisions
+            # 阶段 ④: 关系判定
+            decisions = self.llm.call(
+                purpose="judge_relations",
+                nodes_in=ctx.related,
+                free_args={"concepts": _format_concepts(concepts)},
+            ) or []
+            # 重新附加完整的 ConceptDraft 对象（解析器只知道名称）
+            _reattach_concepts(decisions, concepts)
+            # 丢弃结构上无法应用的坏决策（LLM 偶发 target_id=null），避免整次摄入失败
+            decisions = self._sanitize_decisions(decisions)
+            ctx.decisions = decisions
 
-        # 阶段 ⑤: 图更新（含事件 / source → 本次概念 / 事实 背书连边）
-        ctx.changed = self._apply_decisions(decisions)
-        self._apply_endorsements(ctx)
-        self._attach_pending_source(ctx)
-        self._notify_indexes(ctx.changed)
+            # 阶段 ⑤: 图更新（含事件 / source → 本次概念 / 事实 背书连边）
+            ctx.changed = self._apply_decisions(decisions)
+            self._apply_endorsements(ctx)
+            self._attach_pending_source(ctx)
+            self._notify_indexes(ctx.changed)
 
-        # 阶段 ⑥: 压缩判定插件链（含不变量守门）
-        self._run_compaction(ctx.changed)
+            # 阶段 ⑥: 压缩判定插件链（含不变量守门）
+            self._run_compaction(ctx.changed)
+        except Exception:
+            self._rollback_rule_ingest(ctx)
+            raise
 
         # 阶段 ⑦: 自动落盘
         self._run_persist(ctx)
@@ -200,6 +207,31 @@ class WritePipeline:
         self._mark_ingested_if_success(ctx)
 
         return ctx
+
+    def _rollback_rule_ingest(self, ctx: WriteContext) -> None:
+        """ingest 中途失败时回滚 ⓪ 建的事件 / source 节点（含其已连的背书边）。
+
+        ``delete_node`` 会一并删除触及该节点的边并进变更跟踪；若节点已被本次
+        管线中途的 flush（如查询路径 read-repair 落盘）写入 DB，删除跟踪会在
+        下次 flush 时清掉该行——此处再做一次 best-effort flush 使 DB 即刻一致，
+        失败不掩盖原始异常（仅告警）。
+        """
+        for node in [ctx.event_node, *ctx.source_nodes]:
+            if node is None:
+                continue
+            try:
+                self.store.delete_node(node.id)
+            except Exception:
+                logger.warning("回滚事件/source 节点失败: %s", node.id, exc_info=True)
+        ctx.event_node = None
+        ctx.source_nodes = []
+        auto_persist = getattr(self.config, "auto_persist", True) if self.config else True
+        flush = getattr(self.store, "flush_changes", None)
+        if auto_persist and callable(flush) and getattr(self.store, "conn", None) is not None:
+            try:
+                flush()
+            except Exception:
+                logger.warning("回滚后落盘失败（下次 flush 收敛）", exc_info=True)
 
     def _mark_ingested_if_success(self, ctx: WriteContext) -> None:
         """成功完成后把本块记入 idempotency 标记（mark-on-success）。
@@ -700,8 +732,12 @@ def _norm_name(name: str | None) -> str:
 
 
 def _now_iso() -> str:
-    """当前 UTC 时间的 ISO 8601 字符串，用作事件节点 ``timestamp`` 缺省值（记录行为时间）。"""
-    return datetime.now(timezone.utc).isoformat()
+    """当前**本地**时间的 ISO 8601 裸字符串（秒级），用作事件节点 ``timestamp`` 缺省值。
+
+    与碎片确认入图的时间戳（``YYYY-MM-DDTHH:MM:SS``，本地裸时间）同形态——统一形态
+    使字典序即时间序；历史 UTC aware 存量由 ``mcs.utils.timestamps`` 的排序键兼容。
+    """
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def _derive_event_name(content: str) -> str:

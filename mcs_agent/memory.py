@@ -31,6 +31,7 @@ from mcs.core.plugin import PluginType
 from mcs.entities.decisions import IngestInput
 from mcs.entities.graph import CLASS_EVENT, EDGE_ASSOC, Edge, Node
 from mcs.rendering import format_ingest_status, render_query_result
+from mcs.utils.timestamps import event_sort_key
 
 if TYPE_CHECKING:
     from mcs.core.mcs import MCS
@@ -66,9 +67,10 @@ _RECALL_HEADER = "最近发生的事件（时间倒排）"
 
 
 def _event_timestamp(node: Node) -> str:
-    """事件节点的发生时间：``extensions.event_meta.timestamp``，无则空串（排序排末尾）。
+    """事件节点的发生时间字符串：``extensions.event_meta.timestamp``，无则空串。
 
-    与 ``StoreInterface.get_related_events`` 主键口径一致（ISO 字典序）。
+    仅用于**渲染展示**；排序 MUST 用 ``mcs.utils.timestamps.event_sort_key``
+    （epoch 秒比较，兼容本地裸时间 / UTC aware 混合形态——字典序对混合形态排错）。
     """
     meta = (node.extensions or {}).get("event_meta", {})
     return meta.get("timestamp", "")
@@ -297,8 +299,9 @@ class MemoryStore:
         events = store.get_nodes_by_class(CLASS_EVENT)
         if not events:
             return _render_events([])
-        # 时间倒排 + id 次级键保确定性（无 timestamp → 空串、reverse 后排末尾）
-        events.sort(key=lambda n: (_event_timestamp(n), n.id), reverse=True)
+        # 时间倒排 + id 次级键保确定性（epoch 秒比较，兼容混合形态时间戳；
+        # 无 timestamp → -inf，reverse 后排末尾）
+        events.sort(key=event_sort_key, reverse=True)
 
         tb = self._mcs.query_engine.token_budget
         selected: list[Node] = []

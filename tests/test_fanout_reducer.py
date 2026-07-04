@@ -419,3 +419,151 @@ def test_merge_strategy_pure_concepts_still_merges():
     assert g.get_node("c2") is None
     # c1 保留（作为代表）
     assert g.get_node("c1") is not None
+
+
+# ─── 宪法守护：吸收 / 裂变只作用于概念（事件背书边 / 事实语义边不被波及）──
+
+
+def _graph_hub_with_members(g: GraphStore, member_ids: list[str]) -> Node:
+    """建一个含 member_ids 全部成员的 hub（成员节点须已存在）。"""
+    hub = Node(id="hubX", name="HubX", content="hub x", extensions={"hub": True})
+    g.add_node(hub)
+    for mid in member_ids:
+        g.add_edge(hub.id, mid)
+    return hub
+
+
+def test_absorb_skips_event_endorsement_edges():
+    """事件节点的背书边（事件→核心）不被吸收改连 hub——否则 get_related_events 断链。"""
+    from mcs.entities.graph import CLASS_EVENT
+
+    g = GraphStore()
+    for i in range(2):
+        g.add_node(Node(id=f"m{i}", name=f"m{i}", content=f"member {i}"))
+    ev = Node(id="ev", name="事件", content="记了一条", node_class=CLASS_EVENT)
+    g.add_node(ev)
+    g.add_edge("ev", "m0")
+    g.add_edge("ev", "m1")
+    _graph_hub_with_members(g, ["m0", "m1"])
+
+    p = _plugin(TokenBudget(500), floor=2)
+    p._absorb_hub_edges(g)
+
+    # 背书边原样保留、未被改连 hub
+    assert {n.id for n in g.get_out_hierarchy("ev")} == {"m0", "m1"}
+    assert [n.id for n in g.get_related_events("m0")] == ["ev"]
+
+
+def test_absorb_skips_fact_semantic_edges():
+    """事实节点的「命题→端点」语义边不被吸收——否则两端可达被破坏。"""
+    g = GraphStore()
+    for i in range(2):
+        g.add_node(Node(id=f"m{i}", name=f"m{i}", content=f"member {i}"))
+    fact = Node(id="f", name="事实", content="m0 与 m1 相关", node_class=CLASS_FACT)
+    g.add_node(fact)
+    g.add_edge("f", "m0")
+    g.add_edge("f", "m1")
+    _graph_hub_with_members(g, ["m0", "m1"])
+
+    p = _plugin(TokenBudget(500), floor=2)
+    p._absorb_hub_edges(g)
+
+    assert {n.id for n in g.get_out_hierarchy("f")} == {"m0", "m1"}
+
+
+def test_absorb_still_works_for_concept():
+    """概念节点照常吸收（守护不影响正常路径）。"""
+    g = GraphStore()
+    for i in range(2):
+        g.add_node(Node(id=f"m{i}", name=f"m{i}", content=f"member {i}"))
+    x = Node(id="x", name="概念X", content="概念 x", node_class=CLASS_CONCEPT)
+    g.add_node(x)
+    g.add_edge("x", "m0")
+    g.add_edge("x", "m1")
+    _graph_hub_with_members(g, ["m0", "m1"])
+
+    p = _plugin(TokenBudget(500), floor=2)
+    p._absorb_hub_edges(g)
+
+    assert {n.id for n in g.get_out_hierarchy("x")} == {"hubX"}
+
+
+def test_compact_node_skips_fact_center():
+    """裂变中心限概念：事实中心（端点即出边）不触发 decide_hub / 不重挂端点。"""
+    g = GraphStore()
+    fact = Node(id="f", name="超大事实", content="x" * 4000, node_class=CLASS_FACT)
+    g.add_node(fact)
+    for i in range(10):
+        g.add_node(Node(id=f"e{i}", name=f"e{i}", content="y" * 400))
+        g.add_edge("f", f"e{i}")
+
+    p = _plugin(TokenBudget(500), floor=2)
+    calls: list[str] = []
+
+    def _llm(purpose, nodes_in, free_args):
+        calls.append(purpose)
+        return MultiHubDecision()
+
+    hubs = p._compact_node(fact, g, _llm)
+    assert hubs == [] and calls == []  # 不调 decide_hub
+    assert {n.id for n in g.get_out_hierarchy("f")} == {f"e{i}" for i in range(10)}
+
+
+def test_merge_rep_prefers_concept_member():
+    """merge 社区代表必须是概念：首位是事实时跳过、取首个概念成员为代表。"""
+    from mcs.entities.decisions import Community
+
+    g = GraphStore()
+    center = Node(id="c", name="中心", content="c" * 400)
+    g.add_node(center)
+    fact = Node(id="f1", name="事实1", content="命题内容", node_class=CLASS_FACT)
+    concept = Node(id="k1", name="概念1", content="概念内容", node_class=CLASS_CONCEPT)
+    for n in (fact, concept):
+        g.add_node(n)
+        g.add_edge("c", n.id)
+
+    p = _plugin(TokenBudget(500), floor=2)
+    comm = Community(
+        theme="混合", member_ids=["f1", "k1"], strategy="merge", summary=None
+    )
+    hub = p._create_hub_from_community(comm, g, [fact, concept])
+    assert hub is not None and hub.id == "k1"  # 代表是概念、非首位事实
+    assert g.get_node("f1").node_class == CLASS_FACT  # 事实节点未被动过
+
+
+def test_merge_rep_all_facts_degrades_to_summarize():
+    """merge 社区全为事实：退化 summarize（有 theme 时新建概括 hub，不并入事实）。"""
+    from mcs.entities.decisions import Community
+
+    g = GraphStore()
+    f1 = Node(id="f1", name="事实1", content="命题一", node_class=CLASS_FACT)
+    f2 = Node(id="f2", name="事实2", content="命题二", node_class=CLASS_FACT)
+    for n in (f1, f2):
+        g.add_node(n)
+
+    p = _plugin(TokenBudget(500), floor=2)
+    comm = Community(
+        theme="项目排期相关事实", member_ids=["f1", "f2"], strategy="merge",
+        summary="项目排期相关事实",
+    )
+    hub = p._create_hub_from_community(comm, g, [f1, f2])
+    assert hub is not None and hub.id not in {"f1", "f2"}  # 新建概括 hub
+    assert g.get_node("f1").content == "命题一"  # 事实内容未被合并改写
+    assert g.get_node("f2").content == "命题二"
+
+
+def test_find_similar_hub_chinese_summary():
+    """中文摘要相似度：分词后 Jaccard 生效（修复前空格切词恒不命中）。"""
+    g = GraphStore()
+    existing = Node(
+        id="h1", name="机器学习方法",
+        content="机器学习方法与深度学习模型",
+        extensions={"hub": True},
+    )
+    g.add_node(existing)
+
+    p = _plugin(TokenBudget(500), floor=2)
+    # 高度相似的中文摘要 → 命中复用
+    assert p._find_similar_hub("机器学习方法与深度学习模型", g) is existing
+    # 不相关摘要 → 不命中
+    assert p._find_similar_hub("周末旅行计划安排", g) is None

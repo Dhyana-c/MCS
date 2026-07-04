@@ -321,6 +321,7 @@ class QueryEngine:
         # 同名字面识别——同名当场可见、零成本；同名≠同义需消歧（Phase 1 不做 LLM 判定）
         name_index: dict[str, str] = {}     # name → node_id（首次遇到）
         merged_into: dict[str, str] = {}    # node_id → target_id（被合并掉的）
+        repaired_ids: set[str] = set()      # 本次遍历被合并改写的 target（遍历末落盘）
 
         # frontier（BFS 待扩展队列，仅存 id→Node 引用，不进 LLM）
         # 种子只进 frontier（去重）：不预填 accumulated、不进初始 visited、不预计
@@ -340,8 +341,9 @@ class QueryEngine:
             """read-repair 同名合并：同名节点合并到首次遇到的那一个。
 
             - 同名字面识别（零成本）
-            - 合并方式：别名并入 + content 追加（子串去重）
-            - 不删除节点（避免查询路径持久化风险），只在工作集中合并
+            - 合并方式：别名并入 + content 追加（子串去重）——改写的是 store 内共享
+              节点对象，遍历结束经 ``_persist_read_repairs`` 标脏落盘（内存与 DB 一致；
+              被并方节点不删除，仅目标节点内容变更）
             - 合并后用 estimate_node 重算 token 差值（铁律一：口径 == 渲染）
             - 超 T 则挂起（不合并，保留两个节点）
             - 同名≠同义需消歧：Phase 1 不做 LLM 判定，仅字面同名合并
@@ -418,8 +420,9 @@ class QueryEngine:
             if node.name and node.name not in aliases and node.name != target_node.name:
                 aliases.append(node.name)
 
-            # 标记此节点已被合并
+            # 标记此节点已被合并；target 内容已改写，记入待落盘集
             merged_into[node.id] = target_id
+            repaired_ids.add(target_id)
             visited.add(node.id)
             return target_node
 
@@ -671,7 +674,29 @@ class QueryEngine:
             frontier = next_frontier
             depth += 1
 
+        # read-repair 改写了 store 内共享节点（content/别名）——标脏落盘，
+        # 否则内存与 DB 静默分叉、重启后合并丢失。
+        if repaired_ids:
+            self._persist_read_repairs(repaired_ids)
+
         return accumulated, selected_edges
+
+    def _persist_read_repairs(self, node_ids: set[str]) -> None:
+        """把 read-repair 改写的节点标脏并落盘（duck-typed，仅 SQLiteStore 生效）。
+
+        失败不中断查询（读路径），仅告警——脏标记已留，下次任意 flush 收敛。
+        """
+        mark = getattr(self.store, "mark_node_dirty", None)
+        flush = getattr(self.store, "flush_changes", None)
+        if not callable(mark):
+            return
+        try:
+            for nid in node_ids:
+                mark(nid)
+            if callable(flush) and getattr(self.store, "conn", None) is not None:
+                flush()
+        except Exception:
+            logger.warning("read-repair 持久化失败（脏标记已留，下次 flush 收敛）", exc_info=True)
 
     def _arbitrate(
             self,

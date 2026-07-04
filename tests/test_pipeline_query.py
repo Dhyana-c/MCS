@@ -736,3 +736,83 @@ def test_read_repair_name_equals_content_boundary():
     assert "Y" in ai_nodes[0].content
     # name != content → 不再去重
     assert ai_nodes[0].name != ai_nodes[0].content
+
+
+def test_read_repair_persists_merge_via_dirty_flush():
+    """read-repair 合并后：目标节点标脏 + flush（内存与 DB 一致，重启不丢合并）。"""
+    from tests.conftest import MockLLM
+
+    class _TrackingStore(GraphStore):
+        """记录 mark_node_dirty / flush_changes 调用的 InMemoryStore（duck-typed）。"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.dirty_marks: list[str] = []
+            self.flush_count = 0
+            self.conn = object()  # 模拟 SQLiteStore 有连接
+
+        def mark_node_dirty(self, node_id: str) -> None:
+            self.dirty_marks.append(node_id)
+
+        def flush_changes(self) -> None:
+            self.flush_count += 1
+
+    g = _TrackingStore()
+    a1 = Node(id="a1", name="苹果", content="苹果公司")
+    a2 = Node(id="a2", name="苹果", content="苹果水果")
+    b = Node(id="b", name="其他", content="其他节点")
+    for n in [a1, a2, b]:
+        g.add_node(n)
+    g.add_edge("b", "a1")
+    g.add_edge("b", "a2")
+
+    mock = MockLLM()
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    engine = make_query_engine(g, mock, _StaticEntry(["b"], g))
+    result = engine.query("苹果")
+
+    apple_nodes = [n for n in result.nodes if n.name == "苹果"]
+    assert len(apple_nodes) == 1
+    target_id = apple_nodes[0].id
+    # 合并目标已标脏并 flush 落盘
+    assert target_id in g.dirty_marks
+    assert g.flush_count >= 1
+    # store 内共享对象与返回集一致（合并内容真实生效且将随 flush 持久化）
+    assert "苹果公司" in g.get_node(target_id).content
+
+
+def test_read_repair_no_merge_no_flush():
+    """无同名合并的查询：不标脏、不 flush（读路径不做无谓写）。"""
+    from tests.conftest import MockLLM
+
+    class _TrackingStore(GraphStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.dirty_marks: list[str] = []
+            self.flush_count = 0
+            self.conn = object()
+
+        def mark_node_dirty(self, node_id: str) -> None:
+            self.dirty_marks.append(node_id)
+
+        def flush_changes(self) -> None:
+            self.flush_count += 1
+
+    g = _TrackingStore()
+    a = Node(id="a", name="苹果", content="苹果公司")
+    c = Node(id="c", name="水果", content="水果概念")
+    for n in [a, c]:
+        g.add_node(n)
+    g.add_edge("c", "a")
+
+    mock = MockLLM()
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    engine = make_query_engine(g, mock, _StaticEntry(["c"], g))
+    engine.query("水果")
+    assert g.dirty_marks == [] and g.flush_count == 0

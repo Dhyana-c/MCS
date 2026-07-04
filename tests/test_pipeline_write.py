@@ -742,3 +742,88 @@ def test_ingest_writes_graph_summary_meta(mock_llm):
     wp.ingest("梯度下降是优化算法")
 
     assert store.get_graph_meta("graph_summary") == "这张图关于机器学习"
+
+
+# ─── ingest 原子性：LLM 阶段失败回滚 ⓪ 事件 / source 节点 ──────────────────
+
+
+def _raise_llm_error(message: str):
+    """构造一个抛 RuntimeError 的 mock LLM 响应 callable。"""
+
+    def _boom(_nodes, _free):
+        raise RuntimeError(message)
+
+    return _boom
+
+
+def test_ingest_rolls_back_event_on_extract_failure(empty_graph, mock_llm):
+    """③ extract_concepts 抛错 → ⓪ 事件节点回滚删除、异常上抛（重试不产生孤儿）。"""
+    import pytest
+
+    wp, _, _ = _build_pipelines(empty_graph, mock_llm)
+    mock_llm.set_response("extract_concepts", _raise_llm_error("llm down"))
+    with pytest.raises(RuntimeError, match="llm down"):
+        wp.ingest("今天下雨了")
+    events = [n for n in empty_graph.get_all_nodes() if n.node_class == CLASS_EVENT]
+    assert events == []  # 孤儿事件已回滚
+
+
+def test_ingest_rolls_back_event_on_judge_failure(empty_graph, mock_llm):
+    """④ judge_relations 抛错 → ⓪ 事件节点同样回滚（不残留、不重复）。"""
+    import pytest
+
+    wp, _, _ = _build_pipelines(empty_graph, mock_llm)
+    mock_llm.set_response(
+        "extract_concepts", [ConceptDraft(name="下雨", content="今天下雨")]
+    )
+    mock_llm.set_response("judge_relations", _raise_llm_error("judge down"))
+    with pytest.raises(RuntimeError, match="judge down"):
+        wp.ingest("今天下雨了")
+    events = [n for n in empty_graph.get_all_nodes() if n.node_class == CLASS_EVENT]
+    assert events == []
+
+
+def test_ingest_failure_then_retry_single_event(empty_graph, mock_llm):
+    """失败一次后重试成功：图中只有一条事件（修复前会残留失败次的孤儿 → 两条）。"""
+    import pytest
+
+    wp, _, _ = _build_pipelines(empty_graph, mock_llm)
+    calls = {"n": 0}
+
+    def _flaky(_nodes, _free):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        return []
+
+    mock_llm.set_response("extract_concepts", _flaky)
+    with pytest.raises(RuntimeError):
+        wp.ingest("同一条碎片")
+    wp.ingest("同一条碎片")  # 重试成功（零概念路径，事件保留）
+    events = [n for n in empty_graph.get_all_nodes() if n.node_class == CLASS_EVENT]
+    assert len(events) == 1
+
+
+def test_ingest_zero_concepts_keeps_event(empty_graph, mock_llm):
+    """零概念的成功路径：事件节点保留（「记录行为已发生」不受回滚逻辑影响）。"""
+    wp, _, _ = _build_pipelines(empty_graph, mock_llm)
+    mock_llm.set_response("extract_concepts", [])
+    ctx = wp.ingest("无概念内容")
+    assert ctx.event_node is not None
+    events = [n for n in empty_graph.get_all_nodes() if n.node_class == CLASS_EVENT]
+    assert len(events) == 1
+
+
+def test_ingest_rollback_flushes_sqlite(mock_llm, tmp_path):
+    """SQLiteStore：失败回滚后 DB 中也无孤儿事件行（回滚 + best-effort flush）。"""
+    import pytest
+
+    store = SQLiteStore({"path": str(tmp_path / "t.db")})
+    store.initialize()
+    wp, _, _ = _build_pipelines(store, mock_llm, config=MCSConfig(auto_persist=True))
+    mock_llm.set_response("extract_concepts", _raise_llm_error("llm down"))
+    with pytest.raises(RuntimeError):
+        wp.ingest("会失败的输入")
+    rows = store.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+    assert rows == 0
+    store.shutdown()

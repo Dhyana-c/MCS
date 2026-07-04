@@ -4,17 +4,19 @@
 
 ## MCS Core
 
-### LLM 瞬时错误处理
+### 写路径同名索引全图扫描
 
-429 / 网络抖动目前直接吞成空结果（计为 miss）。需加重试 + 退避（并发时尤其必要）。
+`_apply_decisions` 每次 ingest 用 `get_all_nodes()` 全图扫描重建 `existing_by_name`（O(N)/次）；
+批量整合碎片时为 O(F×N)。图增长后是写路径主要冷开销，宜维护持久 name→id 索引。
 
-- **涉及**：`mcs/interfaces/llm.py`、LLM 适配器
+- **涉及**：`mcs/core/write_pipeline.py:_apply_decisions`
 
-### `_locate_seeds` 单 entry 插件容错
+### alias 索引更新与种子噪音
 
-目前任一 EntryPlugin 的 `locate` 抛异常会拖垮整个种子定位。navigate_hub 宽容后已大幅缓解，但仍建议 `_locate_seeds` 对单插件异常 try/except 降级。
+`AliasIndexPlugin.remove_entry` 线性扫全索引（每个 changed 节点一次）；且词条全部 jieba
+子词入索（含高频单字），常见字查询命中海量种子后仅按到达顺序截断，种子质量随图增长退化。
 
-- **涉及**：`mcs/core/query_engine.py:_locate_seeds`
+- **涉及**：`mcs/plugins/index/alias_index.py`
 
 ## 评测
 

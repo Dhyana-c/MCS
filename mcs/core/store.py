@@ -21,18 +21,13 @@ import warnings
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+# 事件时间倒排排序键：解析为 epoch 秒比较（naive 视为本地时区），兼容混合形态
+# 时间戳（本地裸时间 vs UTC aware）；字典序比较对混合形态排序错误。
+from mcs.utils.timestamps import event_sort_key as _event_sort_key
+
 if TYPE_CHECKING:
     from mcs.core.token_budget import TokenBudget
     from mcs.entities.graph import Edge, Node, Subgraph
-
-
-def _event_sort_key(node: Node) -> str:
-    """事件节点排序键：取 extensions.event_meta.timestamp，无则空串（排末尾）。
-
-    用于 ``get_related_events`` 的时间倒排截断。
-    """
-    meta = (node.extensions or {}).get("event_meta", {})
-    return meta.get("timestamp", "")
 
 
 class StoreInterface(ABC):

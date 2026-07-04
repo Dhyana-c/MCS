@@ -31,6 +31,7 @@ from mcs.entities.graph import (
     validate_node_class,
 )
 from mcs.interfaces.priority_scorer import DefaultPriorityScorer
+from mcs.utils.timestamps import event_sort_key
 
 if TYPE_CHECKING:
     from mcs.core.token_budget import TokenBudget
@@ -367,8 +368,8 @@ class SQLiteStore(StoreInterface):
                 source = self._nodes.get(edge.source_id)
                 if source is not None and source.node_class == CLASS_EVENT:
                     events.append(source)
-        # 时间倒排
-        events.sort(key=lambda n: (n.extensions or {}).get("event_meta", {}).get("timestamp", ""), reverse=True)
+        # 时间倒排（epoch 秒比较，兼容本地裸时间 / UTC aware 混合形态；id 次级键保确定性）
+        events.sort(key=event_sort_key, reverse=True)
         if limit is not None:
             events = events[:limit]
         return events
