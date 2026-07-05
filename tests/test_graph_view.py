@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import threading
 
-from mcs.entities.graph import EDGE_ASSOC, EDGE_MUTEX, Edge, Node
+from mcs.entities.graph import CLASS_EVENT, EDGE_ASSOC, EDGE_MUTEX, Edge, Node
 from mcs_agent.memory import MemoryStore
 
 
@@ -67,6 +67,22 @@ class FakeStore:
         self.read_threads.add(threading.get_ident())
         es = [e for e in self.edges if e.source_id == nid or e.target_id == nid]
         return es[:limit] if limit else es
+
+    def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:
+        self.read_threads.add(threading.get_ident())
+        return [e for e in self.edges if e.source_id == source_id and e.target_id == target_id]
+
+    def get_related_events(self, nid: str, limit: int | None = None) -> list[Node]:
+        """绕载重：nid 作 target、source 为事件的关联边 → 事件节点（时间倒排省略，测试不依赖）。"""
+        self.read_threads.add(threading.get_ident())
+        ev_ids: list[str] = []
+        for e in self.edges:
+            if e.type == EDGE_ASSOC and e.target_id == nid:
+                src = self.nodes.get(e.source_id)
+                if src is not None and src.node_class == CLASS_EVENT:
+                    ev_ids.append(src.id)
+        events = [self.nodes[i] for i in dict.fromkeys(ev_ids)]  # 去重保序
+        return events[:limit] if limit else events
 
 
 class FakeQueryEngine:
@@ -184,8 +200,8 @@ def test_dict_fields_types_dedup_and_drill_contract():
         assert set(out["node"].keys()) == {"id", "name", "content", "node_class", "hub", "degree"}
         for n in out["nodes"]:
             assert set(n.keys()) == {"id", "name", "content", "node_class", "hub", "degree"}
-        # degree = 下钻子数 + 关系边度数：root = 1 子 + 1 关系 = 2；c1 = 0 子 + 1 关系 = 1
-        assert out["node"]["degree"] == 2
+        # degree = 不同邻居数（rel端点去重，无事件背书）：root 1 邻居(c1) = 1；c1 1 邻居(root) = 1
+        assert out["node"]["degree"] == 1
         c1 = next(n for n in out["nodes"] if n["id"] == "c1")
         assert c1["degree"] == 1
         # edges[*] 恰四键、type 合法
@@ -283,5 +299,33 @@ def test_node_class_value_passed_through():
         assert out is not None
         assert out["node"]["node_class"] == "事件"
         assert out["nodes"] == []  # 事件节点无邻居、不崩
+    finally:
+        ms.shutdown()
+
+
+# === 事件背书：graph_view 绕载重让焦点看到背书它的事件（可视化豁免载重）===
+
+
+def test_event_endorsement_visible_in_view():
+    """焦点概念有事件背书 → graph_view 用 get_related_events 让事件节点+边可见。
+
+    载重规则让 ``get_relations(概念)`` 过滤事件边，但可视化（人面视图）需看到事件背书，
+    故 ``_do_graph_view`` 用 ``get_related_events``（绕载重）+ ``get_edges_between`` 取事件边。
+    """
+    store = FakeStore()
+    store.add_node(_n("c", node_class="概念"))
+    store.add_node(_n("e", node_class="事件", content="某次发生了 c"))
+    store.edges.append(Edge(source_id="e", target_id="c", type=EDGE_ASSOC))  # 事件→概念 背书
+    ms = _make(store)
+    try:
+        out = ms.graph_view("c")
+        assert out is not None
+        # 事件节点入 nodes
+        assert "e" in {n["id"] for n in out["nodes"]}
+        # 事件→概念 背书边入 edges
+        ev_edges = [e for e in out["edges"] if e["source"] == "e" and e["target"] == "c"]
+        assert len(ev_edges) == 1
+        # degree 含事件邻居：c 邻居 = {e} = 1
+        assert out["node"]["degree"] == 1
     finally:
         ms.shutdown()

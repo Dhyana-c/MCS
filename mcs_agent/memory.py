@@ -510,10 +510,12 @@ class MemoryStore:
         """worker 线程内取焦点节点的活跃邻域视图（纯只读，不进写/守门/裂变路径）。
 
         返回 ``{node, nodes, edges}``：
-          - nodes = 下钻成员 ∪ 关系边另一端节点，按 id 去重、不含焦点；
-          - edges = 焦点的关系边（``get_relations``，关联 / 互斥）；统一模型下层级即关联边，
-            焦点→各下钻成员的连线已含其中，不再另造虚拟边。
-        关系边端点随响应返回（端点不在下钻成员中，必须单独收集才能连线）。
+          - nodes = 下钻成员 ∪ 关系边另一端 ∪ 相关事件（``get_related_events`` 绕载重），
+            按 id 去重、不含焦点；
+          - edges = 焦点的关系边（``get_relations``，关联 / 互斥，载重过滤事件边）
+            ∪ 事件→焦点背书边（``get_edges_between`` 取，绕载重）。
+        统一模型下层级即关联边，焦点→各下钻成员的连线已含在关系边中。可视化为人面视图，
+        用 ``get_related_events`` 让焦点看到背书它的事件（载重只约束 LLM 查询路径，不约束可视化）。
         焦点节点不存在返回 None（不抛）；悬空关系边（另一端 get_node 返 None）跳过
         端点节点、但该边仍保留进 edges。
         """
@@ -528,12 +530,27 @@ class MemoryStore:
 
         # 关系边（关联 / 互斥，核心节点侧已过滤事件边——载重规则）
         rel_edges = store.get_relations(node_id) or []
+        # 相关事件（绕载重：焦点作 target、source 为事件的关联边——即事件背书焦点）
+        related_events = store.get_related_events(node_id) or []
+        # 事件→焦点 背书边（事件作 source、焦点作 target）
+        event_edges: list[Edge] = []
+        for ev in related_events:
+            event_edges.extend(store.get_edges_between(ev.id, node_id))
 
         def _degree(nid: str) -> int:
-            """节点的"关系丰富度"= 下钻成员数 + 关系边度数（热力图热度）。"""
-            deg = len(store.get_out_hierarchy(nid) or [])
-            deg += len(store.get_relations(nid) or [])
-            return deg
+            """节点的热度 = 不同邻居数（rel_edges 另一端 ∪ 相关事件，去重）。
+
+            统一模型层级=关联，下钻成员已含在 rel_edges 端点中不再单算（避免翻倍）；
+            含相关事件（绕载重），让热度反映真实连接度。
+            """
+            neighbors: set[str] = set()
+            for e in (store.get_relations(nid) or []):
+                other = e.target_id if e.source_id == nid else e.source_id
+                if other != nid:
+                    neighbors.add(other)
+            for ev in (store.get_related_events(nid) or []):
+                neighbors.add(ev.id)
+            return len(neighbors)
 
         def _node_with_degree(n: Node) -> dict:
             d = _node_to_dict(n)
@@ -557,11 +574,19 @@ class MemoryStore:
                 seen_missing.add(other)
                 continue  # 悬空边：跳过端点、边仍保留
             nodes_by_id[other_node.id] = _node_with_degree(other_node)
+        for ev in related_events:
+            if ev.id != node_id and ev.id not in nodes_by_id:
+                nodes_by_id[ev.id] = _node_with_degree(ev)
 
-        # 边集 = 焦点的关系边（get_relations，关联 / 互斥）。统一模型下层级即关联边，
-        # 焦点→各下钻成员的连线已含其中——不再另造虚拟 hierarchy 边（旧模型层级独立 kind
-        # 时才需自造；unified-graph-schema 后残留成多边 bug，现已清除）。
-        edges = [_edge_to_dict(edge) for edge in rel_edges]
+        # 边集 = 关系边（载重）∪ 事件→焦点背书边（绕载重），按 edge.id 去重。真实 store
+        # 载重过滤使两者不重叠；去重兜 store 实现差异 / FakeStore 不做载重的情况。
+        seen_eids: set[str] = set()
+        edges: list[dict] = []
+        for edge in rel_edges + event_edges:
+            if edge.id in seen_eids:
+                continue
+            seen_eids.add(edge.id)
+            edges.append(_edge_to_dict(edge))
 
         return {
             "node": _node_with_degree(focus),

@@ -101,7 +101,7 @@
     <div class="legend-row"><span class="legend-line dashed"></span>互斥</div>
   </div>
   <aside id="detail">
-    <div class="hint">左键节点看详情 · 右键节点下钻（概念 / 事实）· 左键边看属性。滚轮缩放、拖拽平移。</div>
+    <div class="hint">左键节点看详情 · 右键节点下钻（概念 / 事实 / 事件）· 左键边看属性。滚轮缩放、拖拽平移。</div>
   </aside>
 </div>
 <script>
@@ -110,8 +110,8 @@
 // 统一图模型字段（后端 graph_view 输出）：
 //   node = {id, name, content, node_class, hub, degree}
 //   edge = {id, source, target, type}  type ∈ {关联, 互斥}（无 label / kind）
-// 可下钻：node_class ∈ {概念, 事实}；叶子：node_class ∈ {事件, source}。
-const DRILLABLE = new Set(["概念", "事实"]);
+// 所有节点都可右键下钻：概念/事实展开组织层级、事件展开其涉及的概念/事实（事件→核心出边）；
+// source / 孤立节点 expand 返回空 → 标叶子（不再下钻）。
 
 const cy = cytoscape({
   container: document.getElementById("cy"),
@@ -314,11 +314,10 @@ cy.on("tap", "node", (evt) => {
   showDetail(evt.target.data());
 });
 
-// 右键节点：下钻（仅 概念/事实 可下钻；事件/source 叶子、已展开 不响应）
+// 右键节点：下钻（任何节点都可尝试；source/孤立 expand 返回空标叶子、已展开 不响应）
 cy.on("cxttap", "node", (evt) => {
   const node = evt.target;
   const id = node.data("id");
-  if (!DRILLABLE.has(node.data("node_class"))) return; // 叶子（事件/source）不可下钻
   if (leafIds.has(id) || expandedIds.has(id)) return;
   expand(id);
 });

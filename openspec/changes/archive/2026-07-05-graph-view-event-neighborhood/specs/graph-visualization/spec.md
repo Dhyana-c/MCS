@@ -1,8 +1,5 @@
-# graph-visualization Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change graph-visualization. Update Purpose after archive.
-## Requirements
 ### Requirement: MemoryStore graph_view 只读原语
 
 `MemoryStore` SHALL 提供只读原语 `graph_view(node_id) -> dict | None`，经单 worker 线程（`_submit`）执行：取焦点节点（`get_node`）、其下钻成员（`get_out_hierarchy`）、其关系边（`get_relations`，关联 / 互斥，载重过滤事件边）、关系边的**另一端节点**、其相关事件（`get_related_events`，绕载重），序列化为 `{node, nodes, edges}` 返回（`nodes` = 下钻成员 ∪ 关系边端点 ∪ 相关事件，按 id 去重、不含焦点；`edges` = 关系边 ∪ 事件→焦点背书边（`get_edges_between` 取），按 `edge.id` 去重）。**可视化为人面视图，用 `get_related_events` 看到事件背书 —— 载重只约束 LLM 查询路径、不约束可视化。** 节点不存在时返回 `None`。**调用方线程 MUST NOT 直接读 `store` / `mcs`**（线程安全铁律）。MUST NOT 再返回 `relation_model` 键。
@@ -73,33 +70,6 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 
 ---
 
-### Requirement: GET /graph/expand 只读 JSON 端点
-
-`create_app` SHALL 提供只读 JSON 端点 `GET /graph/expand?node_id=<id>`（`node_id` 缺省 `__seed_root__`），转发到 `agent.memory.graph_view(node_id)`。节点不存在时返回 `404`；当注入的 agent 无 `memory` 或 `memory` 无 `graph_view` 时（如裸 fake agent）返回 `503` 优雅降级，且 MUST NOT 影响既有 `/chat` 注入测试。
-
-#### Scenario: 缺省参数返回根视图
-
-- **WHEN** `GET /graph/expand`（不带 `node_id`）
-- **THEN** MUST 返回 `200`，响应体 `node.id == "__seed_root__"`
-
-#### Scenario: 指定 node_id 返回该节点视图
-
-- **WHEN** `GET /graph/expand?node_id=<存在 id>`
-- **THEN** MUST 返回 `200`，响应体 `node.id == <该 id>`
-
-#### Scenario: 不存在 node_id 返回 404
-
-- **WHEN** `GET /graph/expand?node_id=<不存在 id>`
-- **THEN** MUST 返回 `404`
-
-#### Scenario: 注入无 memory 的 agent 优雅降级
-
-- **WHEN** `create_app` 注入一个无 `memory` 属性（或 `memory` 无 `graph_view`）的 fake agent
-- **THEN** `GET /graph/expand` MUST 返回 `503`
-- **AND** 同一 app 的 `/chat` 行为 MUST NOT 被破坏（仍转发到 `fake_agent.chat`）
-
----
-
 ### Requirement: graph.html 默认渲染根子图并支持点击下钻
 
 `static/graph.html` SHALL 经 Cytoscape.js 在打开时默认拉取 `__seed_root__` 子图（`GET /graph/expand`）渲染；右键任一节点触发 `GET /graph/expand?node_id=<该节点>`，把返回的 `nodes` 与 `edges` **增量并入**（按 id 去重）；返回空的节点标为叶子（首次点击后缓存）。**事件节点可下钻**（展开其涉及的概念/事实，`事件→核心` 出边）；`source` / 孤立节点 expand 返回空 → 标叶子。关系边按 `type` 渲染（`关联` / `互斥`，**无 label**），下钻（组织）边以区分样式渲染。前端 MUST NOT 自造边，仅渲染后端返回的 `edges`。
@@ -135,18 +105,3 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 
 - **WHEN** 渲染关系边
 - **THEN** MUST 按 `type`（`关联` / `互斥`）渲染、无 label；下钻边以区分样式渲染
-
-### Requirement: 可视化纯只读、不破坏核心不变量
-
-`graph_view` 与 `GET /graph/expand` SHALL 纯只读：MUST NOT 调用写管线（`ingest`）/ 守门 / 裂变 / 归纳，MUST NOT 修改图（调用前后节点数、边数、节点内容不变）。可视化为人面视图，MUST NOT 复用或影响 LLM 渲染口径（铁律一仅约束 LLM 上下文 token 口径）。
-
-#### Scenario: graph_view 不改图
-
-- **WHEN** 对任一节点调用 `graph_view` 前后比较整图
-- **THEN** 节点数、边数、各节点 content MUST 保持不变
-
-#### Scenario: 端点不触发写入路径
-
-- **WHEN** 反复请求 `GET /graph/expand`
-- **THEN** MUST NOT 触发 `ingest` / 守门 / 裂变（写入管线与 `decide_hub` 不被调用）
-
