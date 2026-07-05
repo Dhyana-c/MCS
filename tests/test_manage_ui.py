@@ -162,6 +162,26 @@ class TestManageUIBlocks:
         assert "confirmed" in html and "pending" in html
 
 
+class TestConfirmEntryPolish:
+    """即时确认入口 + 二次确认防误（结构断言，防回归误删）。"""
+
+    @pytest.fixture
+    def html(self, store: FragmentStore) -> str:
+        mock_agent = MagicMock()
+        mock_agent.chat.return_value = "ok"
+        app = create_app(agent=mock_agent, fragment_store=store)
+        return TestClient(app).get("/manage.html").text
+
+    def test_immediate_confirm_entry_present(self, html: str) -> None:
+        """即时确认入口：含「立即确认入图」文案 + 专用容器 #note-confirm。"""
+        assert "立即确认入图" in html
+        assert 'id="note-confirm"' in html
+
+    def test_confirm_guard_present(self, html: str) -> None:
+        """二次确认守卫：confirmFragment 含 window.confirm 调用。"""
+        assert "window.confirm" in html
+
+
 class TestMemFrontend:
     """mcs_mem 自建前端入口（剥离 mcs_agent 前端）。"""
 

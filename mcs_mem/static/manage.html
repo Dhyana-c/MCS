@@ -309,6 +309,7 @@ function startEdit(row, f) {
   actions.appendChild(bSave); actions.appendChild(bCancel);
 }
 async function confirmFragment(id) {
+  if (!window.confirm('确认入图？该碎片将转为只读、不可撤销。')) return;
   const r = await api('POST', '/fragments/' + encodeURIComponent(id) + '/confirm');
   if (r.ok) { toast('已确认入图', 'ok'); refreshFrags(); loadConsolidationCalendar(); updateInboxBadge(); }
   else { toast(r.status === 503 ? '确认不可用（无记忆）' : '确认失败', 'err'); }
@@ -471,14 +472,16 @@ const ROUTES = {
       '<div class="card"><div class="sect"><span class="ico" data-icon="bolt"></span>快速捕获</div>' +
       '<div class="row"><input id="note-input" placeholder="记一条想法、待办、见闻…"><button id="note-btn">记录</button></div>' +
       '<div id="note-msg" class="msg"></div>' +
+      '<div id="note-confirm" class="msg"></div>' +
       '<div class="hint">一条记录 = 一个 pending 碎片；确认后入图成一个事件（纯文件捕获、零 LLM）。</div></div>' +
       '<div class="metrics" id="today-metrics"></div>' +
       '<div class="sect-row"><span class="sect" style="margin:0">今日碎片</span><a class="link" href="#/inbox">全部碎片 →</a></div>' +
       '<div id="today-frags"></div>';
     const submit = async () => {
       const input = document.getElementById('note-input'); const content = input.value.trim(); if (!content) return;
+      const ncEl = document.getElementById('note-confirm'); if (ncEl) ncEl.innerHTML = '';
       const r = await api('POST', '/note', { content });
-      if (r.ok) { const d = await r.json(); showMsg(document.getElementById('note-msg'), '✓ 已记录 ' + d.time, 'ok'); input.value = ''; loadToday(); updateInboxBadge(); }
+      if (r.ok) { const d = await r.json(); showMsg(document.getElementById('note-msg'), '✓ 已记录 ' + d.time, 'ok'); input.value = ''; if (ncEl) { const a = document.createElement('a'); a.className = 'link'; a.textContent = '立即确认入图'; a.href = '#'; a.onclick = (e) => { e.preventDefault(); confirmFragment(d.id); ncEl.innerHTML = ''; }; ncEl.appendChild(a); } loadToday(); updateInboxBadge(); }
       else showMsg(document.getElementById('note-msg'), '✗ 记录失败', 'err');
     };
     document.getElementById('note-btn').onclick = submit;
