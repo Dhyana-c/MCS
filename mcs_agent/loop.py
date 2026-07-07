@@ -43,7 +43,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "只有当问题依赖「已经记下来的东西」——用户曾 learn 过、或图里存着的事实/关系——\n"
     "才进图探索。典型：用户问「我之前记的 X」「那个和 Y 有关吗」。\n"
     "撞见多个相关概念想找它们的共性、或撞见矛盾 / 互斥的说法时，可用 generalize / arbitrate\n"
-    "做只读语义判断（不改图）。\n\n"
+    "做只读语义判断（不改图）。发觉某概念把多个语义中心耦合（如'按摩'实讲泰式、或'小明和小红'\n"
+    "误并），可用 split 拆开；发觉重复 / 同义节点，可用 merge 收口（写图，谨慎）。\n\n"
     "# 工具（导航决策权在你：选哪个工具、哪个种子、哪种模式、哪两个节点）\n"
     "- search：搜索入口种子。mode=keyword 按用户输入字面匹配（主力，已实现）；"
     "mode=direct 返回顶层 hub（无明确关键词时用，已实现）；mode=vector 未实现。\n"
@@ -52,9 +53,13 @@ DEFAULT_SYSTEM_PROMPT = (
     "- recall：回忆最近发生的事件（按时间倒排），回答「最近记了什么/最近有什么」。\n"
     "- generalize：概括若干节点的公共上位概念 / 共性，帮你理解一组概念的关系（只读）。\n"
     "- arbitrate：对若干互斥事实反查背书事件、裁决采信哪个 + 理由（只读）。\n"
+    "- split：拆分一个粒度耦合的概念节点（content 把类别和特化耦合，或多实体误并）为多个\n"
+    "  独立节点（写图）。content 自洽别拆、描述不准是重写不是拆、拿不准别拆。\n"
+    "- merge：合并若干本就同一个的节点（异名/同义/重复建）为一个（写图）。\n"
+    "  同名异义别合、互斥禁合、拿不准别合。core 已自动合并同义，本工具用于收口残留重复。\n"
     "- learn：把信息写入记忆图（仅当用户明确要记住时）。\n"
-    "工具返回的节点带 [id:...]，后续工具用它引用。generalize / arbitrate 的 node_ids 由\n"
-    "前序工具返回的 [id:...] 提供。未实现的模式会返回提示，改用可用项。\n\n"
+    "工具返回的节点带 [id:...]，后续工具用它引用。generalize / arbitrate / merge 的 node_ids、\n"
+    "split 的 node_id 由前序工具返回的 [id:...] 提供。未实现的模式会返回提示，改用可用项。\n\n"
     "# 探索策略（避免空转）\n"
     "先把相关记忆探索充分再作答；但 search 返回(无)或 associate 无相关时，\n"
     "不要无限换关键词重试——最多换 1-2 种切入（如 keyword 失败改 direct 看顶层 hub），\n"
@@ -76,7 +81,7 @@ class MemoryAgent:
     Args:
         memory: 暴露 learn/search/associate/find_path/recall/generalize/arbitrate 的对象（通常是 ``MemoryStore``）。
         llm: ``(messages, tools) -> dict`` 裸 callable（自动包 ``CallableAgentLLM``）或 ``AgentLLMInterface`` 后端。
-        tools: 工具集配置（启用子集 / 覆盖参数）；None = 全部 7 个内置工具。
+        tools: 工具集配置（启用子集 / 覆盖参数）；None = 全部 9 个内置工具。
         system_prompt: 系统提示词。
         max_turns: 单次 chat 的最大 LLM 轮次（防失控循环）。
         summary_budget: 注入 system prompt 的图摘要字符预算（第二道闸，防归纳超标进入上下文）。
@@ -99,7 +104,7 @@ class MemoryAgent:
         self.llm: AgentLLMInterface = (
             llm if isinstance(llm, AgentLLMInterface) else CallableAgentLLM(llm)
         )
-        # 工具集：build_toolset 产 (schemas_for_llm, dispatch)；tools=None → 全 7 内置
+        # 工具集：build_toolset 产 (schemas_for_llm, dispatch)；tools=None → 全 9 内置
         self.schemas, self.dispatch = build_toolset(BUILTIN_TOOLS, tools)
         self.system_prompt = system_prompt
         self.max_turns = max_turns

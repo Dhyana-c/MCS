@@ -19,9 +19,12 @@ from mcs.prompts import (
     gen_summary,
     generalize,
     judge_relations,
+    merge,
+    merge_content,
     navigate_hub,
     select_facts,
     select_nodes,
+    split,
     synthesize,
 )
 
@@ -105,6 +108,21 @@ DEFAULT_PROMPTS: dict[str, PromptBundle] = {
         system=adjudicate.SYSTEM_PROMPT,
         template=adjudicate.USER_TEMPLATE,
         parse=adjudicate.parse,
+    ),
+    "split": PromptBundle(
+        system=split.SYSTEM_PROMPT,
+        template=split.USER_TEMPLATE,
+        parse=split.parse,
+    ),
+    "merge": PromptBundle(
+        system=merge.SYSTEM_PROMPT,
+        template=merge.USER_TEMPLATE,
+        parse=merge.parse,
+    ),
+    "merge_content": PromptBundle(
+        system=merge_content.SYSTEM_PROMPT,
+        template=merge_content.USER_TEMPLATE,
+        parse=merge_content.parse,
     ),
 }
 

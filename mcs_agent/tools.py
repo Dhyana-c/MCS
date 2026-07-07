@@ -1,9 +1,11 @@
 """记忆 agent 的工具注册表（可配置工具集）。
 
-7 个内置工具落成 ``ToolSpec`` 注册表 ``BUILTIN_TOOLS``，替代旧 ``loop.py`` 硬编码的
+9 个内置工具落成 ``ToolSpec`` 注册表 ``BUILTIN_TOOLS``，替代旧 ``loop.py`` 硬编码的
 ``MEMORY_TOOLS`` 列表 + ``_dispatch`` if/elif。其中 5 个导航 / 写入工具（learn / search /
-associate / reason / recall）+ 2 个只读语义判断工具（``generalize`` / ``arbitrate``，调
-MCS LLM 插件、不改图、不触发写 / 守门 / 裂变）。工具集经 ``ToolsetConfig`` 启用 / 禁用
+associate / reason / recall）+ 2 个只读语义判断工具（``generalize`` / ``arbitrate``）+
+2 个写图语义重组工具（``split`` / ``merge``，调 MCS LLM 插件产方案 + 执行改图、过守门）。
+只读判断工具不改图、不触发写 / 守门 / 裂变；``learn`` / ``split`` / ``merge`` 为写图工具
+（``readonly=False``，排除出只读召回白名单）。工具集经 ``ToolsetConfig`` 启用 / 禁用
 子集、按**工具名**覆盖参数。
 
 **导航 / 判断决策权交给 LLM**（不变）：LLM 决定选哪个工具、哪个种子、哪种模式、哪两个
@@ -66,6 +68,14 @@ def _arbitrate(memory: Any, args: dict) -> str:
         args.get("question", ""),
         events_per_fact=args.get("events_per_fact", 3),
     )
+
+
+def _split(memory: Any, args: dict) -> str:
+    return memory.split_concept(args.get("node_id", ""), args.get("focus"))
+
+
+def _merge(memory: Any, args: dict) -> str:
+    return memory.merge_concepts(args.get("node_ids", []), args.get("focus"))
 
 
 @dataclass
@@ -291,6 +301,64 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
             },
         },
         handler=_arbitrate,
+    ),
+    "split": ToolSpec(
+        name="split",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "split",
+                "description": (
+                    "拆分一个粒度耦合的概念节点为多个独立节点（写图）。"
+                    "用于节点 content 把【一个类别和某特化】耦合（如'按摩'实讲泰式特点），"
+                    "或【多个独立实体】被误并为一个（如'小明和小红'）。"
+                    "node_id 由前序工具（search/associate）返回的 [id:...] 提供。"
+                    "**不该调**：content 自洽别拆、描述不准是重写不是拆、拿不准别拆（错拆制造噪音）。"
+                    "返回的产物 id 是守门前快照——拆后守门可能重组产物，后续引用前请重新 search 定位。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "node_id": {"type": "string", "description": "要拆的节点 id"},
+                        "focus": {"type": "string", "description": "可选，拆分语境/意图"},
+                    },
+                    "required": ["node_id"],
+                },
+            },
+        },
+        handler=_split,
+        readonly=False,
+    ),
+    "merge": ToolSpec(
+        name="merge",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "merge",
+                "description": (
+                    "合并若干本就同一个的节点为一个（写图）——异名/同义/重复建。"
+                    "node_ids 由前序工具返回的 [id:...] 提供（≥2）。"
+                    "**不该调**：同名异义别合（'苹果'水果vs公司）、互斥禁合、"
+                    "mere 相关用关联而非合并、拿不准别合（错合丢身份）。"
+                    "core 写入已自动合并同义；本工具用于 agent 发觉残留重复、主动收口。"
+                    "返回的 keep id 是守门前快照——合并增扇出可能触发裂变重组，后续引用前请重新 search 定位。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "node_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "要合并的节点 id 列表（≥2）",
+                        },
+                        "focus": {"type": "string", "description": "可选，合并语境"},
+                    },
+                    "required": ["node_ids"],
+                },
+            },
+        },
+        handler=_merge,
+        readonly=False,
     ),
 }
 

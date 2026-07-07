@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from mcs.core.content_merge import merge_content
 from mcs.core.errors import InvalidDecisionError, UnknownActionError
 from mcs.entities.decisions import (
     ConceptDraft,
@@ -207,6 +208,16 @@ class WritePipeline:
         self._mark_ingested_if_success(ctx)
 
         return ctx
+
+    def run_compaction(self, changed_nodes: list[Node]) -> None:
+        """public 守门入口：等价于阶段⑥ ``_run_compaction``——对 ``changed_nodes`` 跑
+        CompactionPlugin 链、对层级视图超 T 的节点强制裂变兜底（保核心不变量）。
+
+        供外部图手术（如 agent 层 ``split`` / ``merge`` 工具）改图后过守门；**不重跑
+        ①–⑤ / ⑦**、不触碰 ``WriteContext``。ingest 阶段⑥仍直接调 ``_run_compaction``，
+        本方法仅暴露同名 public 入口、不改既有逻辑。
+        """
+        self._run_compaction(changed_nodes)
 
     def _rollback_rule_ingest(self, ctx: WriteContext) -> None:
         """ingest 中途失败时回滚 ⓪ 建的事件 / source 节点（含其已连的背书边）。
@@ -544,7 +555,8 @@ class WritePipeline:
 
     def _dispatch_merge(self, decision: Decision) -> None:
         """合并：把新概念的名称/别名并入 ``target_id`` 的别名槽，并把
-        concept content 追加到目标节点的 content（子串去重）。
+        concept content **语义合并**到目标节点的 content（非子串时 LLM 合并成一个
+        稳定定义；落实 unified-graph-schema content 合并守则，不机械追加）。
 
         直接 mutate ``node.extensions`` / ``node.content``；
         写完后 ``_notify_indexes`` 会重新索引该节点。
@@ -562,13 +574,15 @@ class WritePipeline:
             for alias in aliases_to_add:
                 if alias and alias != node.name and alias not in existing:
                     existing.append(alias)
-        # 2) concept content 追加到目标节点 content（子串去重）
+        # 2) concept content 语义合并到目标节点 content（非子串时 LLM 合并成一个
+        #    稳定定义；落实 unified-graph-schema content 合并守则，不机械追加）
         if decision.concept and decision.concept.content:
-            incoming = decision.concept.content.strip()
-            existing_content = (node.content or "").strip()
-            if incoming and incoming not in existing_content:
-                node.content = f"{existing_content}\n{incoming}" if existing_content else incoming
-        # 3) content 压缩：追加后超阈值时调用 LLM 压缩，防止单节点 content 无界增长
+            node.content = merge_content(
+                node.content or "",
+                decision.concept.content,
+                merge_llm=self._merge_content_llm,
+            )
+        # 3) content 压缩：合并后超阈值时调用 LLM 压缩，防止单节点 content 无界增长
         if (
             self.merge_content_threshold > 0
             and len(node.content or "") > self.merge_content_threshold
@@ -587,6 +601,15 @@ class WritePipeline:
                     node.id,
                     exc_info=True,
                 )
+
+    def _merge_content_llm(self, target: str, incoming: str) -> str:
+        """``merge_content`` helper 的 LLM 回调：调 ``merge_content`` purpose
+        语义合两段 content 成一个稳定定义（守时间归属）。
+        """
+        return self.llm.call(
+            purpose="merge_content",
+            free_args={"target": target, "incoming": incoming},
+        )
 
     def _dispatch_create(self, decision: Decision) -> Node:
         """创建：新节点 + 到 ``edges_to`` 中每个锚点的关联边。

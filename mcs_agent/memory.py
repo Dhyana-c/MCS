@@ -1,4 +1,4 @@
-"""记忆 agent 的记忆底座 —— MCS 的单线程包装，暴露 7 个细粒度原语。
+"""记忆 agent 的记忆底座 —— MCS 的单线程包装，暴露 9 个细粒度原语。
 
 MCS 非线程安全、SQLite 连接绑创建线程，故 MCS 的构造与全部调用都经同一个
 单 worker 线程（同 ``mcs_mcp.server``）。工具（learn / search / associate /
@@ -10,6 +10,11 @@ LLM 决定用哪个工具、哪个种子、哪种模式、哪两个节点找路�
 - ``generalize(node_ids, focus?)``：N 节点 → LLM 概括公共上位概念 / 共性 → 文本。
 - ``arbitrate(node_ids, question)``：互斥事实 → 反查背书事件（``get_related_events``）
   → 组装「事实 + 事件」素材、T 有界截断 → LLM 裁决采信方 + 理由 → 文本。
+
+另有两类**写图语义重组**原语（调 MCS LLM 插件产方案 + 执行改图 + 过守门）：
+
+- ``split_concept(node_id, focus?)``：拆分粒度耦合的概念节点（类别-特化 / 多实体误并）。
+- ``merge_concepts(node_ids, focus?)``：合并本就同一个的节点（异名 / 同义 / 重复建）。
 
 两者经 ``read_manager.get_all(PluginType.LLM)`` 取 MCS 的（单实例）LLM 插件、
 调 ``plugin.call(purpose, nodes_in, free_args)``——与 ``learn`` / ``associate`` 在
@@ -23,13 +28,22 @@ worker 线程触发 LLM 同一既定模式；material 经 ``free_args["material"
 
 from __future__ import annotations
 
+import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Callable
 
 from mcs.core.plugin import PluginType
 from mcs.entities.decisions import IngestInput
-from mcs.entities.graph import CLASS_EVENT, Edge, Node
+from mcs.entities.graph import (
+    CLASS_CONCEPT,
+    CLASS_EVENT,
+    CLASS_FACT,
+    EDGE_ASSOC,
+    EDGE_MUTEX,
+    Edge,
+    Node,
+)
 from mcs.rendering import format_ingest_status, render_query_result
 from mcs.utils.timestamps import event_sort_key
 
@@ -180,10 +194,12 @@ def _bfs_path(
 
 
 class MemoryStore:
-    """MCS 的单 worker 线程包装，提供 7 个原语供 agent 调用。
+    """MCS 的单 worker 线程包装，提供 9 个原语供 agent 调用。
 
     5 个导航 / 写入原语（learn / search / associate / find_path / recall）+ 2 个
-    只读语义判断原语（``generalize`` / ``arbitrate``，调 MCS LLM 插件、不改图）。
+    只读语义判断原语（``generalize`` / ``arbitrate``，调 MCS LLM 插件、不改图）
+    + 2 个写图语义重组原语（``split_concept`` / ``merge_concepts``，调 MCS LLM 插件
+    产方案 + 执行改图、过守门）。
 
     Args:
         build_fn: 在 worker 线程内构建并返回 MCS 实例的 callable（SQLite 连接
@@ -489,6 +505,313 @@ class MemoryStore:
         ``ToolsetConfig.params["arbitrate"]["events_per_fact"]`` 覆盖）。
         """
         return self._submit(self._do_arbitrate, node_ids, question, events_per_fact)
+
+    # === split / merge（概念重组·写图，调 MCS LLM 插件产方案 + 执行改图） ===
+
+    def _do_split(self, node_id: str, focus: str | None) -> str:
+        """概念拆分：取节点 + 全部原边 → split purpose 判耦合 → 执行改图 → 过守门。
+
+        ``split`` 为**写图**原语：组合 store 的 add/delete 原语，走 snapshot/restore 原子
+        事务，过 ``self._mcs.run_compaction`` 守门。边归属由 LLM 在方案里给出（强制全覆盖，
+        漏边透明挂 parent）；事件背书边自动迁 target 到 parent（不交 LLM、不丢）。
+        material 不截断（截断丢边、破坏全覆盖校验）：取全部关系边喂 LLM 判耦合——T 约束
+        查询窗口（活跃视图）与 LLM 累积预算、非 LLM 单次 context，material 即使含全部
+        关系边也远在 context 内可正常判定；split 本身降 fanout，产物过守门保不变量。
+        返回的产物 id 是守门前快照——``run_compaction`` 的 decide_hub 可能重组 / 合并
+        产物；agent 后续引用前建议重新 search 定位。
+        """
+        store = self._mcs.store
+        node = store.get_node(node_id)
+        if node is None:
+            return f"[error] 节点不存在：{node_id}"
+        if node.node_class != CLASS_CONCEPT:
+            # split 仅拆概念节点（工具 schema 承诺）：事实带互斥 / 背书、事件 / source 规则
+            # 入库，拆它们会破坏语义（互斥恒 fact↔事实、事件层不进核心活跃视图）。非概念拒拆。
+            return f"[error] split 仅拆概念节点，该节点 node_class={node.node_class}"
+
+        # 原边：get_relations 取关联/互斥（核心节点侧已过滤事件边）
+        edges = list(store.get_relations(node_id) or [])
+        cp_name: dict[str, str] = {}  # edge_id -> 对端 name
+        for e in edges:
+            other_id = e.target_id if e.source_id == node_id else e.source_id
+            other = store.get_node(other_id)
+            cp_name[e.id] = other.name if other else other_id
+        # 事件背书边（事件 → node），单独取（get_relations 核心侧过滤了事件边）
+        event_edges: list[tuple[str, Edge]] = []
+        for ev in store.get_related_events(node_id) or []:
+            for e in store.get_edges_between(ev.id, node_id):
+                if e.type == EDGE_ASSOC:
+                    event_edges.append((ev.id, e))
+                    break
+
+        # 自建 material：节点 + 全部原边（含对端 name）
+        lines = [_render_nodes([node], "待拆分节点"), "原边（含对端 name）："]
+        for e in edges:
+            tag = "互斥" if e.type == EDGE_MUTEX else "关联"
+            lines.append(f"  [edge:{e.id}] ({tag}) 对端: {cp_name[e.id]}")
+        if not edges:
+            lines.append("  (无原边)")
+        material = "\n".join(lines)
+
+        llm = self._get_llm_plugin()
+        result: dict = llm.call(
+            purpose="split",
+            nodes_in=[node],
+            free_args={"focus": focus or "", "material": material},
+        )
+        if result.get("action") != "split":
+            return "未拆分：节点未耦合多个语义中心（noop）。"
+
+        into = result["into"]
+        relation = result["relation"]
+        edge_plan = result["edges"]
+
+        # parent = is_a 的 parent；none 型取首个非 fact 产物（漏边 / 事件背书兜底挂点）
+        parent_name = next((it["name"] for it in into if it["role"] == "parent"), None)
+        if parent_name is None:
+            parent_name = next((it["name"] for it in into if it["role"] != "fact"), None)
+        if parent_name is None:
+            return "[error] 拆分方案无可用归属产物（全为 fact）"
+
+        # 漏边降级（2.3）：未在 edge_plan 指明的原边透明挂 parent
+        planned_cps = {it["counterpart"] for it in edge_plan}
+        # 按 counterpart name 分组原边；同名多节点时同 name 边同迁（合理默认——同义节点该合并）
+        edges_by_cp: dict[str, list[Edge]] = {}
+        for e in edges:
+            edges_by_cp.setdefault(cp_name[e.id], []).append(e)
+        fallback: list[str] = []
+        for cp, group in edges_by_cp.items():
+            if cp not in planned_cps:
+                edge_plan.append({"counterpart": cp, "to": parent_name})
+                fallback.append(
+                    f"对端'{cp}'的 {len(group)} 条边未指明归属，暂挂'{parent_name}'"
+                )
+
+        # 原子执行：snapshot → 建产物 → 连产物间关联 → 迁原边 → 迁事件背书 → 删原节点
+        snap = store.snapshot()
+        name_to_id: dict[str, str] = {}
+        try:
+            for it in into:
+                nc = CLASS_FACT if it["role"] == "fact" else CLASS_CONCEPT
+                # parent 产物（漏边 / 事件背书挂点）继承原节点 hub 标记——组织职责随大类；
+                # 统一模型层级=关联边随迁移，但 hub 标记不随边走、需显式传。下钻成员层级
+                # 由守门 decide_hub 重判。
+                is_parent_target = it["name"] == parent_name and it["role"] != "fact"
+                extensions = {"hub": True} if (is_parent_target and node.hub) else {}
+                nid = store.add_node(
+                    Node(
+                        id=str(uuid.uuid4()),
+                        name=it["name"],
+                        content=it["content"],
+                        node_class=nc,
+                        extensions=extensions,
+                    )
+                )
+                name_to_id[it["name"]] = nid
+            # 产物间关联：is_a → child→parent；none → sibling 间无独立边
+            if relation == "is_a":
+                pid = name_to_id.get(parent_name)
+                for it in into:
+                    if it["role"] == "child":
+                        cid = name_to_id.get(it["name"])
+                        if pid and cid:
+                            store.add_edge(cid, pid, type=EDGE_ASSOC)
+            # fact 产物连两端概念：使 fact 在图中可达（从概念沿关联边可走到其关联事实）
+            for it in into:
+                if it["role"] != "fact":
+                    continue
+                fid = name_to_id.get(it["name"])
+                if not fid:
+                    continue
+                if relation == "is_a":
+                    # fact 连所有 parent 和 child（遍历，非 next 首个——多 child 时全连，
+                    # 否则漏连的 child 不可达该 fact）
+                    for role in ("parent", "child"):
+                        for x in into:
+                            if x["role"] == role:
+                                oid = name_to_id.get(x["name"])
+                                if oid:
+                                    store.add_edge(fid, oid, type=EDGE_ASSOC)
+                else:
+                    # none 型：fact 连各 sibling
+                    for sib in into:
+                        if sib["role"] == "sibling":
+                            sid = name_to_id.get(sib["name"])
+                            if sid:
+                                store.add_edge(fid, sid, type=EDGE_ASSOC)
+            # 迁原边（按 edge_plan 归属）
+            for item in edge_plan:
+                to_id = name_to_id.get(item["to"])
+                if not to_id:
+                    continue  # 幻觉 to，跳过
+                for e in edges_by_cp.get(item["counterpart"], []):
+                    other_id = e.target_id if e.source_id == node_id else e.source_id
+                    etype = e.type
+                    store.delete_edge(e.id)
+                    if e.source_id == node_id:
+                        store.add_edge(to_id, other_id, type=etype)
+                    else:
+                        store.add_edge(other_id, to_id, type=etype)
+            # 事件背书边：自动迁 target 到 parent
+            pid_ev = name_to_id.get(parent_name)
+            for ev_id, e in event_edges:
+                store.delete_edge(e.id)
+                if pid_ev:
+                    store.add_edge(ev_id, pid_ev, type=EDGE_ASSOC)
+            # 删原节点（剩余边由 delete_node 连带清理）
+            store.delete_node(node_id)
+            # 过守门（split 减扇出，几乎必过；守门失败也回滚）
+            changed = [n for n in (store.get_node(i) for i in name_to_id.values()) if n is not None]
+            self._mcs.run_compaction(changed)
+        except Exception:
+            store.restore(snap)
+            raise
+
+        out = ["已拆分："]
+        for it in into:
+            out.append(f"  [id:{name_to_id.get(it['name'])}] {it['name']}（{it['role']}）")
+        if fallback:
+            out.append("注：" + "；".join(fallback))
+        return "\n".join(out)
+
+    def split_concept(self, node_id: str, focus: str | None = None) -> str:
+        """拆分一个粒度耦合的概念节点（worker 线程：判耦合 + 改图 + 守门）。"""
+        return self._submit(self._do_split, node_id, focus)
+
+    def _do_merge(self, node_ids: list[str], focus: str | None) -> str:
+        """概念合并：取节点 → merge purpose 判同义 → 互斥安全闸 → 执行改图 → 过守门。
+
+        ``merge`` 为**写图**原语：absorb 的边 / 事件背书迁向 keep、aliases 收口、absorb 的
+        hub 标记继承到 keep、删 absorb，snapshot/restore 原子事务，过守门（增扇出可能触发
+        裂变）。互斥禁合三闸：keep↔absorb 互斥（塌缩）、absorb↔absorb 互斥（塌缩）、absorb
+        带互斥边且 keep 非 fact（无法承接、会丢互斥关系）。不复用 judge_relations（口径不同）。
+        返回的 keep id 是守门前快照——``run_compaction`` 的 decide_hub 可能重组 keep 邻域，
+        agent 后续引用前建议重新 search 定位。
+        """
+        store = self._mcs.store
+        nodes: list[Node] = []
+        for nid in node_ids or []:
+            n = store.get_node(nid)
+            if n is not None:
+                nodes.append(n)
+        if len(nodes) < 2:
+            return "（可用节点不足 2 个，无需合并）"
+
+        material = _render_nodes(nodes, "待判定节点")
+        llm = self._get_llm_plugin()
+        result: dict = llm.call(
+            purpose="merge",
+            nodes_in=nodes,
+            free_args={"focus": focus or "", "material": material},
+        )
+        if result.get("action") != "merge":
+            return f"未合并：节点并非同一个（noop）。{result.get('reason', '')}".strip()
+
+        keep_id = result["keep"]
+        absorb_ids = result["absorb"]
+        valid_ids = {n.id for n in nodes}
+        if keep_id not in valid_ids or any(a not in valid_ids for a in absorb_ids):
+            return "[error] 合并方案的 keep/absorb 含不在传入集合的 id（幻觉 id）"
+        keep_node = store.get_node(keep_id)
+        if keep_node is None:
+            return "[error] keep 节点不存在"
+
+        # 互斥安全闸（机制层保险）：keep ↔ 任一 absorb 有互斥边 → 拒绝（塌缩矛盾）
+        absorb_set = set(absorb_ids)
+        for e in store.get_relations(keep_id) or []:
+            if e.type != EDGE_MUTEX:
+                continue
+            other = e.target_id if e.source_id == keep_id else e.source_id
+            if other in absorb_set:
+                return f"[error] 互斥禁合：keep 与 [id:{other}] 互斥，合并会塌缩矛盾"
+        # absorb 间互斥：合并后等价于 keep 自身互斥矛盾
+        for aid in absorb_ids:
+            for e in store.get_relations(aid) or []:
+                if e.type != EDGE_MUTEX:
+                    continue
+                other = e.target_id if e.source_id == aid else e.source_id
+                if other in absorb_set and other != aid:
+                    return f"[error] 互斥禁合：absorb [id:{aid}] 与 [id:{other}] 互斥，合并会塌缩矛盾"
+        # absorb 带互斥边、keep 非 fact → 互斥边无法迁到 keep（互斥恒 fact↔事实）：拒绝。
+        # 不进改图、不丢边；keep 是 fact 时互斥边可正常迁、不挡（前置挡优于 try/except 丢失）。
+        if keep_node.node_class != CLASS_FACT:
+            for aid in absorb_ids:
+                for e in store.get_relations(aid) or []:
+                    if e.type != EDGE_MUTEX:
+                        continue
+                    other = e.target_id if e.source_id == aid else e.source_id
+                    if other == keep_id:
+                        continue  # keep↔absorb 互斥已被上面安全闸挡
+                    return (
+                        f"[error] 互斥禁合：absorb [id:{aid}] 带互斥边（↔[id:{other}]），"
+                        f"keep 非 fact 无法承接（互斥恒 fact↔事实），合并会丢互斥关系"
+                    )
+
+        snap = store.snapshot()
+        try:
+            # merged_content（非空则覆盖 keep content）
+            merged_content = result.get("merged_content") or ""
+            if merged_content:
+                store.update_node(keep_id, {"content": merged_content})
+            # aliases 收口：result 的 aliases_to_add + 各 absorb 的 name 并入 keep；
+            # 同时收集 hub 标记：任一 absorb 为组织中心 → keep 继承（hub 不随关联边迁移，
+            # 需显式传；下钻成员层级由守门 decide_hub 重判）。
+            aliases_to_add = list(result.get("aliases_to_add") or [])
+            absorb_had_hub = False
+            for aid in absorb_ids:
+                an = store.get_node(aid)
+                if an and an.name and an.name != keep_node.name:
+                    aliases_to_add.append(an.name)
+                if an and an.hub:
+                    absorb_had_hub = True
+            if aliases_to_add:
+                ext = dict(keep_node.extensions or {})
+                # 别名槽 MUST 用 alias_index.aliases（与 core write_pipeline / query_engine /
+                # AliasIndexPlugin 对齐），否则收口的异名不被别名索引收录、search 断链。
+                slot = ext.setdefault("alias_index", {}).setdefault("aliases", [])
+                for a in aliases_to_add:
+                    if a not in slot:
+                        slot.append(a)
+                store.update_node(keep_id, {"extensions": ext})
+            # hub 标记迁移：absorb 若为组织中心，keep 继承（重新读最新 extensions，避免覆盖 aliases）
+            if absorb_had_hub and not keep_node.hub:
+                latest = store.get_node(keep_id)
+                ext = dict((latest or keep_node).extensions or {})
+                ext["hub"] = True
+                store.update_node(keep_id, {"extensions": ext})
+            # 迁 absorb 的边到 keep（absorb↔keep 边不迁、由 delete_node 清理）
+            for aid in absorb_ids:
+                for e in list(store.get_relations(aid) or []):
+                    other = e.target_id if e.source_id == aid else e.source_id
+                    if other == keep_id:
+                        continue
+                    etype = e.type
+                    store.delete_edge(e.id)
+                    if e.source_id == aid:
+                        store.add_edge(keep_id, other, type=etype)
+                    else:
+                        store.add_edge(other, keep_id, type=etype)
+                # 事件背书（事件 → absorb）迁 target 到 keep
+                for ev in store.get_related_events(aid) or []:
+                    for ee in store.get_edges_between(ev.id, aid):
+                        if ee.type == EDGE_ASSOC:
+                            store.delete_edge(ee.id)
+                            store.add_edge(ev.id, keep_id, type=EDGE_ASSOC)
+                            break
+                store.delete_node(aid)
+            # 过守门（merge 增扇出，可能触发 decide_hub 裂变；守门失败也回滚）
+            keep_after = store.get_node(keep_id)
+            if keep_after is not None:
+                self._mcs.run_compaction([keep_after])
+        except Exception:
+            store.restore(snap)
+            raise
+
+        return f"已合并：保留 [id:{keep_id}] {keep_node.name}，吸收 {len(absorb_ids)} 个节点"
+
+    def merge_concepts(self, node_ids: list[str], focus: str | None = None) -> str:
+        """合并若干本就同一个的节点（worker 线程：判同义 + 改图 + 守门）。"""
+        return self._submit(self._do_merge, node_ids, focus)
 
     # === graph_summary（图级主题摘要，供 agent 注入 system prompt） ===
 

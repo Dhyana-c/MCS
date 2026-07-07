@@ -1,7 +1,7 @@
 # 记忆 Agent
 
 > `mcs_agent` 是建在 MCS 之上的对话式记忆助手：一个 **ReAct loop**，让 LLM 经 tool calling 自主决定
-> 如何在记忆图里导航。本文讲架构、7 个工具（5 导航 + 2 只读语义判断）、单线程封装、FastAPI 后端、启动方式，
+> 如何在记忆图里导航。本文讲架构、9 个工具（5 导航 + 2 只读语义判断 + 2 写图语义重组）、单线程封装、FastAPI 后端、启动方式，
 > 以及它与 MCP server 的区别。
 >
 > **包结构**（change `mcs-mem-package-extract`）：`mcs_agent/` 是 agent 核心库（ReAct loop /
@@ -31,7 +31,7 @@
 - **导航决策权在 LLM**：选哪个工具、哪个种子、哪种扩展模式、找哪两个节点的路径，都由 LLM 决定；工具只是对
   MCS 能力的薄封装。
 
-## 7 个工具（5 导航 + 2 只读语义判断）
+## 9 个工具（5 导航 + 2 只读语义判断 + 2 写图语义重组）
 
 `BUILTIN_TOOLS`（`tools.py`，`ToolSpec` 注册表）定义的工具，经 tool calling 暴露给 agent 的 LLM
 （`MEMORY_TOOLS` 保留为废弃别名）。工具集可经 `ToolsetConfig` 配置（启用子集 / 按工具名覆盖参数）：
@@ -45,6 +45,8 @@
 | `recall` | `limit` | 回忆最近发生的事件（时间倒排、纯近期口径，受 `limit` 与 T 双约束） | ✅ |
 | `generalize` | `node_ids`, `focus?` | 概括若干节点的公共上位概念 / 共性（只读 LLM 判断，不改图） | ✅ |
 | `arbitrate` | `node_ids`, `question` | 对若干互斥事实反查背书事件、裁决采信方 + 理由（只读 LLM 判断，不改图） | ✅ |
+| `split` | `node_id`, `focus?` | 拆分粒度耦合的概念节点（类别-特化 / 多实体误并）为多个独立节点（写图，过守门） | ✅ |
+| `merge` | `node_ids`, `focus?` | 合并若干本就同一个的节点（异名/同义/重复建）为一个（写图，互斥禁合，过守门） | ✅ |
 
 未实现的模式以**空壳诚实返回**提示（不伪造）；工具返回的节点都带 `[id:...]`，供后续工具引用
 （`search → associate → reason` 链式导航）。
@@ -71,13 +73,22 @@
 两工具的 `node_ids` 由前序工具（`search`/`associate`）返回的 `[id:...]` 提供，返回文本也带 `[id:...]`
 供链式引用。裁决是**建议性只读结论**（非永久解决互斥），最终答复由 agent 综合判断。
 
+### split / merge：写图语义重组
+
+这两个工具与上面的只读判断工具一样**调 MCS 的 LLM 插件**产方案，但**改图**——对已捞到的节点做概念重组，组合 store 的 `add/delete/update` 原语执行、走 `snapshot/restore` 原子事务、过 `MCS.run_compaction` 守门：
+
+- **`split`（拆分）**：给一个节点 id → 加载其全部原边（关联/互斥 + 事件背书）→ 经 `split` purpose 让 LLM 判该节点是否**耦合了多个语义中心**（类别-特化，如"按摩"实讲泰式；或多实体误并，如"小明和小红"）→ 产出拆分方案（产物 `into` + 产物间 `relation` + 每条原边归属）→ 执行（建产物 / 迁边 / 删原节点）→ 过守门。仅拆**概念节点**（事实带互斥/背书、事件/source 规则入库，拆它们破坏语义）；原节点若为 hub，parent 产物继承 hub 标记（下钻成员层级由守门 `decide_hub` 重判）。未耦合返回 `noop` 不执行（双重防误触发：主 LLM 判断 + 专用 prompt 复核）。补 core 自动合并之外的"**拆分**"能力——增量抽取的粒度判错（有合无分）靠它修正。
+- **`merge`（合并）**：给若干节点 id → 经 `merge` purpose 判是否**本就同一个**（异名/同义/重复建）→ 产出合并方案（keep/absorb/merged_content/aliases）→ 执行（边与事件背书迁向 keep、aliases 收口、absorb 的 hub 标记继承到 keep、删 absorb）→ 过守门。**互斥禁合三闸**（keep↔absorb 塌缩 / absorb↔absorb 塌缩 / absorb 带互斥边且 keep 非 fact 无法承接）；非同义 `noop`。core 写入已自动合并同义，本工具用于 agent 发觉残留重复、主动收口。
+
+两工具的 `node_id(s)` 由前序工具返回的 `[id:...]` 提供；返回文本含产物 / keep 节点 id（**守门前快照**——`run_compaction` 的 `decide_hub` 可能重组 / 合并产物或 keep 邻域，agent 后续引用前建议重新 `search` 定位）。两者 `readonly=False`，排除出 `/recall` 只读召回白名单（保"召回 MUST NOT 写图"）。
+
 ## MemoryStore：MCS 的单线程封装
 
 MCS 非线程安全、SQLite 连接绑创建线程，所以 `MemoryStore`（`memory.py`）把 MCS 的**构造与全部调用都收束到
 同一个单 worker 线程**（`ThreadPoolExecutor(max_workers=1)`）：每个原语经 `_submit` 丢给 worker、阻塞取结果，
 调用方线程绝不直接触碰 MCS / store。
 
-它在 7 个 LLM 工具之外还暴露 `graph_summary`（读图级主题摘要）、`graph_view`（只读可视化视图）
+它在 9 个 LLM 工具之外还暴露 `graph_summary`（读图级主题摘要）、`graph_view`（只读可视化视图）
 等原语。其中 `find_path` 是 `reason` 工具背后的无向 BFS（下钻成员 + 关系边端点都算邻居）；
 `generalize` / `arbitrate` 是调 MCS LLM 插件的只读语义判断原语（见上节）。
 
@@ -162,7 +173,7 @@ python -m mcs_mem                          # 记忆应用（基础 + 碎片/整�
 |---|---|---|
 | 谁来决策 | **外部客户端**（Claude Desktop 等）的 LLM | **自带** LLM（ReAct loop） |
 | 接口 | MCP stdio 工具（`query` / `ingest`） | HTTP（`/chat`）+ 前端 |
-| 工具粒度 | 粗（一次 query 走完整管线） | 细（7 个原语，LLM 分步组合） |
+| 工具粒度 | 粗（一次 query 走完整管线） | 细（9 个原语，LLM 分步组合） |
 | 用途 | 把图当工具接入已有 Agent | 独立的对话式记忆助手 |
 
 两者都用单 worker 线程封装 MCS（线程安全铁律），都复用 `mcs.rendering` 的渲染纯函数。

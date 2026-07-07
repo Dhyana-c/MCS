@@ -12,18 +12,19 @@ from mcs_agent.tools import BUILTIN_TOOLS, MEMORY_TOOLS, ToolSpec, ToolsetConfig
 # === ToolSpec / BUILTIN_TOOLS / MEMORY_TOOLS 别名 ===
 
 
-def test_builtin_tools_has_7():
+def test_builtin_tools_has_9():
     assert set(BUILTIN_TOOLS) == {
-        "learn", "search", "associate", "reason", "recall", "generalize", "arbitrate",
+        "learn", "search", "associate", "reason", "recall",
+        "generalize", "arbitrate", "split", "merge",
     }
     for spec in BUILTIN_TOOLS.values():
         assert isinstance(spec, ToolSpec)
         assert spec.schema["type"] == "function"
 
 
-def test_memory_tools_alias_is_7_schemas():
-    """MEMORY_TOOLS 废弃别名 = 全 7 内置 schemas（保 import 不断裂）。"""
-    assert len(MEMORY_TOOLS) == 7
+def test_memory_tools_alias_is_9_schemas():
+    """MEMORY_TOOLS 废弃别名 = 全 9 内置 schemas（保 import 不断裂）。"""
+    assert len(MEMORY_TOOLS) == 9
     assert [s["function"]["name"] for s in MEMORY_TOOLS] == [
         "learn",
         "search",
@@ -32,17 +33,20 @@ def test_memory_tools_alias_is_7_schemas():
         "recall",
         "generalize",
         "arbitrate",
+        "split",
+        "merge",
     ]
 
 
 # === build_toolset ===
 
 
-def test_build_toolset_default_all_7():
+def test_build_toolset_default_all_9():
     schemas, dispatch = build_toolset(BUILTIN_TOOLS, None)
     names = {s["function"]["name"] for s in schemas}
     assert names == {
-        "learn", "search", "associate", "reason", "recall", "generalize", "arbitrate",
+        "learn", "search", "associate", "reason", "recall",
+        "generalize", "arbitrate", "split", "merge",
     }
     assert set(dispatch) == names
     for _, params in dispatch.values():

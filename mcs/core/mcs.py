@@ -72,6 +72,15 @@ class MCS:
         """
         return self.query_engine.query(text, existing_context=existing_context)
 
+    def run_compaction(self, changed_nodes: list[Any]) -> None:
+        """public 守门入口：转发 ``write_pipeline.run_compaction``，供外部图手术
+        （如 agent 层 ``split`` / ``merge`` 工具）改图后过守门、保核心不变量。
+
+        ingest 内部阶段⑥仍直接走 ``write_pipeline._run_compaction``；本方法仅为
+        外部图手术暴露入口。``changed_nodes`` 为本次手术新建 / 修改的节点列表。
+        """
+        self.write_pipeline.run_compaction(changed_nodes)
+
     # === 维护 ===
 
     def run_maintenance(self, force: bool = False) -> list[str]:
