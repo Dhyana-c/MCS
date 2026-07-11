@@ -54,7 +54,13 @@ def parse(raw: str) -> str:
     text = (raw or "").strip()
     if not text:
         raise LLMParseError("merge_content", raw, "empty merged content")
-    # 容错：LLM 偶尔回带一层引号 / 反引号包裹，剥掉
+    # 容错：LLM 偶尔回带一层引号 / 反引号包裹，剥掉。剥到空说明 LLM 只回了引号
+    # 本身（如 '""'）—— 视为空输出降级（保留 target），不把引号字面量当 content。
     if len(text) >= 2 and text[0] == text[-1] and text[0] in ('"', "'", "`"):
-        text = text[1:-1].strip() or text
+        stripped = text[1:-1].strip()
+        if not stripped:
+            raise LLMParseError(
+                "merge_content", raw, "quoted-but-empty merged content"
+            )
+        text = stripped
     return text

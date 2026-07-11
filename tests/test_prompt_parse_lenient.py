@@ -9,6 +9,7 @@ from mcs.prompts.adjudicate import parse as parse_adjudicate
 from mcs.prompts.extract_concepts import parse as parse_concepts
 from mcs.prompts.generalize import parse as parse_generalize
 from mcs.prompts.judge_relations import parse as parse_relations
+from mcs.prompts.merge_content import parse as parse_merge_content
 from mcs.prompts.navigate_hub import parse as parse_navigate_hub
 
 
@@ -41,6 +42,28 @@ def test_merge_content_prompt_splits_time_attribution_by_node_class():
     assert "MUST 保留" in SYSTEM_PROMPT
     # 模板携带 node_class 占位符（_safe_format 缺占位符会整体不格式化）
     assert "{node_class}" in USER_TEMPLATE
+
+
+def test_merge_content_parse_strips_one_quote_layer():
+    """merge_content parse 剥一层首尾引号 / 反引号包裹；无包裹原样返回。"""
+    assert parse_merge_content('"合并定义"') == "合并定义"
+    assert parse_merge_content("`合并定义`") == "合并定义"
+    assert parse_merge_content("合并定义") == "合并定义"
+
+
+def test_merge_content_parse_quoted_only_degrades():
+    """LLM 只回引号本身（'""' / "''" / '``'）→ 剥到空 → 抛 LLMParseError，
+    由 helper 降级保留 target，不把引号字面量当 content 写入节点。"""
+    for raw in ['""', "''", "``"]:
+        with pytest.raises(LLMParseError):
+            parse_merge_content(raw)
+
+
+def test_merge_content_parse_empty_raises():
+    """空 / 纯空白输出 → LLMParseError（helper 降级保留 target）。"""
+    for raw in ["", "   ", "\t\n"]:
+        with pytest.raises(LLMParseError):
+            parse_merge_content(raw)
 
 
 def test_extract_concepts_accepts_single_object():

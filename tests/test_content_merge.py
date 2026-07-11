@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 
-from mcs.core.content_merge import merge_content
+from mcs.core.content_merge import merge_content, substring_relation
 
 
 class TestMergeContent:
@@ -75,3 +75,22 @@ class TestMergeContent:
             return "  合并定义  "
 
         assert merge_content("a内容", "b内容", merge_llm=llm) == "合并定义"
+
+
+def test_substring_relation_classifies_contains():
+    """substring_relation：子串包含 / 相等 / 非子串 / 一方空（merge_content 与 dedup 共口径）。"""
+    # incoming ⊆ target
+    assert substring_relation("苹果公司科技", "苹果公司") == "target"
+    assert substring_relation("abcdef", "bcd") == "target"
+    # target ⊆ incoming
+    assert substring_relation("苹果公司", "苹果公司科技") == "incoming"
+    assert substring_relation("bcd", "abcdef") == "incoming"
+    # 相等 → incoming ⊆ target
+    assert substring_relation("苹果", "苹果") == "target"
+    # 非子串
+    assert substring_relation("苹果公司", "苹果水果") is None
+    assert substring_relation("abc", "xyz") is None
+    # 一方空 → 视为对方子串（与 merge_content 空方逻辑一致）
+    assert substring_relation("abc", "") == "target"
+    assert substring_relation("", "xyz") == "incoming"
+    assert substring_relation("abc", "   ") == "target"
