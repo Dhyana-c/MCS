@@ -12,6 +12,37 @@ from mcs.prompts.judge_relations import parse as parse_relations
 from mcs.prompts.navigate_hub import parse as parse_navigate_hub
 
 
+def test_extract_concepts_prompt_enforces_time_attribution():
+    """extract_concepts prompt 守时间归属（防回归）：
+    删除「日期」作概念叶子属性的鼓励 + 加概念/事实时间归属约束。
+    """
+    from mcs.prompts.extract_concepts import SYSTEM_PROMPT, USER_TEMPLATE
+    # 「日期」不再作为概念叶子属性鼓励（概念零时间）
+    assert "数值、日期、地点" not in SYSTEM_PROMPT
+    # 时间归属约束
+    assert "时间归属" in SYSTEM_PROMPT
+    assert "概念 content MUST NOT 含任何时间词" in SYSTEM_PROMPT
+    assert "事实 content MUST NOT 含相对/单次时间词" in SYSTEM_PROMPT
+    # USER_TEMPLATE 提醒不放时间词
+    assert "content 不放任何时间词" in USER_TEMPLATE
+
+
+def test_merge_content_prompt_splits_time_attribution_by_node_class():
+    """merge_content prompt 按节点类型分流时间归属（防回归）：
+    概念零时间；事实禁相对/单次时间、保留固定历史时间；模板携带 node_class。
+    """
+    from mcs.prompts.merge_content import SYSTEM_PROMPT, USER_TEMPLATE
+
+    # 概念零时间（固定历史时间也不进）
+    assert "「概念」" in SYSTEM_PROMPT
+    assert "零时间" in SYSTEM_PROMPT
+    # 事实保留固定历史时间（命题固有属性不得丢弃）
+    assert "「事实」" in SYSTEM_PROMPT
+    assert "MUST 保留" in SYSTEM_PROMPT
+    # 模板携带 node_class 占位符（_safe_format 缺占位符会整体不格式化）
+    assert "{node_class}" in USER_TEMPLATE
+
+
 def test_extract_concepts_accepts_single_object():
     raw = '{"name": "Ed Wood", "content": "An American filmmaker.", "relation_hints": []}'
     result = parse_concepts(raw)

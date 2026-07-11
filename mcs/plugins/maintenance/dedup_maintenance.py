@@ -6,7 +6,7 @@
   ③ 聚类时合并同义（fanout_reducer）✅
   ④ 后台维护扫描（本插件）         可选，兜底长尾残留
 
-本插件扫描全图节点，按 name 分组找同名节点对，执行合并（别名+content 追加）。
+本插件扫描全图节点，按 name 分组找同名节点对，执行合并（别名并入 + content 子串才合，非子串保留 dup）。
 Phase 1 仅做同名字面识别；同义判定留 Phase 2（embedding/LLM）。
 
 按 unified-graph-schema「图质量最终收敛」requirement，后台去重允许合并同名
@@ -21,6 +21,7 @@ import logging
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
+from mcs.core.content_merge import merge_content
 from mcs.entities.graph import CORE_NODE_CLASSES, EDGE_ASSOC, EDGE_MUTEX, Node
 from mcs.interfaces.maintenance import MaintenanceInterface
 
@@ -47,7 +48,7 @@ class DedupMaintenance(MaintenanceInterface):
     """去重维护插件：扫描同名节点并合并。
 
     - 同名字面识别（零成本）
-    - 合并策略：别名并入 + content 追加（子串去重）
+    - 合并策略：别名并入 + content 子串才合（非子串保留 dup，彻底合并靠 write path）
     - 合并核心节点（概念 / 事实）；事件 / source 不走合并
     - 合并后估算 target token，超 T 则跳过（挂起，待写 / 维护路径触发聚类）
     - 重挂边时补查事件背书边（绕载重规则），避免背书丢失
@@ -115,10 +116,23 @@ class DedupMaintenance(MaintenanceInterface):
                     )
                     continue
 
-                # 模拟合并后的 content（子串去重）
-                merged_content = target.content or ""
-                if dup.content and dup.content not in (target.content or ""):
-                    merged_content = (target.content or "") + "\n" + dup.content
+                # content 合并（公共 helper；后台不传 LLM）。
+                # dedup Y：子串关系（或一方 content 空）才合并删 dup；
+                # 非子串保留 dup 不合（彻底合并靠 write path，避免删节点丢信息）。
+                t_content = target.content or ""
+                d_content = dup.content or ""
+                if (
+                    t_content.strip()
+                    and d_content.strip()
+                    and d_content not in t_content
+                    and t_content not in d_content
+                ):
+                    logger.info(
+                        "去重维护：%s(%s) 与 %s(%s) content 非子串，保留不合（彻底合并靠 write path）",
+                        target.name, target_id, dup.name, dup_id,
+                    )
+                    continue
+                merged_content = merge_content(t_content, d_content, merge_llm=None)
 
                 # 守门：估算合并后 target token，超 T 则挂起（跳过）
                 if self.token_budget is not None:
@@ -137,7 +151,7 @@ class DedupMaintenance(MaintenanceInterface):
                         )
                         continue
 
-                # content 追加（子串去重）
+                # content 合并写入（子串 / 一方空 才到这里）
                 target.content = merged_content
 
                 # 别名追加（用 helper）

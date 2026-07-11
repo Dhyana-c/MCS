@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from mcs.core.content_merge import merge_content
 from mcs.prompts.select_facts import SelectFactsResult, coerce_select_result
 
 if TYPE_CHECKING:
@@ -341,7 +342,7 @@ class QueryEngine:
             """read-repair 同名合并：同名节点合并到首次遇到的那一个。
 
             - 同名字面识别（零成本）
-            - 合并方式：别名并入 + content 追加（子串去重）——改写的是 store 内共享
+            - 合并方式：别名并入 + content 合并（公共 helper；非子串不碰、被并方节点保留）
               节点对象，遍历结束经 ``_persist_read_repairs`` 标脏落盘（内存与 DB 一致；
               被并方节点不删除，仅目标节点内容变更）
             - 合并后用 estimate_node 重算 token 差值（铁律一：口径 == 渲染）
@@ -382,14 +383,13 @@ class QueryEngine:
                 target_node, estimate_cache
             )
 
-            # 模拟合并后的 content（子串去重）
+            # content 合并（公共 helper；读路径不传 LLM → 非子串不碰、被并方节点保留）
             extra_content = node.content
-            merged_content = target_node.content or ""
-            if extra_content and extra_content not in (target_node.content or ""):
-                merged_content = (target_node.content or "") + "\n" + extra_content
-            elif extra_content and (target_node.content or "") in extra_content:
-                # 新 content 包含旧 content → 替换
-                merged_content = extra_content
+            merged_content = merge_content(
+                target_node.content or "",
+                extra_content or "",
+                merge_llm=None,
+            )
 
             # 临时修改 content 用于重算 token
             saved_content = target_node.content

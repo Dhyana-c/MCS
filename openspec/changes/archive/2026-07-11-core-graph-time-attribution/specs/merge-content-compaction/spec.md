@@ -1,10 +1,4 @@
-# merge-content-compaction Specification
-
-## Purpose
-
-规定 merge 操作后 content 超阈值时自动触发 LLM 压缩重写，防止高频合并概念的 content 无界增长，压缩阈值可配置。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: merge 后 content 超阈值时自动 LLM 压缩
 

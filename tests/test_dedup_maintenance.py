@@ -35,22 +35,21 @@ class TestDedupMaintenance:
     def test_merges_same_name_concepts(self):
         """同名概念节点合并：保留第一个，删除重复。"""
         store = _store_with(
-            Node(id="a1", name="苹果", content="苹果公司", node_class=CLASS_CONCEPT),
-            Node(id="a2", name="苹果", content="苹果水果", node_class=CLASS_CONCEPT),
+            Node(id="a1", name="苹果", content="苹果公司是一家科技巨头", node_class=CLASS_CONCEPT),
+            Node(id="a2", name="苹果", content="苹果公司", node_class=CLASS_CONCEPT),  # 子串
         )
         DedupMaintenance().run(store)
-        # 只剩一个
+        # 子串关系 → 合并，只剩一个
         remaining = [n for n in store.get_all_nodes() if n.name == "苹果"]
         assert len(remaining) == 1
-        # content 包含两者
+        # target content 含 incoming（子串跳过，target 不变）
         assert "苹果公司" in remaining[0].content
-        assert "苹果水果" in remaining[0].content
 
     def test_merges_same_name_facts(self):
         """同名事实节点合并。"""
         store = _store_with(
-            Node(id="f1", name="地球是圆的", content="地球是圆的", node_class=CLASS_FACT),
-            Node(id="f2", name="地球是圆的", content="地球是球形", node_class=CLASS_FACT),
+            Node(id="f1", name="地球是圆的", content="地球是圆的球体", node_class=CLASS_FACT),
+            Node(id="f2", name="地球是圆的", content="地球是圆的", node_class=CLASS_FACT),  # 子串
         )
         DedupMaintenance().run(store)
         remaining = [n for n in store.get_all_nodes() if n.name == "地球是圆的"]
@@ -79,8 +78,8 @@ class TestDedupMaintenance:
         """合并后，重复节点的关联边被重挂到目标节点。"""
         store = _store_with(
             Node(id="c", name="种子", content="", node_class=CLASS_CONCEPT),
-            Node(id="a1", name="苹果", content="苹果公司", node_class=CLASS_CONCEPT),
-            Node(id="a2", name="苹果", content="苹果水果", node_class=CLASS_CONCEPT),
+            Node(id="a1", name="苹果", content="苹果公司科技巨头", node_class=CLASS_CONCEPT),
+            Node(id="a2", name="苹果", content="苹果公司", node_class=CLASS_CONCEPT),  # 子串
         )
         store.add_edge("c", "a1")  # 种子 → 旧苹果1
         store.add_edge("c", "a2")  # 种子 → 旧苹果2
@@ -143,8 +142,8 @@ class TestDedupMaintenance:
     def test_guard_skips_merge_when_over_T(self):
         """P2-3：合并后 target 超 T 时挂起（跳过该对，不合并）。"""
         store = _store_with(
-            Node(id="a1", name="大概念", content="X" * 4000, node_class=CLASS_CONCEPT),
-            Node(id="a2", name="大概念", content="Y" * 4000, node_class=CLASS_CONCEPT),
+            Node(id="a1", name="大概念", content="X" * 4000 + "tail", node_class=CLASS_CONCEPT),
+            Node(id="a2", name="大概念", content="X" * 4000, node_class=CLASS_CONCEPT),  # 子串
         )
         tb = TokenBudget(200)  # 极小预算
         dedup = DedupMaintenance()
@@ -157,8 +156,8 @@ class TestDedupMaintenance:
     def test_no_token_budget_always_merges(self):
         """无 token_budget 时不过守门（无预算信息），直接合并。"""
         store = _store_with(
-            Node(id="a1", name="大概念", content="X" * 4000, node_class=CLASS_CONCEPT),
-            Node(id="a2", name="大概念", content="Y" * 4000, node_class=CLASS_CONCEPT),
+            Node(id="a1", name="大概念", content="X" * 4000 + "tail", node_class=CLASS_CONCEPT),
+            Node(id="a2", name="大概念", content="X" * 4000, node_class=CLASS_CONCEPT),  # 子串
         )
         # 不传 token_budget → 不过守门
         DedupMaintenance().run(store)
@@ -176,3 +175,14 @@ class TestDedupMaintenance:
         # 互为互斥 → 不合并，两者都保留
         assert store.get_node("f1") is not None
         assert store.get_node("f2") is not None
+
+    def test_non_substring_keeps_both(self):
+        """dedup Y：content 非子串时保留 dup 不合（彻底合并靠 write path，不丢信息）。"""
+        store = _store_with(
+            Node(id="a1", name="苹果", content="苹果公司", node_class=CLASS_CONCEPT),
+            Node(id="a2", name="苹果", content="苹果水果", node_class=CLASS_CONCEPT),
+        )
+        DedupMaintenance().run(store)
+        # 非子串 → 保留两个，不合
+        remaining = [n for n in store.get_all_nodes() if n.name == "苹果"]
+        assert len(remaining) == 2

@@ -95,8 +95,8 @@ def test_create_decision_adds_node(empty_graph, mock_llm):
 
 
 def test_merge_decision_updates_existing_node(empty_graph, mock_llm):
-    """'merge' 决策指向已存在的目标；该目标的 content 应追加 concept.content，
-    concept.name 应作为别名并入目标。
+    """'merge' 决策指向已存在的目标；该目标 content 与 concept.content 经
+    merge_content purpose 语义合并，concept.name 作为别名并入目标。
     """
     target = Node(id="t1", name="目标节点", content="存量内容")
     empty_graph.add_node(target)
@@ -114,15 +114,15 @@ def test_merge_decision_updates_existing_node(empty_graph, mock_llm):
             )
         ],
     )
+    mock_llm.set_response("merge_content", "存量内容与新内容合并")
     ctx = wp.ingest("some text")
     assert len(ctx.changed) == 1
     assert ctx.changed[0].id == "t1"
     # 目标节点在图中仍然只有一个实例。
     assert len([n for n in empty_graph.get_all_nodes() if n.id == "t1"]) == 1
-    # concept.content 应追加到目标节点的 content。
+    # concept.content 与目标 content 语义合并（merge_content purpose）。
     merged = empty_graph.get_node("t1")
-    assert "存量内容" in merged.content
-    assert "新内容" in merged.content
+    assert merged.content == "存量内容与新内容合并"
     # concept.name 应作为别名并入目标。
     aliases = merged.extensions.get("alias_index", {}).get("aliases", [])
     assert "新名字" in aliases
@@ -662,11 +662,12 @@ def test_write_pipeline_no_position_filtering(empty_graph, mock_llm):
 
 
 def test_create_dedups_into_existing_same_name(empty_graph, mock_llm):
-    """同名 create 并入既有节点：不新建第二个、content 并入、edges_to 挂到既有。"""
+    """同名 create 并入既有节点：不新建第二个、content 语义合并、edges_to 挂到既有。"""
     s = empty_graph
     s.add_node(Node(id="amz", name="Amazon", content="电商公司"))
     s.add_node(Node(id="anc", name="AWS", content="云服务"))
     wp, _, _ = _build_pipelines(s, mock_llm)
+    mock_llm.set_response("merge_content", "Amazon 电商与云计算巨头")
 
     decisions = [
         Decision(
@@ -679,7 +680,7 @@ def test_create_dedups_into_existing_same_name(empty_graph, mock_llm):
 
     amazons = [n for n in s.get_all_nodes() if n.name == "Amazon"]
     assert len(amazons) == 1  # 没新建第二个 Amazon
-    assert "云计算巨头" in s.get_node("amz").content  # content 并入既有
+    assert s.get_node("amz").content == "Amazon 电商与云计算巨头"  # 语义合并
     assert s.get_edges_between("amz", "anc")  # edges_to 挂到既有节点
 
 

@@ -172,11 +172,13 @@ def test_merge_adds_aliases_to_target(empty_graph, mock_llm):
     assert "深度学习" not in aliases
 
 
-def test_merge_appends_concept_content(empty_graph, mock_llm):
-    """merge 时 concept.content 应追加到目标节点的 content（子串去重）。"""
+def test_merge_semantically_merges_concept_content(empty_graph, mock_llm):
+    """merge 时 concept.content 与目标 content 经 merge_content purpose 语义合并
+    （非子串调 LLM；落实 unified-graph-schema content 合并守则，不机械追加）。"""
     target = Node(id="t1", name="目标", content="已有内容")
     empty_graph.add_node(target)
 
+    mock_llm.set_response("merge_content", "已有内容与新增事实的合并定义")
     wp = _make_pipeline(empty_graph, mock_llm)
     wp._apply_decisions(
         [
@@ -188,8 +190,96 @@ def test_merge_appends_concept_content(empty_graph, mock_llm):
         ]
     )
     merged = empty_graph.get_node("t1")
-    assert "已有内容" in merged.content
-    assert "新增事实" in merged.content
+    assert merged.content == "已有内容与新增事实的合并定义"
+
+
+def test_merge_passes_node_class_to_llm(empty_graph, mock_llm):
+    """merge 的 LLM 合并 MUST 携带目标节点 node_class（时间归属按类型分流）：
+    概念零时间；事实禁相对/单次时间、保留固定历史时间。"""
+    empty_graph.add_node(
+        Node(id="c1", name="苹果公司", content="科技公司", node_class=CLASS_CONCEPT)
+    )
+    empty_graph.add_node(
+        Node(
+            id="f1",
+            name="苹果创立于1976",
+            content="苹果公司创立于 1976 年",
+            node_class=CLASS_FACT,
+        )
+    )
+    mock_llm.set_response("merge_content", "合并定义")
+    wp = _make_pipeline(empty_graph, mock_llm)
+    wp._apply_decisions(
+        [
+            Decision(
+                action="merge",
+                concept=ConceptDraft(name="苹果", content="消费电子巨头"),
+                target_id="c1",
+            ),
+            Decision(
+                action="merge",
+                concept=ConceptDraft(
+                    name="苹果创立时间", content="由乔布斯创立于 1976 年"
+                ),
+                target_id="f1",
+            ),
+        ]
+    )
+    merge_calls = [
+        c for c in mock_llm.call_log if c["purpose"] == "merge_content"
+    ]
+    assert len(merge_calls) == 2
+    assert merge_calls[0]["free_args"]["node_class"] == CLASS_CONCEPT
+    assert merge_calls[1]["free_args"]["node_class"] == CLASS_FACT
+
+
+def test_merge_over_threshold_triggers_compaction(empty_graph, mock_llm):
+    """merge 语义合并后 content 超 merge_content_threshold → 触发 gen_summary 压缩
+    （merge-content-compaction：前提「合并后超阈值」）。"""
+    target = Node(id="t1", name="目标", content="已有内容")
+    empty_graph.add_node(target)
+
+    mock_llm.set_response("merge_content", "合并后的长定义" * 20)  # 超阈值
+    mock_llm.set_response("gen_summary", "压缩后的稳定定义")
+    wp = _make_pipeline(empty_graph, mock_llm)
+    wp.merge_content_threshold = 50
+    wp._apply_decisions(
+        [
+            Decision(
+                action="merge",
+                concept=ConceptDraft(name="x", content="新增事实"),
+                target_id="t1",
+            )
+        ]
+    )
+    assert empty_graph.get_node("t1").content == "压缩后的稳定定义"
+    assert any(c["purpose"] == "gen_summary" for c in mock_llm.call_log)
+
+
+def test_merge_compaction_failure_keeps_merged_content(empty_graph, mock_llm):
+    """压缩 LLM 失败 → 保留语义合并后的 content，merge 不抛异常（降级）。"""
+    target = Node(id="t1", name="目标", content="已有内容")
+    empty_graph.add_node(target)
+
+    merged_long = "合并后的长定义" * 20
+    mock_llm.set_response("merge_content", merged_long)
+
+    def _boom(nodes_in, free_args):
+        raise RuntimeError("gen_summary down")
+
+    mock_llm.set_response("gen_summary", _boom)
+    wp = _make_pipeline(empty_graph, mock_llm)
+    wp.merge_content_threshold = 50
+    wp._apply_decisions(
+        [
+            Decision(
+                action="merge",
+                concept=ConceptDraft(name="x", content="新增事实"),
+                target_id="t1",
+            )
+        ]
+    )
+    assert empty_graph.get_node("t1").content == merged_long
 
 
 def test_merge_without_target_id_raises(empty_graph, mock_llm):

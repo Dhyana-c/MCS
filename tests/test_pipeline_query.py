@@ -595,8 +595,8 @@ def test_read_repair_merges_same_name_nodes():
 
     g = GraphStore()
     # 两个同名节点（不同 id）
-    a1 = Node(id="a1", name="苹果", content="苹果公司")
-    a2 = Node(id="a2", name="苹果", content="苹果水果")
+    a1 = Node(id="a1", name="苹果", content="苹果公司科技")
+    a2 = Node(id="a2", name="苹果", content="苹果公司")  # 子串
     b = Node(id="b", name="其他", content="其他节点")
     for n in [a1, a2, b]:
         g.add_node(n)
@@ -616,6 +616,46 @@ def test_read_repair_merges_same_name_nodes():
     assert len(apple_nodes) == 1
     # 合并后 content 应包含两者的信息
     assert "苹果公司" in apple_nodes[0].content
+
+
+def test_read_repair_non_substring_keeps_content_no_llm():
+    """read-repair 非子串 content 不碰（不拼、不调 LLM）、被并方节点保留。
+
+    unified-graph-schema「图质量最终收敛」content 合并守则：读路径零 LLM，
+    非子串 content 差异留给后续 write path / dedup 收敛。
+    """
+    from tests.conftest import MockLLM
+
+    g = GraphStore()
+    a1 = Node(id="a1", name="苹果", content="苹果公司")
+    a2 = Node(id="a2", name="苹果", content="苹果水果")  # 非子串
+    b = Node(id="b", name="其他", content="其他节点")
+    for n in [a1, a2, b]:
+        g.add_node(n)
+    g.add_edge("b", "a1")
+    g.add_edge("b", "a2")
+
+    mock = MockLLM()
+    mock.set_response(
+        "select_nodes",
+        lambda nodes_in, _free_args: [n.id for n in (nodes_in or [])],
+    )
+    engine = make_query_engine(g, mock, _StaticEntry(["b"], g))
+    result = engine.query("苹果")
+    # 同名仍收敛为一个工作集节点（别名并入），但 content 不碰不拼
+    apple_nodes = [n for n in result.nodes if n.name == "苹果"]
+    assert len(apple_nodes) == 1
+    # target 身份由 store 迭代序决定（非稳定，不硬编码）：收敛后 content 必为
+    # a1/a2 原始 content 之一（target 原样），且非换行拼接（拼接结果不在集合内）
+    contents = {"苹果公司", "苹果水果"}
+    assert apple_nodes[0].content in contents
+    # 非子串不碰：a1 / a2 在 store 都保留、content 都原样（被并方不删、target 不改）
+    assert g.get_node("a1") is not None
+    assert g.get_node("a1").content == "苹果公司"
+    assert g.get_node("a2") is not None
+    assert g.get_node("a2").content == "苹果水果"
+    # 读路径零 LLM：不发起 merge_content 语义合并调用
+    assert all(c["purpose"] != "merge_content" for c in mock.call_log)
 
 
 def test_read_repair_no_merge_different_names():
@@ -715,7 +755,7 @@ def test_read_repair_name_equals_content_boundary():
     g = GraphStore()
     # name == content：渲染去重只算一份
     a1 = Node(id="a1", name="X", content="X")
-    a2 = Node(id="a2", name="X", content="Y")  # 同名不同 content
+    a2 = Node(id="a2", name="X", content="XYZ")  # 含 X 子串 → 替换
     b = Node(id="b", name="种子", content="种子")
     for n in [a1, a2, b]:
         g.add_node(n)
@@ -758,8 +798,8 @@ def test_read_repair_persists_merge_via_dirty_flush():
             self.flush_count += 1
 
     g = _TrackingStore()
-    a1 = Node(id="a1", name="苹果", content="苹果公司")
-    a2 = Node(id="a2", name="苹果", content="苹果水果")
+    a1 = Node(id="a1", name="苹果", content="苹果公司科技")
+    a2 = Node(id="a2", name="苹果", content="苹果公司")  # 子串
     b = Node(id="b", name="其他", content="其他节点")
     for n in [a1, a2, b]:
         g.add_node(n)

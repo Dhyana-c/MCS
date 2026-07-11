@@ -575,12 +575,14 @@ class WritePipeline:
                 if alias and alias != node.name and alias not in existing:
                     existing.append(alias)
         # 2) concept content 语义合并到目标节点 content（非子串时 LLM 合并成一个
-        #    稳定定义；落实 unified-graph-schema content 合并守则，不机械追加）
+        #    稳定定义；落实 unified-graph-schema content 合并守则，不机械追加）。
+        #    node_class 必须穿透到 prompt——概念零时间，事实要保留固定历史时间。
         if decision.concept and decision.concept.content:
+            node_class = node.node_class or CLASS_CONCEPT
             node.content = merge_content(
                 node.content or "",
                 decision.concept.content,
-                merge_llm=self._merge_content_llm,
+                merge_llm=lambda t, i: self._merge_content_llm(t, i, node_class),
             )
         # 3) content 压缩：合并后超阈值时调用 LLM 压缩，防止单节点 content 无界增长
         if (
@@ -602,13 +604,23 @@ class WritePipeline:
                     exc_info=True,
                 )
 
-    def _merge_content_llm(self, target: str, incoming: str) -> str:
+    def _merge_content_llm(
+        self, target: str, incoming: str, node_class: str = CLASS_CONCEPT
+    ) -> str:
         """``merge_content`` helper 的 LLM 回调：调 ``merge_content`` purpose
-        语义合两段 content 成一个稳定定义（守时间归属）。
+        语义合两段 content 成一个稳定定义（按节点类型守时间归属：概念零时间、
+        事实禁相对/单次时间但保留固定历史时间）。
+
+        ``node_class`` 必须传入 free_args——模板含 ``{node_class}`` 占位符，
+        ``_safe_format`` 遇缺占位符会整体不格式化。
         """
         return self.llm.call(
             purpose="merge_content",
-            free_args={"target": target, "incoming": incoming},
+            free_args={
+                "target": target,
+                "incoming": incoming,
+                "node_class": node_class,
+            },
         )
 
     def _dispatch_create(self, decision: Decision) -> Node:

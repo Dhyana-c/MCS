@@ -338,6 +338,9 @@ def test_default_prompts_registry_complete() -> None:
         "select_facts_write",
         "generalize",
         "adjudicate",
+        "split",
+        "merge",
+        "merge_content",
     }
     assert set(DEFAULT_PROMPTS.keys()) == expected_purposes
 
