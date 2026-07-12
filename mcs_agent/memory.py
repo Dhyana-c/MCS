@@ -1,4 +1,4 @@
-"""记忆 agent 的记忆底座 —— MCS 的单线程包装，暴露 9 个细粒度原语。
+"""记忆 agent 的记忆底座 —— MCS 的单线程包装，暴露 11 个细粒度原语。
 
 MCS 非线程安全、SQLite 连接绑创建线程，故 MCS 的构造与全部调用都经同一个
 单 worker 线程（同 ``mcs_mcp.server``）。工具（learn / search / associate /
@@ -41,6 +41,7 @@ from mcs.entities.graph import (
     CLASS_FACT,
     EDGE_ASSOC,
     EDGE_MUTEX,
+    REALITY_UNIVERSE,
     Edge,
     Node,
 )
@@ -149,10 +150,14 @@ def _neighbor_ids(store: "StoreInterface", node_id: str) -> list[str]:
     """节点的无向邻居 id（用于路径搜索）：下钻成员 + 关系边端点。
 
     关联 / 互斥边两端邻接都索引到它（反查、双向可达），故路径搜索按无向图处理。
+    下钻按节点 universe 单侧取（同 univ；跨 univ 桥经 ``get_cross_universe_edges`` 另查，
+    find_path 默认单 universe 内寻路——P7）。
     """
+    node = store.get_node(node_id)
+    univ = node.universe if node is not None else None
     seen: set[str] = set()
     ids: list[str] = []
-    for child in store.get_out_hierarchy(node_id) or []:
+    for child in store.get_out_hierarchy(node_id, universe=univ) or []:
         if child.id not in seen:
             seen.add(child.id)
             ids.append(child.id)
@@ -246,21 +251,21 @@ class MemoryStore:
 
     # === search（种子搜索，阶段② 封装） ===
 
-    def _do_search(self, query: str, mode: str) -> str:
+    def _do_search(self, query: str, mode: str, universe: str) -> str:
         mcs = self._mcs
         if mode == "keyword":
-            nodes = mcs.query_engine.locate_seeds(query)
+            nodes = mcs.query_engine.locate_seeds(query, universe=universe)
             return _render_nodes(list(nodes), "种子节点（keyword）")
         if mode == "direct":
-            nodes = mcs.store.get_out_hierarchy(_SEED_ROOT) or []
+            nodes = mcs.store.get_out_hierarchy(_SEED_ROOT, universe=universe) or []
             return _render_nodes(nodes, "顶层种子（direct）")
         if mode == "vector":
             return "[未实现] 向量检索暂不可用，请用 keyword 或 direct"
         return f"[error] 未知 search 模式：{mode}"
 
-    def search(self, query: str, mode: str = "keyword") -> str:
-        """种子搜索：keyword（EntryPlugin 链字面匹配）/ direct（根高层节点）/ vector（未实现）。"""
-        return self._submit(self._do_search, query, mode)
+    def search(self, query: str, mode: str = "keyword", universe: str = REALITY_UNIVERSE) -> str:
+        """种子搜索（限 ``universe`` 内，P7）：keyword / direct / vector（未实现）。"""
+        return self._submit(self._do_search, query, mode, universe)
 
     # === associate（联想扩展，阶段③ 封装） ===
 
@@ -271,8 +276,8 @@ class MemoryStore:
         node = mcs.store.get_node(seed_id)
         if node is None:
             return f"[error] 种子节点不存在：{seed_id}"
-        # existing_context 跳过种子定位，直接对给定种子做事实 BFS（MCS 公共 API）
-        result = mcs.query("", existing_context=[node])
+        # existing_context 跳过种子定位，直接对给定种子做事实 BFS；universe 从种子继承（P7）
+        result = mcs.query("", existing_context=[node], universe=node.universe)
         return render_query_result(result, mcs.read_manager)
 
     def associate(self, seed_id: str, mode: str = "mcs") -> str:
@@ -813,6 +818,69 @@ class MemoryStore:
         """合并若干本就同一个的节点（worker 线程：判同义 + 改图 + 守门）。"""
         return self._submit(self._do_merge, node_ids, focus)
 
+    # === 跨 universe 桥（显式跨查 / 建概念桥） ===
+
+    def _do_get_cross_universe_edges(self, node_id: str, limit: int) -> str:
+        store = self._mcs.store
+        node = store.get_node(node_id)
+        if node is None:
+            return f"[error] 节点不存在：{node_id}"
+        edges = store.get_cross_universe_edges(node_id, limit=limit) or []
+        if not edges:
+            return f"[无跨 universe 桥] 节点 {node.name}(universe={node.universe}) 无对端 universe 不同的边"
+        lines = [f"节点 [id:{node.id}] {node.name}（universe={node.universe}）的跨 universe 桥："]
+        for e in edges:
+            other_id = e.target_id if e.source_id == node_id else e.source_id
+            other = store.get_node(other_id)
+            oname = other.name if other is not None else other_id
+            ouniv = other.universe if other is not None else "?"
+            lines.append(f"  —[{e.type}]— [id:{other_id}] {oname}（universe={ouniv}）")
+        return "\n".join(lines)
+
+    def get_cross_universe_edges(self, node_id: str, limit: int = 50) -> str:
+        """定向查节点的跨 universe 桥（绕载重，只读）：列出对端 universe 不同的边。
+
+        单 universe 查询（search/associate）默认载重过滤跨 universe 边、不返；需显式
+        跨查（如确认演义曹操 ↔ 正史曹操 是同一实体不同叙述）时调此工具。带 ``limit``
+        受控返回，保 LLM 上下文不爆。
+        """
+        return self._submit(self._do_get_cross_universe_edges, node_id, limit)
+
+    def _do_link_cross_universe(self, source_id: str, target_id: str) -> str:
+        store = self._mcs.store
+        src = store.get_node(source_id)
+        tgt = store.get_node(target_id)
+        if src is None or tgt is None:
+            missing = source_id if src is None else target_id
+            return f"[error] 节点不存在：{missing}"
+        # 护栏 D5：两端 universe MUST 不同（同 univ 走既有对齐 / judge_relations）
+        if src.universe == tgt.universe:
+            return (
+                f"[拒绝] 两端同 universe（{src.universe}），跨 universe 桥仅用于不同 universe；"
+                "同 universe 关系用既有对齐（learn 时自动判），勿用本工具。"
+            )
+        # 同对去重：两端已存在关联边则不重建
+        existing = store.get_edges_between(source_id, target_id) + store.get_edges_between(
+            target_id, source_id
+        )
+        if any(e.type == EDGE_ASSOC for e in existing):
+            return f"[已存在] {src.name}({src.universe}) 与 {tgt.name}({tgt.universe}) 已有关联桥"
+        store.add_edge(source_id, target_id, type=EDGE_ASSOC)
+        return (
+            f"已建跨 universe 概念桥：[id:{source_id}] {src.name}({src.universe}) "
+            f"—关联— [id:{target_id}] {tgt.name}({tgt.universe})"
+        )
+
+    def link_cross_universe(self, source_id: str, target_id: str) -> str:
+        """建跨 universe 概念桥（写图，唯一创建路径）：两端建普通 ``关联`` 边。
+
+        护栏（design D5）：① 两端 universe MUST 不同；② 同对去重（已存关联不重建）；
+        ③ 不触发合并（两端各自保留）；④ 不加 label / 新边类型。建后 ``get_relations``
+        双向仍过滤（不进活跃视图），仅 ``get_cross_universe_edges`` 可取回。仅当判定
+        两节点是"同一实体的不同世界叙述"时调用。
+        """
+        return self._submit(self._do_link_cross_universe, source_id, target_id)
+
     # === graph_summary（图级主题摘要，供 agent 注入 system prompt） ===
 
     def _do_graph_summary(self) -> str:
@@ -849,7 +917,7 @@ class MemoryStore:
         if focus is None:
             return None
 
-        children = store.get_out_hierarchy(node_id) or []
+        children = store.get_out_hierarchy(node_id, universe=focus.universe) or []
 
         # 关系边（关联 / 互斥，核心节点侧已过滤事件边——载重规则）
         rel_edges = store.get_relations(node_id) or []

@@ -12,7 +12,7 @@
 | [llm-interaction](llm-interaction/spec.md) | LLM 调用统一模式（`purpose` + `nodes_in` + `free_args`），杜绝厂商 SDK 直接调用 |
 | [subgraph-bounding](subgraph-bounding/spec.md) | 最大上下文子图不变量：邻域容量约束、token 估计精度、LLM 语义归纳、一进多出聚类、hub 复用 |
 | [seed-graph-hierarchy](seed-graph-hierarchy/spec.md) | 种子图层级结构：统一边模型（关联/互斥）、核心 BFS 导航、hub 标记识别、递归 bounding 抗退化 |
-| [unified-graph-schema](unified-graph-schema/spec.md) | 统一图模型核心契约：4 类节点（概念/事实/事件/source）、边仅关联/互斥、谓词落点、核心/事件双层、守门挂在改图操作上 |
+| [unified-graph-schema](unified-graph-schema/spec.md) | 统一图模型核心契约：4 类节点（概念/事实/事件/source）+ universe 归属轴、边仅关联/互斥、谓词落点、核心/事件双层（载重双类过滤）、universe 元节点 + 归一（宁裂不并）、守门挂在改图操作上 |
 
 ## 插件体系
 

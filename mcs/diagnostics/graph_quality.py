@@ -106,6 +106,7 @@ def _compute_connected_components(store: StoreInterface) -> list[set[str]]:
             component.add(current_id)
 
             # Add all reachable neighbors (下钻成员 + 关系边端点) to queue
+            # 诊断**跨 universe**（全图连通性），root 取全部下钻（无参）；非活跃视图路径
             neighbor_ids: set[str] = set()
             for n in store.get_out_hierarchy(current_id):
                 neighbor_ids.add(n.id)

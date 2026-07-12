@@ -27,7 +27,7 @@ class FakeMemory:
         self.learn_calls.append(text)
         return f"[memory] 已写入：{text}"
 
-    def search(self, query: str, mode: str = "keyword") -> str:
+    def search(self, query: str, mode: str = "keyword", universe: str = "__reality__") -> str:
         self.search_calls.append((query, mode))
         return f"[memory] 种子（{mode}）：1. [id:c1] {query}"
 

@@ -88,15 +88,16 @@ class DedupMaintenance(MaintenanceInterface):
     def run(self, store: StoreInterface) -> None:
         """扫描全图，合并同名核心节点。"""
         nodes = store.get_all_nodes()
-        # 按 name 分组（仅核心节点）
-        by_name: dict[str, list[str]] = defaultdict(list)
+        # 按 (name, universe) 分组（仅核心节点）——跨 universe 同名不合并
+        # （演义曹操 ≠ 正史曹操，去重限同 universe）
+        by_name: dict[tuple[str, str], list[str]] = defaultdict(list)
         for node in nodes:
             if node.node_class in CORE_NODE_CLASSES and node.name:
-                by_name[node.name].append(node.id)
+                by_name[(node.name, node.universe)].append(node.id)
 
         merged_count = 0
         hung_count = 0
-        for name, ids in by_name.items():
+        for ids in by_name.values():
             if len(ids) < 2:
                 continue
             # 保留第一个，合并其余

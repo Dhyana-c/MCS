@@ -75,6 +75,8 @@ class GraphSummaryPlugin(CompactionPluginInterface):
         store: StoreInterface,
         llm_caller: Callable,
     ) -> None:
+        # 图级全局摘要**跨 universe**（反映全图主题，非单 universe 活跃视图 ≤ T 口径）：
+        # root 取全部顶层 hub（无参 = 跨 univ）；图摘要存图级 meta、不进活跃视图 token。
         hubs = store.get_out_hierarchy(_SEED_ROOT)
         # 空图降级：root 无层级子 → 无可归纳对象，不抛异常、保留旧摘要
         if not hubs:

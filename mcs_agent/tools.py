@@ -1,9 +1,10 @@
 """记忆 agent 的工具注册表（可配置工具集）。
 
-9 个内置工具落成 ``ToolSpec`` 注册表 ``BUILTIN_TOOLS``，替代旧 ``loop.py`` 硬编码的
+11 个内置工具落成 ``ToolSpec`` 注册表 ``BUILTIN_TOOLS``，替代旧 ``loop.py`` 硬编码的
 ``MEMORY_TOOLS`` 列表 + ``_dispatch`` if/elif。其中 5 个导航 / 写入工具（learn / search /
 associate / reason / recall）+ 2 个只读语义判断工具（``generalize`` / ``arbitrate``）+
-2 个写图语义重组工具（``split`` / ``merge``，调 MCS LLM 插件产方案 + 执行改图、过守门）。
+2 个写图语义重组工具（``split`` / ``merge``，调 MCS LLM 插件产方案 + 执行改图、过守门）+
+2 个跨 universe 工具（``get_cross_universe_edges`` 只读取桥 / ``link_cross_universe`` 建概念桥）。
 只读判断工具不改图、不触发写 / 守门 / 裂变；``learn`` / ``split`` / ``merge`` 为写图工具
 （``readonly=False``，排除出只读召回白名单）。工具集经 ``ToolsetConfig`` 启用 / 禁用
 子集、按**工具名**覆盖参数。
@@ -18,6 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
+from mcs.entities.graph import REALITY_UNIVERSE
 
 __all__ = [
     "ToolSpec",
@@ -36,7 +39,11 @@ def _learn(memory: Any, args: dict) -> str:
 
 
 def _search(memory: Any, args: dict) -> str:
-    return memory.search(args.get("query", ""), args.get("mode", "keyword"))
+    return memory.search(
+        args.get("query", ""),
+        args.get("mode", "keyword"),
+        args.get("universe", REALITY_UNIVERSE),
+    )
 
 
 def _associate(memory: Any, args: dict) -> str:
@@ -76,6 +83,14 @@ def _split(memory: Any, args: dict) -> str:
 
 def _merge(memory: Any, args: dict) -> str:
     return memory.merge_concepts(args.get("node_ids", []), args.get("focus"))
+
+
+def _get_cross_universe_edges(memory: Any, args: dict) -> str:
+    return memory.get_cross_universe_edges(args.get("node_id", ""), args.get("limit", 50))
+
+
+def _link_cross_universe(memory: Any, args: dict) -> str:
+    return memory.link_cross_universe(args.get("source_id", ""), args.get("target_id", ""))
 
 
 @dataclass
@@ -148,6 +163,10 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
                             "type": "string",
                             "enum": ["keyword", "direct", "vector"],
                             "description": "搜索模式，默认 keyword",
+                        },
+                        "universe": {
+                            "type": "string",
+                            "description": "查询限定哪个 universe（世界），默认 __reality__（现实）",
                         },
                     },
                     "required": ["query"],
@@ -360,6 +379,62 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
         handler=_merge,
         readonly=False,
     ),
+    "get_cross_universe_edges": ToolSpec(
+        name="get_cross_universe_edges",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "get_cross_universe_edges",
+                "description": (
+                    "定向查某节点的跨 universe 桥（只读，绕载重）：列出对端 universe 不同的"
+                    "关联/互斥边。单 universe 查询（search/associate）默认不跨 universe；"
+                    "需显式跨查（如确认演义曹操 ↔ 正史曹操 是同一实体的不同世界叙述）时用此工具。"
+                    "node_id 由前序工具返回的 [id:...] 提供。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "node_id": {
+                            "type": "string",
+                            "description": "要查跨 universe 桥的节点 id",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "返回边数上限，默认 50",
+                        },
+                    },
+                    "required": ["node_id"],
+                },
+            },
+        },
+        handler=_get_cross_universe_edges,
+    ),
+    "link_cross_universe": ToolSpec(
+        name="link_cross_universe",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "link_cross_universe",
+                "description": (
+                    "建跨 universe 概念桥（写图，唯一创建路径）：给两个不同 universe 的节点"
+                    "建普通关联边。仅当判定两节点是同一实体的不同世界叙述（如演义曹操 ↔ 正史曹操）"
+                    "时调用。护栏：两端 universe 必须不同（同 univ 用既有对齐、勿调本工具）、"
+                    "同对去重、不触发合并。建后仅 get_cross_universe_edges 可取回（不进活跃视图）。"
+                    "source_id/target_id 由前序工具返回的 [id:...] 提供。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "source_id": {"type": "string", "description": "一端节点 id"},
+                        "target_id": {"type": "string", "description": "另一端节点 id"},
+                    },
+                    "required": ["source_id", "target_id"],
+                },
+            },
+        },
+        handler=_link_cross_universe,
+        readonly=False,
+    ),
 }
 
 
@@ -376,7 +451,7 @@ class ToolsetConfig:
     """工具集配置：启用子集 + 按工具名覆盖参数。
 
     Attributes:
-        enabled: 启用的工具名列表；None = 全部 7 个内置。含未知名时该名被忽略
+        enabled: 启用的工具名列表；None = 全部 11 个内置。含未知名时该名被忽略
             （不暴露 schema，LLM 调它 → ``[error] 未知工具``）。
         params: 按工具名（非原语名）覆盖参数；合并口径 ``handler(memory, {**llm_args, **params})``
             ——``params`` 覆盖 LLM 同名入参。如 ``{"reason": {"max_hops": 8}}``
@@ -411,6 +486,6 @@ def build_toolset(
     return schemas, dispatch
 
 
-# 已废弃别名：= 全 7 内置 schemas（保外部 ``from ... import MEMORY_TOOLS`` 不断裂）。
+# 已废弃别名：= 全 11 内置 schemas（保外部 ``from ... import MEMORY_TOOLS`` 不断裂）。
 # 逻辑已由 BUILTIN_TOOLS + build_toolset 取代；后续 change 移除。
 MEMORY_TOOLS: list[dict] = [spec.schema for spec in BUILTIN_TOOLS.values()]

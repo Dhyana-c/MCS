@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from mcs.core.content_merge import merge_content
+from mcs.entities.graph import REALITY_UNIVERSE
 from mcs.prompts.select_facts import SelectFactsResult, coerce_select_result
 
 if TYPE_CHECKING:
@@ -51,6 +52,7 @@ class QueryContext:
     result_set: list[Node] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     selected_edges: list[Edge] = field(default_factory=list)
+    universe: str | None = None
 
 
 class QueryEngine:
@@ -92,17 +94,22 @@ class QueryEngine:
             self,
             text: str,
             existing_context: list[Node] | None = None,
+            universe: str = REALITY_UNIVERSE,
     ) -> Any:
         """执行 5 阶段读取管道。
 
         返回最后一个后处理插件的输出；如果没有后处理插件转换类型，
         则返回 ``Subgraph``（nodes + 选中事实边 edges）。
+
+        ``universe``：查询限该 universe 内（种子定位 / BFS 不跨 universe，P7）；
+        默认现实世界。
         """
         from mcs.entities.graph import Subgraph
 
         ctx = QueryContext(
             system_prompt=self.system_prompt,
             user_input=text,
+            universe=universe,
         )
 
         # 阶段 ①: 前置插件链（可选；应用于查询文本）
@@ -136,15 +143,21 @@ class QueryEngine:
             text: str,
             max_rounds: int = 1,
             skip_postprocess: bool = True,
+            universe: str | None = None,
     ) -> list[Node]:
         """轻量查询模式：仅执行 ①②③ 阶段，返回 List[Node]。
 
         供写管线阶段②关联定位使用，跳过仲裁和后处理链。
         默认 max_rounds=1 限制遍历深度，skip_postprocess=True 跳过 ④⑤。
+
+        ``universe`` 非空时，种子定位 / BFS 限该 universe 内（ingest 期关联定位 MUST
+        universe 限域，防 judge_relations 看到跨 universe 候选乱连边 / 误判互斥）；
+        ``None`` 不过滤（默认现实世界行为，向后兼容）。
         """
         ctx = QueryContext(
             system_prompt=self.system_prompt,
             user_input=text,
+            universe=universe,
         )
 
         # 阶段 ①: 前置插件链
@@ -170,13 +183,17 @@ class QueryEngine:
         result = self._run_postprocess_nodes(ctx.result_set, ctx)
         return result if isinstance(result, list) else ctx.result_set
 
-    def locate_seeds(self, query: str) -> list[Node]:
+    def locate_seeds(self, query: str, universe: str | None = None) -> list[Node]:
         """公共薄方法：种子定位（阶段②），供外部（如 ``mcs_agent.search``）复用。
 
         构造临时 ``QueryContext``、经前置插件链处理后调 ``_locate_seeds``——与
         ``query()`` 内部的种子定位逐字等价，不改现有 ``query()`` 行为。
+
+        ``universe`` 非空时种子限该 universe（P7）；``None`` 不过滤（默认）。
         """
-        ctx = QueryContext(system_prompt=self.system_prompt, user_input=query)
+        ctx = QueryContext(
+            system_prompt=self.system_prompt, user_input=query, universe=universe
+        )
         processed = self._run_preprocess(query, ctx)
         return self._locate_seeds(processed, ctx)
 
@@ -262,6 +279,10 @@ class QueryEngine:
                         exc_info=True,
                     )
 
+        # universe 限域：仅保留同 universe 候选（ingest 期关联定位 MUST universe 限域，
+        # 防 judge_relations 看到跨 universe 候选乱连边 / 误判互斥；None = 不过滤）
+        if ctx.universe is not None:
+            accumulated = [n for n in accumulated if n.universe == ctx.universe]
         return accumulated
 
     def _traverse(
@@ -318,9 +339,10 @@ class QueryEngine:
         budget = self.token_budget.T        # token_budget（积累区上限 ≤ T）
         renderer = ContextRenderer(self.plugin_manager)
 
-        # read-repair 同名合并：name → 首次出现的节点 id
-        # 同名字面识别——同名当场可见、零成本；同名≠同义需消歧（Phase 1 不做 LLM 判定）
-        name_index: dict[str, str] = {}     # name → node_id（首次遇到）
+        # read-repair 同名合并：(name, universe) → 首次出现的节点 id
+        # 同名字面识别——同名当场可见、零成本；同名≠同义需消歧（Phase 1 不做 LLM 判定）。
+        # 键含 universe：跨 universe 同名不合并（演义曹操 ≠ 正史曹操）。
+        name_index: dict[tuple[str, str], str] = {}     # (name, universe) → node_id
         merged_into: dict[str, str] = {}    # node_id → target_id（被合并掉的）
         repaired_ids: set[str] = set()      # 本次遍历被合并改写的 target（遍历末落盘）
 
@@ -353,18 +375,19 @@ class QueryEngine:
             """
             nonlocal used_tokens
             name = node.name
-            if not name or name not in name_index:
-                # 首次遇到此名字
-                name_index[name] = node.id
+            key = (name, node.universe)
+            if not name or key not in name_index:
+                # 首次遇到此 (名字, universe)
+                name_index[key] = node.id
                 return node
 
-            target_id = name_index[name]
+            target_id = name_index[key]
             if target_id == node.id:
                 return node  # 自身，跳过
 
             target = self.store.get_node(target_id)
             if target is None:
-                name_index[name] = node.id
+                name_index[key] = node.id
                 return node
 
             # 找到积累区中的 target 实例
@@ -375,7 +398,7 @@ class QueryEngine:
                     break
             if target_node is None:
                 # target 不在积累区（不应发生，但防御）
-                name_index[name] = node.id
+                name_index[key] = node.id
                 return node
 
             # 记录合并前 token
@@ -435,7 +458,7 @@ class QueryEngine:
             - **已 visited** 的无视图叶子（探索跳板，已裁决）→ 返回 ``(None, None)``
               跳过，避免空转 re-eval（`_consume` 会因 visited 跳过、无新增）。
             """
-            children = self.store.get_out_hierarchy(node.id) or []
+            children = self.store.get_out_hierarchy(node.id, universe=node.universe) or []
             facts = self.store.get_relations(node.id) or []
             if not children and not facts:
                 if node.id in visited:

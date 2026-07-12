@@ -95,12 +95,13 @@ class TestRecallEndpoint:
         assert len(data["reply"]) > 0
 
     def test_recall_readonly(self, client_with_recall: TestClient) -> None:
-        """召回不该写图——只读集由 readonly 元数据白名单驱动，6 个只读工具、不含 learn。"""
+        """召回不该写图——只读集由 readonly 元数据白名单驱动，7 个只读工具、不含 learn。"""
         config = ToolsetConfig(enabled=list(READONLY_TOOL_NAMES))
         schemas, dispatch = build_toolset(BUILTIN_TOOLS, config)
-        assert "learn" not in dispatch  # 唯一写图工具被排除
+        assert "learn" not in dispatch  # 写图工具被排除（learn / link_cross_universe）
         assert set(dispatch) == {
-            "search", "associate", "reason", "recall", "generalize", "arbitrate"
+            "search", "associate", "reason", "recall", "generalize", "arbitrate",
+            "get_cross_universe_edges",
         }
 
     def test_readonly_whitelist_excludes_future_write_tools(self) -> None:

@@ -199,7 +199,7 @@ def test_node_has_only_minimal_core_fields() -> None:
     from mcs.entities.graph import Node
 
     field_names = {f.name for f in fields(Node)}
-    expected = {"id", "name", "content", "node_class", "extensions"}
+    expected = {"id", "name", "content", "node_class", "universe", "extensions"}
     assert field_names == expected, (
         f"Node has unexpected fields: {field_names ^ expected}"
     )
@@ -219,6 +219,7 @@ def test_query_context_has_4_lifecycle_fields() -> None:
         "result_set",
         "metadata",
         "selected_edges",
+        "universe",
     }
     assert field_names == expected, (
         f"QueryContext fields mismatch: {field_names ^ expected}"

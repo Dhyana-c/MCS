@@ -170,6 +170,10 @@ class IngestInput:
     - ``event_name``：事件节点 name；``None`` → 由 content 截断规则派生。
     - ``metadata``：自由元数据，并入 ``WriteContext.metadata``（与既有 ``**metadata``
       kwargs 同域，如 doc_id / chunk_id）。
+    - ``work_id``：作品标注（仅用于 universe 归属判定，**不经 LLM**）。非空 → 本次
+      产出的概念 / 事实 / source 归该作品 universe（经注册表规范化为 canonical id）；
+      为空 → ``"__reality__"``。``metadata`` 内同名键 MUST NOT 参与（权威源仅此字段）。
+      摄入行为事件 universe 固定 ``"__reality__"``（不随被读作品变）。
 
     ``str`` 入参等价于 ``IngestInput(content=text)``（now 时间戳、无 source）。
     """
@@ -178,4 +182,5 @@ class IngestInput:
     timestamp: str | None = None
     source: SourceData | None = None
     event_name: str | None = None
+    work_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)

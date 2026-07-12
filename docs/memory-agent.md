@@ -1,7 +1,7 @@
 # 记忆 Agent
 
 > `mcs_agent` 是建在 MCS 之上的对话式记忆助手：一个 **ReAct loop**，让 LLM 经 tool calling 自主决定
-> 如何在记忆图里导航。本文讲架构、9 个工具（5 导航 + 2 只读语义判断 + 2 写图语义重组）、单线程封装、FastAPI 后端、启动方式，
+> 如何在记忆图里导航。本文讲架构、11 个工具（5 导航 + 2 只读语义判断 + 2 写图语义重组 + 2 跨 universe）、单线程封装、FastAPI 后端、启动方式，
 > 以及它与 MCP server 的区别。
 >
 > **包结构**（change `mcs-mem-package-extract`）：`mcs_agent/` 是 agent 核心库（ReAct loop /
@@ -31,7 +31,7 @@
 - **导航决策权在 LLM**：选哪个工具、哪个种子、哪种扩展模式、找哪两个节点的路径，都由 LLM 决定；工具只是对
   MCS 能力的薄封装。
 
-## 9 个工具（5 导航 + 2 只读语义判断 + 2 写图语义重组）
+## 11 个工具（5 导航 + 2 只读语义判断 + 2 写图语义重组 + 2 跨 universe）
 
 `BUILTIN_TOOLS`（`tools.py`，`ToolSpec` 注册表）定义的工具，经 tool calling 暴露给 agent 的 LLM
 （`MEMORY_TOOLS` 保留为废弃别名）。工具集可经 `ToolsetConfig` 配置（启用子集 / 按工具名覆盖参数）：
@@ -39,7 +39,7 @@
 | 工具 | 参数 | 作用 | 状态 |
 |------|------|------|------|
 | `learn` | `text` | 把信息写入记忆图（复用 MCS 写管线，自动抽概念入图）。仅当用户明确要求记住时调用 | ✅ |
-| `search` | `query`, `mode` | 搜入口种子。`keyword`=字面匹配名 / 别名（主力）；`direct`=顶层 hub；`vector`=向量检索 | keyword ✅ / direct ✅ / vector ✗ |
+| `search` | `query`, `mode`, `universe?` | 搜入口种子（默认 `__reality__` 内；查作品世界传 `universe`）。`keyword`=字面匹配名 / 别名（主力）；`direct`=顶层 hub；`vector`=向量检索 | keyword ✅ / direct ✅ / vector ✗ |
 | `associate` | `seed_id`, `mode` | 从种子 BFS 联想扩展。`mcs`=事实 BFS（主力）；`hot`/`random` | mcs ✅ / hot·random ✗ |
 | `reason` | `source_id`, `target_id` | 在两个已知节点间找连通路径（无向 BFS，允许失败） | ✅ |
 | `recall` | `limit` | 回忆最近发生的事件（时间倒排、纯近期口径，受 `limit` 与 T 双约束） | ✅ |
@@ -47,6 +47,8 @@
 | `arbitrate` | `node_ids`, `question` | 对若干互斥事实反查背书事件、裁决采信方 + 理由（只读 LLM 判断，不改图） | ✅ |
 | `split` | `node_id`, `focus?` | 拆分粒度耦合的概念节点（类别-特化 / 多实体误并）为多个独立节点（写图，过守门） | ✅ |
 | `merge` | `node_ids`, `focus?` | 合并若干本就同一个的节点（异名/同义/重复建）为一个（写图，互斥禁合，过守门） | ✅ |
+| `get_cross_universe_edges` | `node_id`, `limit?` | 定向查某节点的跨 universe 桥（只读，绕载重）——单 universe 查询默认不跨，需确认跨世界关系（如演义曹操↔正史曹操）时用 | ✅ |
+| `link_cross_universe` | `source_id`, `target_id` | 给两个不同 universe 的节点建概念桥（写图，唯一创建路径）——仅"同一实体的不同世界叙述"时调；同 universe 勿用 | ✅ |
 
 未实现的模式以**空壳诚实返回**提示（不伪造）；工具返回的节点都带 `[id:...]`，供后续工具引用
 （`search → associate → reason` 链式导航）。
@@ -88,7 +90,7 @@ MCS 非线程安全、SQLite 连接绑创建线程，所以 `MemoryStore`（`mem
 同一个单 worker 线程**（`ThreadPoolExecutor(max_workers=1)`）：每个原语经 `_submit` 丢给 worker、阻塞取结果，
 调用方线程绝不直接触碰 MCS / store。
 
-它在 9 个 LLM 工具之外还暴露 `graph_summary`（读图级主题摘要）、`graph_view`（只读可视化视图）
+它在 11 个 LLM 工具之外还暴露 `graph_summary`（读图级主题摘要）、`graph_view`（只读可视化视图）
 等原语。其中 `find_path` 是 `reason` 工具背后的无向 BFS（下钻成员 + 关系边端点都算邻居）；
 `generalize` / `arbitrate` 是调 MCS LLM 插件的只读语义判断原语（见上节）。
 
@@ -173,7 +175,7 @@ python -m mcs_mem                          # 记忆应用（基础 + 碎片/整�
 |---|---|---|
 | 谁来决策 | **外部客户端**（Claude Desktop 等）的 LLM | **自带** LLM（ReAct loop） |
 | 接口 | MCP stdio 工具（`query` / `ingest`） | HTTP（`/chat`）+ 前端 |
-| 工具粒度 | 粗（一次 query 走完整管线） | 细（9 个原语，LLM 分步组合） |
+| 工具粒度 | 粗（一次 query 走完整管线） | 细（11 个原语，LLM 分步组合） |
 | 用途 | 把图当工具接入已有 Agent | 独立的对话式记忆助手 |
 
 两者都用单 worker 线程封装 MCS（线程安全铁律），都复用 `mcs.rendering` 的渲染纯函数。

@@ -13,7 +13,7 @@ import pytest
 from mcs.core.errors import LLMParseError
 from mcs.core.plugin import PluginType
 from mcs.core.token_budget import TokenBudget
-from mcs.entities.graph import CLASS_EVENT, Edge, Node
+from mcs.entities.graph import CLASS_EVENT, REALITY_UNIVERSE, Edge, Node
 from mcs.interfaces.llm import LLMInterface
 from mcs_agent.memory import (
     MemoryStore,
@@ -59,6 +59,8 @@ class FakeStore:
         # fact_id → 其背书事件列表（get_related_events 的预设返回）
         self.related_events: dict[str, list[Node]] = {}
         self.related_events_calls: list[tuple[str, int | None]] = []
+        # 记录 get_out_hierarchy 调用的 (nid, universe)（5.13 search universe 透传断言用）
+        self.hierarchy_calls: list[tuple[str, str | None]] = []
 
     def add_node(self, n: Node) -> None:
         self.nodes[n.id] = n
@@ -66,7 +68,8 @@ class FakeStore:
     def get_node(self, nid: str) -> Node | None:
         return self.nodes.get(nid)
 
-    def get_out_hierarchy(self, nid: str) -> list[Node]:
+    def get_out_hierarchy(self, nid: str, universe: str | None = None) -> list[Node]:
+        self.hierarchy_calls.append((nid, universe))
         return [
             self.nodes[e.target_id]
             for e in self.hierarchy
@@ -77,6 +80,34 @@ class FakeStore:
         es = [e for e in (self.facts + self.assocs)
               if e.source_id == nid or e.target_id == nid]
         return es[:limit] if limit else es
+
+    def add_edge(self, source_id: str, target_id: str, type: str = "关联") -> Edge:
+        e = Edge(source_id=source_id, target_id=target_id, type=type)
+        self.assocs.append(e)
+        return e
+
+    def get_edges_between(self, a: str, b: str) -> list[Edge]:
+        return [
+            e for e in (self.assocs + self.facts + self.hierarchy)
+            if e.source_id == a and e.target_id == b
+        ]
+
+    def get_cross_universe_edges(
+        self, node_id: str, limit: int | None = None
+    ) -> list[Edge]:
+        """对端 universe 不同的边（绕载重，与真实 store 语义一致）。"""
+        node = self.nodes.get(node_id)
+        if node is None:
+            return []
+        out: list[Edge] = []
+        for e in self.assocs + self.facts:
+            if e.source_id != node_id and e.target_id != node_id:
+                continue
+            other_id = e.target_id if e.source_id == node_id else e.source_id
+            other = self.nodes.get(other_id)
+            if other is not None and other.universe != node.universe:
+                out.append(e)
+        return out[:limit] if limit else out
 
     def get_related_events(self, node_id: str, limit: int | None = None) -> list[Node]:
         """复刻 StoreInterface 口径：时间倒排（timestamp,id）+ limit。"""
@@ -103,6 +134,8 @@ class FakeStore:
 class FakeQueryEngine:
     def __init__(self, token_budget_T: int = 8000) -> None:
         self.locate_calls: list[str] = []
+        # 记录每次 locate_seeds 的 universe（5.13 search universe 透传断言用）
+        self.locate_universes: list[str | None] = []
         self._seeds: list[Node] = []
         # recall 经 query_engine.token_budget 取 T + estimate（只读消费、不动框架层）
         self.token_budget = TokenBudget(max_tokens=token_budget_T)
@@ -110,8 +143,9 @@ class FakeQueryEngine:
     def set_seeds(self, seeds: list[Node]) -> None:
         self._seeds = list(seeds)
 
-    def locate_seeds(self, query: str) -> list[Node]:
+    def locate_seeds(self, query: str, universe: str | None = None) -> list[Node]:
         self.locate_calls.append(query)
+        self.locate_universes.append(universe)
         return list(self._seeds)
 
 
@@ -174,6 +208,8 @@ class FakeMCS:
         self.query_engine = qe
         self.read_manager = _FakeReadManager(llm_plugin)
         self.last_query_existing_context: list | None = None
+        # 记录 query 的 universe 入参（5.13 associate 从种子继承断言用）
+        self.last_query_universe: str | None = None
 
     def ingest(self, text_or_input) -> _FakeWriteCtx:
         """支持 str 和 IngestInput 两种入参，IngestInput 时设置 event_node 含 timestamp。"""
@@ -189,8 +225,9 @@ class FakeMCS:
             )
         return ctx
 
-    def query(self, text: str, existing_context: list | None = None) -> str:
+    def query(self, text: str, existing_context: list | None = None, universe: str | None = None) -> str:
         self.last_query_existing_context = existing_context
+        self.last_query_universe = universe
         return f"raw-subgraph-for:{text}"
 
     def shutdown(self) -> None:
@@ -1018,5 +1055,141 @@ def test_generalize_single_oversized_node_fed():
         assert "概括" in out
         mat = llm.calls[0][2]["material"]
         assert "[id:c1]" in mat and big in mat  # 节点未被丢
+    finally:
+        ms.shutdown()
+
+
+# === 5.13 search / associate universe 透传（P7：单 universe 查询限域） ===
+
+
+def test_search_keyword_passes_universe_to_locate():
+    """search 的 universe 参数透传到 locate_seeds（单 universe 查询限域）。"""
+    qe = FakeQueryEngine()
+    qe.set_seeds([_n("c1", "猫")])
+    ms, _ = _make(FakeStore(), qe)
+    try:
+        ms.search("猫", "keyword", universe="三国演义")
+        assert qe.locate_universes == ["三国演义"]
+    finally:
+        ms.shutdown()
+
+
+def test_search_keyword_default_universe_is_reality():
+    """search 不传 universe 默认 __reality__（P7 安全默认）。"""
+    qe = FakeQueryEngine()
+    qe.set_seeds([_n("c1", "猫")])
+    ms, _ = _make(FakeStore(), qe)
+    try:
+        ms.search("猫", "keyword")
+        assert qe.locate_universes == [REALITY_UNIVERSE]
+    finally:
+        ms.shutdown()
+
+
+def test_search_direct_passes_universe_to_root_children():
+    """direct 模式 universe 透传到 get_out_hierarchy(root)（root 单侧过滤 P8）。"""
+    store = FakeStore()
+    store.add_node(_n("h1", "科学"))
+    store.hierarchy.append(Edge(source_id="__seed_root__", target_id="h1", type="关联"))
+    qe = FakeQueryEngine()
+    ms, _ = _make(store, qe)
+    try:
+        ms.search("x", "direct", universe="三国演义")
+        assert ("__seed_root__", "三国演义") in store.hierarchy_calls
+    finally:
+        ms.shutdown()
+
+
+def test_associate_inherits_universe_from_seed():
+    """associate 从种子节点继承 universe，传给 mcs.query（P7 种子继承路径）。"""
+    store = FakeStore()
+    store.add_node(Node(id="c1", name="曹操", content="演义", universe="三国演义"))
+    ms, mcs = _make(store, FakeQueryEngine())
+    try:
+        ms.associate("c1", "mcs")
+        assert mcs.last_query_universe == "三国演义"
+    finally:
+        ms.shutdown()
+
+
+# === 5.15 link_cross_universe / get_cross_universe_edges（agent 层 D5 护栏） ===
+
+
+def _unode(nid: str, name: str, universe: str) -> Node:
+    """构造指定 universe 的节点（跨 universe 桥测试用）。"""
+    return Node(id=nid, name=name, content=name, universe=universe)
+
+
+def test_link_cross_universe_same_universe_rejected():
+    """D5①：两端同 universe → 拒绝（同 univ 走既有对齐），且不建边。"""
+    store = FakeStore()
+    store.add_node(_unode("a1", "曹操", "三国演义"))
+    store.add_node(_unode("a2", "曹操", "三国演义"))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        out = ms.link_cross_universe("a1", "a2")
+        assert "拒绝" in out
+        assert store.assocs == []  # 未建边
+    finally:
+        ms.shutdown()
+
+
+def test_link_cross_universe_different_universe_builds_bridge():
+    """D5：两端不同 universe → 建普通关联桥，不合并（两端各自保留）。"""
+    store = FakeStore()
+    store.add_node(_unode("yan", "曹操", "三国演义"))
+    store.add_node(_unode("shi", "曹操", REALITY_UNIVERSE))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        out = ms.link_cross_universe("yan", "shi")
+        assert "已建" in out and "关联" in out
+        assert len(store.assocs) == 1
+        assert store.assocs[0].type == "关联"
+        # 不触发合并：两端节点都在
+        assert store.get_node("yan") is not None
+        assert store.get_node("shi") is not None
+    finally:
+        ms.shutdown()
+
+
+def test_link_cross_universe_dedup_no_duplicate():
+    """D5②：同对已存在关联边 → 不重建（同对去重）。"""
+    store = FakeStore()
+    store.add_node(_unode("yan", "曹操", "三国演义"))
+    store.add_node(_unode("shi", "曹操", REALITY_UNIVERSE))
+    store.assocs.append(Edge(source_id="yan", target_id="shi", type="关联"))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        out = ms.link_cross_universe("yan", "shi")
+        assert "已存在" in out
+        assert len(store.assocs) == 1  # 未新增第二条
+    finally:
+        ms.shutdown()
+
+
+def test_link_cross_universe_then_get_cross_returns_both_ends():
+    """D5④：建桥后 get_cross_universe_edges 两端均可取回（不进活跃视图由 store 层载重保）。"""
+    store = FakeStore()
+    store.add_node(_unode("yan", "曹操", "三国演义"))
+    store.add_node(_unode("shi", "曹操", REALITY_UNIVERSE))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        ms.link_cross_universe("yan", "shi")
+        out_yan = ms.get_cross_universe_edges("yan")
+        out_shi = ms.get_cross_universe_edges("shi")
+        assert "[id:shi]" in out_yan
+        assert "[id:yan]" in out_shi
+    finally:
+        ms.shutdown()
+
+
+def test_get_cross_universe_edges_no_bridge_hint():
+    """无跨 universe 桥 → 明示（不伪造）。"""
+    store = FakeStore()
+    store.add_node(_unode("c1", "猫", REALITY_UNIVERSE))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        out = ms.get_cross_universe_edges("c1")
+        assert "无跨 universe 桥" in out
     finally:
         ms.shutdown()

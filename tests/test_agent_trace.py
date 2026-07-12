@@ -263,7 +263,7 @@ class _FakeMemory:
     def learn(self, text: str) -> str:
         return f"[memory] 已写入：{text}"
 
-    def search(self, query: str, mode: str = "keyword") -> str:
+    def search(self, query: str, mode: str = "keyword", universe: str = "__reality__") -> str:
         return f"[memory] 种子：1. [id:c1] {query}"
 
     def associate(self, seed_id: str, mode: str = "mcs") -> str:
@@ -354,7 +354,7 @@ def test_chat_trace_tool_exception():
         traces.append(ct)
 
     class BadMemory:
-        def search(self, q, mode="keyword"):
+        def search(self, q, mode="keyword", universe="__reality__"):
             raise RuntimeError("boom")
 
         def learn(self, t):

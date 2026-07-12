@@ -65,7 +65,9 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
         # 优先：从持久虚拟根自顶向下导航（其(递归)子节点即兜底种子）
         root = self.store.get_node(SEED_ROOT_ID)
         if root is not None:
-            children = self.store.get_out_hierarchy(root.id)
+            children = self.store.get_out_hierarchy(
+                root.id, universe=getattr(ctx, "universe", None)
+            )
             if self.llm is None or not self.use_llm_navigation:
                 return children[: self.max_seeds]
             landed = [n for n in self._navigate(query, [root]) if n.id != root.id]
@@ -103,7 +105,9 @@ class HubFallbackEntryPlugin(EntryPluginInterface):
             seen: set[str] = set()
             for node in frontier:
                 # 沿层级出边取候选（事实边不参与导航）
-                for neighbor in self.store.get_out_hierarchy(node.id):
+                for neighbor in self.store.get_out_hierarchy(
+                    node.id, universe=node.universe
+                ):
                     if neighbor.id not in visited and neighbor.id not in seen:
                         seen.add(neighbor.id)
                         candidates.append(neighbor)

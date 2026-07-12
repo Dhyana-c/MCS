@@ -3,15 +3,15 @@
 > 项目宪法。下列不变量与铁律**不得违背**；变更若冲突，先改本宪法（经评审）再改代码。
 > 规范细节见 `openspec/specs/`（`subgraph-bounding`、`architecture`）；**完整、权威的图模型设计见 [`docs/graph-model-design.md`](docs/graph-model-design.md)**。
 >
-> ⚠️ **过渡说明**：本宪法已按 OpenSpec change `unified-graph-schema` 重写为**统一图模型**（4 类节点 / 谓词落点 / 边仅 `关联`·`互斥` / 核心·事件双层 / 守门=改图即把关）。**现有代码仍是旧模型**（`relation_model` 双模式 + `kind`/`label` 边）；按"先改宪法再改代码"，代码迁移由该 change 跟踪，过渡期代码与本宪法的差异是预期的。
+> ⚠️ **过渡说明**：本宪法按 OpenSpec change `unified-graph-schema` 重写为**统一图模型**（4 类节点 / 谓词落点 / 边仅 `关联`·`互斥` / 核心·事件双层 / 守门=改图即把关），代码已落地（`Node.node_class` / `Edge.type`）。change `multi-universe-graph` 在此之上新增 **`universe` 归属轴**（节点带世界归属、载重双类过滤、universe 元节点 + 归一、agent 跨查）——隔离虚构与真实，核心不变量精确为「单 universe 内」。
 
 MCS 把知识组织成图，并维持一条硬不变量，使任意节点的**活跃双向视图**（关系边 + 层级邻居）永远放得进一个 LLM 上下文窗口。导航、归纳、查询都建立在此之上。
 
 ## 核心不变量（不得违背）
 
-**任意节点的活跃双向视图（top-priority 的 {关系边 + 层级邻居}，截断后）渲染 token ≤ T。** 单一模型下，关系边即该节点的 **`关联` / `互斥` 边**（两端可达，端点含命题节点）；层级邻居为聚类涌现的下钻成员。
+**任意节点的活跃双向视图（top-priority 的 {关系边 + 层级邻居}，截断后）渲染 token ≤ T——精确为「单 universe 内」**（跨 universe 边 / 事件边不进活跃视图，每 universe 更小、有界更易成立）。单一模型下，关系边即该节点的 **`关联` / `互斥` 边**（两端可达，端点含命题节点）；层级邻居为聚类涌现的下钻成员（同 universe）。
 
-**节点 4 类**（按结构行为分，不引入领域 type）：**概念 / 事实（命题）/ 事件 / source**。`hub` 仅为**标记**（反查 / 可观测，无算法含义、非节点类）。**谓词落点**：关系语义落**事实节点 `content`**，不做 label 边——事实为一等节点才能被事件背书、被互斥连接（边连不了边）。
+**节点 4 类**（按结构行为分，不引入领域 type）：**概念 / 事实（命题）/ 事件 / source**。`hub` 仅为**标记**（反查 / 可观测，无算法含义、非节点类）。**`universe` 归属轴**（与 `node_class` 并列，默认 `__reality__`）：控制合并 / 互斥 / 聚类 / 载重过滤边界——不同 universe 的同名节点不合并、不判互斥（虚构 vs 真实是两个世界、非矛盾）；判定由 ingest 期 `IngestInput.work_id` 规则作出（非空 → 该作品 universe，经 universe 注册表规范化），**不经 LLM**；对全部 `node_class`（含事件）生效。**universe 元节点**：每个 canonical universe 一个元节点（`概念`、`universe="__reality__"`——作品作为现实造物 ≠ 所述世界），作身份锚点 + 查询 foothold，**MUST NOT 持成员**（成员靠 `Node.universe` 标量归属，防超级 hub）；归一**宁裂不并**（别名命中复用、未命中新建，universe 合并默认关闭）。**谓词落点**：关系语义落**事实节点 `content`**，不做 label 边——事实为一等节点才能被事件背书、被互斥连接（边连不了边）。
 
 **边仅 2 类**：`关联`（结构基础边，两端可达）+ `互斥`（事实 ↔ 事实，当前唯一语义类型）；**无 `kind`、无开放 `label`、无独立"层级"边**（层级由聚类涌现 + hub 标记表达）。新增语义类型走登记制、谨慎增加。
 
@@ -22,7 +22,7 @@ MCS 把知识组织成图，并维持一条硬不变量，使任意节点的**�
 
 ## 两条铁律
 
-1. **估算口径 == 渲染口径**：判断"活跃视图是否超 T"的估算，必须与 `context_renderer` 实际渲染逐字一致（同字段、同 name==content 去重，**含关系边渲染 token**）。关系边渲染为 `主 — 宾`（`关联` / `互斥`，**无 label**），计其 token；边的 `type` 是结构标记、**不计 token**。禁止用更少字段（如只算 `content`、漏 `name`、漏关系边 token）低估——低估漏判、直接破坏不变量（1284 即此坑）。
+1. **估算口径 == 渲染口径**：判断"活跃视图是否超 T"的估算，必须与 `context_renderer` 实际渲染逐字一致（同字段、同 name==content 去重，**含关系边渲染 token**）。关系边渲染为 `主 — 宾`（`关联` / `互斥`，**无 label**），计其 token；边的 `type` 是结构标记、**不计 token**。**跨 universe 边 / 事件边不计入单 universe 活跃视图**（载重过滤）。禁止用更少字段（如只算 `content`、漏 `name`、漏关系边 token）低估——低估漏判、直接破坏不变量（1284 即此坑）。
 2. **归纳必须 LLM 语义**：中间 hub 由 `decide_hub` 语义归纳，禁止用连通分量 / Louvain 等纯图聚类替代（语义边稀疏时聚不出有意义的类）。图结构仅作辅助信号。
 
 ## 算法原理
@@ -40,7 +40,7 @@ MCS 把知识组织成图，并维持一条硬不变量，使任意节点的**�
 
 ## 总体流程
 
-- **写入 `ingest`**：① **规则入库**（**每次 ingest 把整个输入记为一个事件节点——记录这一行为、落用户时间轴**；source 按类型切分分类；事件 / source **不经 LLM**、**只有 `content` 走 LLM**；`content` 内转述的过去事件 → 抽成带时间属性的**事实**、不盖成时间轴事件；事件 / source id 先建、供 ⑤ 背书连边）→ ② **关联节点提取**（复用 read 检索图中已有相关节点）→ ③ `extract_concepts` + `judge_relations`（**带已有节点对齐**：抽概念 / 命题，合并同义、判互斥；关系落**命题节点 + 关联边**，谓词在 content，**不产 label**；一条关系 / 互斥只存一份、两端可达）→ ④ 连边（命题 —关联— 端点；事件 —单向→ 命题 / 概念 背书；事实 —互斥— 事实；**仅孤儿**挂 `__seed_root__`——零关联才挂，`get_relations` 空者为孤儿）→ ⑤ **主动守门 + 整窗单次裂变 + 边吸收**（全局任意节点）→ ⑥ `persist`（`save_full`，逐条保真）。**入参 `str | IngestInput`**：`str` 归一化为 `IngestInput(content=text)`（now 时间戳、无 source），老调用零改动（除新增一条记录事件外）。
+- **写入 `ingest`**：⓪ **universe 判定**（`IngestInput.work_id` 经 **universe 注册表**——元节点 name + 别名字面匹配——规范化为 canonical universe id；命中复用、未命中**自动建 universe 元节点**（`概念`/`universe="__reality__"`、不持成员）；**不经 LLM**；**摄入行为事件 universe 固定 `__reality__`**，概念 / 事实 / source 归 canonical；合并 / 互斥 / 同名去重 / read-repair / dedup **均限同 universe**——跨 universe 不合并、不互斥，修"虚构 vs 真实误判互斥"）→ ① **规则入库**（**每次 ingest 把整个输入记为一个事件节点——记录这一行为、落用户时间轴**；source 按类型切分分类；事件 / source **不经 LLM**、**只有 `content` 走 LLM**；`content` 内转述的过去事件 → 抽成带时间属性的**事实**、不盖成时间轴事件；事件 / source id 先建、供 ⑤ 背书连边）→ ② **关联节点提取**（复用 read 检索图中已有相关节点）→ ③ `extract_concepts` + `judge_relations`（**带已有节点对齐**：抽概念 / 命题，合并同义、判互斥；关系落**命题节点 + 关联边**，谓词在 content，**不产 label**；一条关系 / 互斥只存一份、两端可达）→ ④ 连边（命题 —关联— 端点；事件 —单向→ 命题 / 概念 背书；事实 —互斥— 事实；**仅孤儿**挂 `__seed_root__`——零关联才挂，`get_relations` 空者为孤儿）→ ⑤ **主动守门 + 整窗单次裂变 + 边吸收**（全局任意节点）→ ⑥ `persist`（`save_full`，逐条保真）。**入参 `str | IngestInput`**：`str` 归一化为 `IngestInput(content=text)`（now 时间戳、无 source），老调用零改动（除新增一条记录事件外）。
 - **查询 `query`**：种子定位（**jieba 切词 + 字面匹配名 / 别名**为主力，embedding 兜底，root 仅最后退路；**反查 + 多种子**让入口只需一个 foothold）→ **核心 BFS**（沿 `关联` 边，每节点渲染活跃双向视图，LLM **双角色筛选**相关命题 / 邻居——`结果` 进积累区·吃 T、`探索` 进 frontier·不吃 T、端点随角色补入；探索宽召回与进 LLM 的结果集**成员解耦**；**事件默认不进**，需出处时按需 `命题 → 事件` 定向查）→ read-repair → 后处理（重排 / 裁剪）→ `Subgraph`（nodes + 选中 `关联` / `互斥` 边）。
 
 ## 边方向
@@ -50,7 +50,7 @@ MCS 把知识组织成图，并维持一条硬不变量，使任意节点的**�
 - **关联边** `主 — 宾`：`type="关联"`，结构基础边，**无 label**；连接命题与端点、概念间关联、聚类形成的"组织中心 ↔ 成员"。**一条只存一份**，但**两端邻接都索引到它**（反查、双向可达）；同 `(source, target)` 去重。
 - **互斥边** `事实 ↔ 事实`：`type="互斥"`，当前唯一语义类型，表两条事实相互排斥。
 - **无独立"层级"边**：组织层级是**聚类的产物**，用 `关联` 边 + 中心节点 `hub` 标记表达，不是独立边类型；层级关系为**纯下行**（无成员上行边）。
-- `get_out_hierarchy` 返回下钻成员（驱动下钻）；`get_relations` 返回该节点作**任一端**的 `关联` / `互斥` 边（反查，双向可达）。**事件层（载重规则）**：`事件 → 命题 / 概念` 用 `关联` 边、两端都索引，但**核心节点**（概念 / 事实）侧 `get_relations` **MUST 过滤事件边**（事件侧 `get_relations` 仍可达核心）——核心不反查事件（否则最热节点把全部事件漏回核心、撑爆活跃视图，且污染 priority 截断样本）。
+- `get_out_hierarchy(node, universe=None)` 返回下钻成员（驱动下钻）；过滤按 **target 成员 universe 单侧**判定（`universe=U` → 只返 `target.universe==U`；`None` → 全返，仅旧库兼容）——多 universe 库所有孤儿挂同一 `__seed_root__`，**查询 / 守门对 root 调用 MUST 传当前 universe**（否则 root 视图混入所有 universe 孤儿、破坏单 universe 不变量；fanout 对 root 按 universe 分组裂变是结构性护栏）。`get_relations` 返回该节点作**任一端**的 `关联` / `互斥` 边（反查，双向可达）。**载重规则（双类过滤）**：① **同 universe 事件边**——`事件 → 命题 / 概念` 用 `关联` 边、两端都索引，但**核心节点**（概念 / 事实）侧 `get_relations` **过滤事件边**（事件侧仍可达核心，**单向**）；② **跨 universe 边**（两端 universe 不同，含跨 universe 事件背书边）——两端 `get_relations` **都过滤**（**双向**），跨 universe 桥仅经 `get_cross_universe_edges` 显式定向查可达——保单 universe 活跃视图封闭。
 - **边 / 点扩展对称**：`Edge.extensions` 与 `Node.extensions` 对称——插件经 `EdgeExtensionInterface`（`PluginType.EDGE_EXTENSION`）向边挂字段，逐条随边保真存取 / 反查 / 重组（`edges.extensions_json` 列）；`render(edge, purpose)` 返回 `None` 即该 purpose 下隐藏（字段级可见性）。
 - **`priority` 为派生值**：目标态由 `PriorityScorer` 从边扩展字段算、非写入方权威原语；Phase 1 默认 `0.0`，`edges.priority` 列作 Phase 2 派生值缓存。**守门只估节点层级视图、不渲染 / 不估算关系边**；边渲染 == 估算属**查询侧** token 计数正确性（`estimate_*_edge` 委托 `render_*_edge`），与守门铁律一无关。
 

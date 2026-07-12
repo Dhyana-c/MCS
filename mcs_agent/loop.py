@@ -46,7 +46,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "做只读语义判断（不改图）。发觉某概念把多个语义中心耦合（如'按摩'实讲泰式、或'小明和小红'\n"
     "误并），可用 split 拆开；发觉重复 / 同义节点，可用 merge 收口（写图，谨慎）。\n\n"
     "# 工具（导航决策权在你：选哪个工具、哪个种子、哪种模式、哪两个节点）\n"
-    "- search：搜索入口种子。mode=keyword 按用户输入字面匹配（主力，已实现）；"
+    "- search：搜索入口种子（默认在现实世界 __reality__ 内；查作品世界时显式传 universe）。"
+    "mode=keyword 按用户输入字面匹配（主力，已实现）；"
     "mode=direct 返回顶层 hub（无明确关键词时用，已实现）；mode=vector 未实现。\n"
     "- associate：从种子联想扩展（BFS）。mode=mcs 已实现（主力）；hot、random 未实现。\n"
     "- reason：在两个已知节点间找连通路径（允许失败）。\n"
@@ -57,6 +58,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "  独立节点（写图）。content 自洽别拆、描述不准是重写不是拆、拿不准别拆。\n"
     "- merge：合并若干本就同一个的节点（异名/同义/重复建）为一个（写图）。\n"
     "  同名异义别合、互斥禁合、拿不准别合。core 已自动合并同义，本工具用于收口残留重复。\n"
+    "- get_cross_universe_edges：定向查某节点的跨 universe 桥（只读，绕载重）——"
+    "单 universe 查询默认不跨 universe，需确认跨世界关系（如演义曹操↔正史曹操）时用。\n"
+    "- link_cross_universe：给两个不同 universe 的节点建概念桥（写图）——仅当判定是"
+    "同一实体的不同世界叙述时调；同 universe 勿用（走既有对齐）。\n"
     "- learn：把信息写入记忆图（仅当用户明确要记住时）。\n"
     "工具返回的节点带 [id:...]，后续工具用它引用。generalize / arbitrate / merge 的 node_ids、\n"
     "split 的 node_id 由前序工具返回的 [id:...] 提供。未实现的模式会返回提示，改用可用项。\n\n"
@@ -81,7 +86,7 @@ class MemoryAgent:
     Args:
         memory: 暴露 learn/search/associate/find_path/recall/generalize/arbitrate 的对象（通常是 ``MemoryStore``）。
         llm: ``(messages, tools) -> dict`` 裸 callable（自动包 ``CallableAgentLLM``）或 ``AgentLLMInterface`` 后端。
-        tools: 工具集配置（启用子集 / 覆盖参数）；None = 全部 9 个内置工具。
+        tools: 工具集配置（启用子集 / 覆盖参数）；None = 全部 11 个内置工具。
         system_prompt: 系统提示词。
         max_turns: 单次 chat 的最大 LLM 轮次（防失控循环）。
         summary_budget: 注入 system prompt 的图摘要字符预算（第二道闸，防归纳超标进入上下文）。
@@ -104,7 +109,7 @@ class MemoryAgent:
         self.llm: AgentLLMInterface = (
             llm if isinstance(llm, AgentLLMInterface) else CallableAgentLLM(llm)
         )
-        # 工具集：build_toolset 产 (schemas_for_llm, dispatch)；tools=None → 全 9 内置
+        # 工具集：build_toolset 产 (schemas_for_llm, dispatch)；tools=None → 全 11 内置
         self.schemas, self.dispatch = build_toolset(BUILTIN_TOOLS, tools)
         self.system_prompt = system_prompt
         self.max_turns = max_turns

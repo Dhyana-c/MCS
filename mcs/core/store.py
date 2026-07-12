@@ -122,12 +122,23 @@ class StoreInterface(ABC):
     # === 层级（骨架）查询 ===
 
     @abstractmethod
-    def get_out_hierarchy(self, node_id: str) -> list[Node]:
+    def get_out_hierarchy(
+        self, node_id: str, universe: str | None = None
+    ) -> list[Node]:
         """该节点的**下钻成员**（驱动导航下钻 / 守门 fanout）。
 
         统一模型下无独立"层级"边：组织层级由聚类涌现，用 ``关联`` 边 + 中心节点
         ``hub`` 标记表达。故此处返回的是该节点作 source 的 ``关联`` 出边目标
         （即下钻可达的成员）。关系边 token 的有界由查询渲染期按 priority 截断兜。
+
+        ``universe`` 过滤语义 = 按 **target 成员的 universe 单侧判定**（**非**"边两端
+        同 universe"）：``universe=U`` 时仅返回 ``target.universe == U`` 的成员；
+        ``universe=None`` 返回全部成员（**仅旧库兼容**——多 universe 库 MUST 传当前
+        universe，否则 ``__seed_root__`` 视图混入所有 universe 孤儿、破坏单 universe
+        活跃视图 ≤ T 不变量）。对普通节点 A 传 ``universe=A.universe`` 恰等价"两端同
+        universe"；对 ``__seed_root__``（自身 ``__reality__``）取 ``target.universe==U``
+        的孤儿——孤儿挂 root 的边 ``root(__reality__)→孤儿(<work_id>)`` 本身即跨
+        universe，"边两端"措辞会误滤掉全部作品孤儿，故 MUST 单侧。
         """
         ...
 
@@ -137,9 +148,16 @@ class StoreInterface(ABC):
     def get_relations(self, node_id: str, limit: int | None = None) -> list[Edge]:
         """返回该节点作**任一端**的 ``关联`` / ``互斥`` 边（反查，双向可达）。
 
-        **载重规则（存储原语级落实）**：对核心节点（``node_class ∈ {概念, 事实}``），
-        MUST 过滤对端为 ``事件`` 的关联边（核心不反查事件）；事件侧 ``get_relations``
-        仍可达核心。互斥边恒为事实 ↔ 事实，不受此过滤影响。
+        **载重规则（存储原语级落实，双类过滤）**：
+
+        - **同 universe 事件边**（对端 ``事件`` 且两端同 universe）：核心节点
+          （``node_class ∈ {概念, 事实}``）MUST 过滤（核心不反查事件）；事件侧
+          ``get_relations`` 仍可达核心（**单向过滤**）。
+        - **跨 universe 边**（两端 ``universe`` 不同，含跨 universe 的事件背书边）：
+          两端节点的 ``get_relations`` 都 MUST NOT 返回（**双向过滤**）——跨 universe
+          桥仅经 ``get_cross_universe_edges`` 显式定向查可达，保单 universe 活跃视图封闭。
+
+        互斥边恒为事实 ↔ 事实；跨 universe 互斥边构造上不产生，双向过滤纯属防御。
 
         Phase 2 按 priority 降序、limit 截断 top-K；Phase 1 priority 未用，
         返回全部（limit 仅作可选上限）。
@@ -179,6 +197,34 @@ class StoreInterface(ABC):
         if limit is not None:
             events = events[:limit]
         return events
+
+    def get_cross_universe_edges(
+        self, node_id: str, limit: int | None = None
+    ) -> list[Edge]:
+        """定向查跨 universe 桥（绕载重）：返回该节点作任一端、对端 ``universe`` 不同的
+        ``关联`` / ``互斥`` 边，供显式跨 universe 查询受控取数（带 ``limit``）。
+
+        载重规则下这些边在两端 ``get_relations`` 都被双向过滤、不进活跃视图。要取跨
+        universe 桥（如 ``演义曹操 —关联— 正史曹操``、现实摄入事件背书作品 fact）MUST 经
+        此定向查——它是跨 universe 桥**唯一**的默认载重之外可达路径。
+
+        默认实现扫全量边；有索引的存储（InMemoryStore / SQLiteStore）SHALL 覆写以走邻接
+        索引。双实现返回结果 MUST 一致。
+        """
+        node = self.get_node(node_id)
+        if node is None:
+            return []
+        result: list[Edge] = []
+        for edge in self.get_all_edges():
+            if node_id not in (edge.source_id, edge.target_id):
+                continue
+            other_id = edge.target_id if edge.source_id == node_id else edge.source_id
+            other = self.get_node(other_id)
+            if other is not None and other.universe != node.universe:
+                result.append(edge)
+        if limit is not None:
+            result = result[:limit]
+        return result
 
     def get_edges_between(self, source_id: str, target_id: str) -> list[Edge]:
         """获取两个节点之间的所有边（不限 type）。"""

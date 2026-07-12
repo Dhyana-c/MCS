@@ -42,6 +42,8 @@ from mcs.entities.graph import (
     CORE_NODE_CLASSES,
     EDGE_ASSOC,
     EDGE_MUTEX,
+    REALITY_UNIVERSE,
+    Node,
 )
 
 if TYPE_CHECKING:
@@ -50,7 +52,6 @@ if TYPE_CHECKING:
     from mcs.core.store import StoreInterface
     from mcs.core.token_budget import TokenBudget
     from mcs.entities.config import MCSConfig
-    from mcs.entities.graph import Node
     from mcs.interfaces.llm import LLMInterface
 
 
@@ -91,6 +92,7 @@ class WriteContext:
     metadata: dict = field(default_factory=dict)
     event_node: Node | None = None
     source_nodes: list[Node] = field(default_factory=list)
+    target_universe: str = REALITY_UNIVERSE
 
 
 class WritePipeline:
@@ -125,6 +127,9 @@ class WritePipeline:
         self.merge_content_threshold: int = int(
             cfg_dict.get("merge_content_threshold", 500)
         )
+        # universe 注册表倒排（alias/name → canonical），惰性构建、增量更新——
+        # 避免每次带 work_id 的 ingest 全表扫描找元节点（见 _ensure_universe_index）。
+        self._universe_index: dict[str, str] | None = None
 
     # === 公共 API ===
 
@@ -148,9 +153,13 @@ class WritePipeline:
             metadata=merged_metadata,
         )
 
+        # universe 归属判定（不经 LLM）：work_id 经注册表规范化为 canonical universe id；
+        # 摄入行为事件固定 __reality__，概念 / 事实 / source 归 target_universe。
+        ctx.target_universe = self._resolve_universe(data.work_id)
+
         # 阶段 ⓪: 规则入库（不经 LLM）——建事件节点（整输入、timestamp）+ source 节点。
         #   先建，使其 id 可用于 ⑤ 的背书连边；即便 content 抽取为空仍入库（记录行为已发生）。
-        ctx.event_node, ctx.source_nodes = self._rule_ingest(data)
+        ctx.event_node, ctx.source_nodes = self._rule_ingest(data, ctx.target_universe)
 
         # ①-⑥ 任一阶段异常（多为 LLM 故障）→ 回滚 ⓪ 建的事件 / source 节点后 re-raise。
         # 否则孤儿事件残留内存并被后续 flush 落盘；调用方（如 Consolidator）重试又会
@@ -160,8 +169,10 @@ class WritePipeline:
             processed = self._run_preprocess(data.content, ctx)
             ctx.processed = processed
 
-            # 阶段 ②: 关联节点定位（轻量查询模式）
-            ctx.related = self.query_engine.query_nodes(processed)
+            # 阶段 ②: 关联节点定位（轻量查询模式，限 target_universe 内——防跨 world 乱连）
+            ctx.related = self.query_engine.query_nodes(
+                processed, universe=ctx.target_universe
+            )
 
             # 阶段 ③: 概念提取（LLM，仅 content）
             concepts = self.llm.call(
@@ -190,7 +201,7 @@ class WritePipeline:
             ctx.decisions = decisions
 
             # 阶段 ⑤: 图更新（含事件 / source → 本次概念 / 事实 背书连边）
-            ctx.changed = self._apply_decisions(decisions)
+            ctx.changed = self._apply_decisions(decisions, ctx.target_universe)
             self._apply_endorsements(ctx)
             self._attach_pending_source(ctx)
             self._notify_indexes(ctx.changed)
@@ -323,7 +334,9 @@ class WritePipeline:
             cleaned.append(d)
         return cleaned
 
-    def _apply_decisions(self, decisions: DecisionList) -> list[Node]:
+    def _apply_decisions(
+        self, decisions: DecisionList, universe: str = REALITY_UNIVERSE
+    ) -> list[Node]:
         """阶段 ⑤：将每个 Decision 分派到原子 GraphStore 操作。
 
         返回新创建或合并的节点列表（即状态发生变化的节点）。
@@ -333,6 +346,9 @@ class WritePipeline:
           （已有事实节点 id → 互斥边）
         - 第二遍：把 ``edges_to_names`` 和 ``mutex_with_names``（同一批新概念之间
           的篇内关系/互斥）按名解析成边——兄弟概念此刻已全部建好
+
+        ``universe`` 贯穿：新建节点注入、同名去重 / 合并 / 互斥均限同 universe
+        （跨 universe 不合并、不判互斥——虚构 vs 真实是两个世界、非矛盾）。
         """
 
         changed: list[Node] = []
@@ -341,12 +357,14 @@ class WritePipeline:
         pending_mutex_names: list[tuple[str, list[str]]] = []
         # 精确同名去重索引：create 时若已有同名节点则并入而非新建（确定性兜底，
         # 不依赖 judge_relations 的 merge 判定——其 prompt 偏向 create 会让同名实体
-        # 裂成多个节点、碎片化事实、压低召回）。仅纳入**核心节点**（概念 / 事实）——
-        # 事件 / source（⓪ 规则入库、名由 content 派生）不是概念，不应吸收概念
-        # （否则"content≈概念名"会把概念错并入同名事件节点）。
+        # 裂成多个节点、碎片化事实、压低召回）。仅纳入**同 universe 核心节点**（概念 /
+        # 事实）——跨 universe 同名不并入（演义曹操 ≠ 正史曹操）；事件 / source（⓪
+        # 规则入库、名由 content 派生）不是概念，不应吸收概念。
         existing_by_name: dict[str, str] = {}
         for n in self.store.get_all_nodes():
             if n.node_class not in CORE_NODE_CLASSES:
+                continue
+            if n.universe != universe:  # 同 universe 才参与同名去重
                 continue
             key = _norm_name(n.name)
             if key:
@@ -357,15 +375,22 @@ class WritePipeline:
             if action == "merge":
                 if decision.target_id is None:
                     raise InvalidDecisionError("merge without target_id")
-                self._dispatch_merge(decision)
+                self._dispatch_merge(decision, universe)
                 node = self.store.get_node(decision.target_id)
                 if node is not None:
                     changed.append(node)
                 if cname:
                     name_to_id[cname] = decision.target_id
-                # merge 事实的互斥边（merge 后新节点继承互斥关系）
+                # merge 事实的互斥边（merge 后新节点继承互斥关系）——限同 universe
                 for mid in decision.mutex_with or []:
-                    if decision.target_id and self.store.get_node(mid):
+                    mid_node = self.store.get_node(mid) if mid else None
+                    if decision.target_id and mid_node:
+                        if mid_node.universe != universe:
+                            logger.warning(
+                                "跨 universe 互斥被拒绝（%s vs %s），跳过",
+                                universe, mid_node.universe,
+                            )
+                            continue
                         try:
                             self.store.add_edge(decision.target_id, mid, type=EDGE_MUTEX)
                         except ValueError:
@@ -378,7 +403,7 @@ class WritePipeline:
                 new_id: str | None = None
                 if dup_id is not None and self.store.get_node(dup_id) is not None:
                     # 同名已存在 → 并入既有节点（content/别名/edges_to），不新建
-                    node = self._merge_concept_into(dup_id, decision)
+                    node = self._merge_concept_into(dup_id, decision, universe)
                     changed.append(node)
                     new_id = dup_id
                     if cname:
@@ -386,7 +411,7 @@ class WritePipeline:
                     if decision.edges_to_names:
                         pending_named_edges.append((dup_id, decision.edges_to_names))
                 else:
-                    node = self._dispatch_create(decision)
+                    node = self._dispatch_create(decision, universe)
                     changed.append(node)
                     new_id = node.id
                     if cname:
@@ -396,9 +421,16 @@ class WritePipeline:
                             existing_by_name.setdefault(key, node.id)  # 同批后续同名也并入
                     if decision.edges_to_names:
                         pending_named_edges.append((node.id, decision.edges_to_names))
-                # create 事实的互斥边（已有事实 id）
+                # create 事实的互斥边（已有事实 id）——限同 universe
                 for mid in decision.mutex_with or []:
-                    if new_id and self.store.get_node(mid):
+                    mid_node = self.store.get_node(mid) if mid else None
+                    if new_id and mid_node:
+                        if mid_node.universe != universe:
+                            logger.warning(
+                                "跨 universe 互斥被拒绝（%s vs %s），跳过",
+                                universe, mid_node.universe,
+                            )
+                            continue
                         try:
                             self.store.add_edge(new_id, mid, type=EDGE_MUTEX)
                         except ValueError:
@@ -406,7 +438,7 @@ class WritePipeline:
                                 "互斥边被拒绝（两端非事实）：source=%s, target=%s",
                                 new_id, mid,
                             )
-                # 篇内互斥（同批新事实名 → 第二遍解析）
+                # 篇内互斥（同批新事实名 → 第二遍解析；同批必同 universe）
                 if decision.mutex_with_names:
                     pending_mutex_names.append((new_id or "", decision.mutex_with_names))
             elif action == "no_op":
@@ -439,12 +471,124 @@ class WritePipeline:
 
     # === 阶段 ⓪ 规则入库原语（事件 / source，不经 LLM）===
 
-    def _rule_ingest(self, data: IngestInput) -> tuple[Node, list[Node]]:
+    def _resolve_universe(self, work_id: str | None) -> str:
+        """``work_id`` → canonical universe id（**不经 LLM**）。
+
+        无 ``work_id`` → :data:`REALITY_UNIVERSE`。有 ``work_id`` → 经 universe 注册表
+        （元节点 ``name`` + 别名的字面精确匹配）归一：命中复用其 canonical（= 元节点
+        ``name``）；未命中新建 universe 元节点（作品作为现实造物、``universe=__reality__``、
+        不持成员）+ 新 canonical（= ``work_id``）。
+
+        **宁裂不并**：纯字面 / 别名精确匹配，MUST NOT 用 LLM / 分词模糊判两 universe
+        同世界（误并即污染真值）。canonical id 一旦分配稳定（成员 ``universe`` 标量指向它）。
+        """
+        if not work_id:
+            return REALITY_UNIVERSE
+        canonical = self._find_universe_canonical(work_id)
+        if canonical is not None:
+            return canonical
+        self._create_universe_meta_node(work_id)
+        return work_id
+
+    def _ensure_universe_index(self) -> dict[str, str]:
+        """惰性构建 universe 注册表倒排（``alias/name → canonical``）。
+
+        首次 O(N) 扫全图收集所有 universe 元节点（``extensions["universe_meta"]`` 存在，
+        ``node_class=概念``、``universe=__reality__``）的 name + 别名 → canonical(= name)；
+        之后 O(1) 查。元节点仅经 :meth:`_create_universe_meta_node` /
+        :meth:`register_universe_alias` 改动（均在本类），二者增量更新此缓存，故一致。
+        """
+        if self._universe_index is None:
+            idx: dict[str, str] = {}
+            for node in self.store.get_all_nodes():
+                meta = (node.extensions or {}).get("universe_meta")
+                if not isinstance(meta, dict):
+                    continue
+                canonical = node.name  # canonical = 元节点 name（首次 work_id 字面）
+                idx[node.name] = canonical
+                aliases = (node.extensions.get("alias_index", {}) or {}).get(
+                    "aliases", []
+                )
+                for a in aliases or []:
+                    idx[a] = canonical
+            self._universe_index = idx
+        return self._universe_index
+
+    def _find_universe_canonical(self, work_id: str) -> str | None:
+        """注册表查询：``work_id`` 匹配已有 universe 元节点（name / 别名精确匹配）则返其
+        canonical(= 元节点 name)，否则 None。走惰性倒排缓存（O(1)，见 _ensure_universe_index）。
+        """
+        return self._ensure_universe_index().get(work_id)
+
+    def _create_universe_meta_node(self, work_id: str) -> Node:
+        """新建 universe 元节点（未命中的 canonical universe 的身份锚点）。
+
+        作品作为**现实造物**（真实存在的书 / 影视）→ ``universe=__reality__``、
+        ``node_class=概念``；所述世界的成员才 ``universe=<canonical>``。**MUST NOT**
+        自动建"成员 → 元节点"归属边（成员靠 ``Node.universe`` 标量归属，防超级 hub）。
+        ``content`` 留空（本 change 不抽作品描述，留 ``work-narrative-events``）。
+        """
+        node = Node(
+            id=str(uuid.uuid4()),
+            name=work_id,
+            content="",
+            node_class=CLASS_CONCEPT,
+            universe=REALITY_UNIVERSE,  # 作品作为现实造物
+            extensions={"universe_meta": {"canonical": work_id}},
+        )
+        self.store.add_node(node)
+        # 通知索引（alias_index 等）——元节点作查询 foothold 需被检索到
+        self._notify_indexes([node])
+        # 增量更新注册表倒排（缓存已建时）：新 canonical = work_id 字面
+        if self._universe_index is not None:
+            self._universe_index[work_id] = work_id
+        return node
+
+    def register_universe_alias(self, canonical_work_id: str, alias: str) -> bool:
+        """把 ``alias`` 登记为 canonical universe 元节点的别名（显式归一治理）。
+
+        用于收"同世界不同写法"碎片（如 "三国" / "Romance…" → "三国演义" 元节点）。
+        此后 :meth:`_resolve_universe` 对 ``alias`` 命中复用 canonical（不误裂）。复用
+        节点别名设施（``extensions["alias_index"]["aliases"]``）。MUST NOT 用于跨世界
+        合并（那是 :meth:`merge_universes`）。返回是否登记成功（元节点不存在则 False）。
+        """
+        canonical = self._find_universe_canonical(canonical_work_id)
+        if canonical is None:
+            return False
+        for node in self.store.get_all_nodes():
+            if (node.extensions or {}).get("universe_meta") and node.name == canonical:
+                slot = node.extensions.setdefault("alias_index", {}).setdefault(
+                    "aliases", []
+                )
+                if alias and alias not in slot and alias != node.name:
+                    slot.append(alias)
+                    # 增量更新注册表倒排（缓存已建时）：alias → canonical
+                    if self._universe_index is not None:
+                        self._universe_index[alias] = canonical
+                self._notify_indexes([node])
+                return True
+        return False
+
+    def merge_universes(self, src_universe: str, dst_universe: str) -> None:
+        """合并两个已存在 canonical universe（**默认关闭**，最危险操作）。
+
+        误并即污染真值（虚构渗入现实），故框架默认永不自动执行。本 change 仅留入口
+        骨架——实际合并逻辑（成员 ``universe`` 标量改写、元节点合并、跨 universe 边
+        转同 universe 边）需显式高门槛动作启用，不在本 change 实现（宁裂不并）。
+        """
+        raise NotImplementedError(
+            "universe 合并默认关闭（误并污染真值）；需显式高门槛动作，本 change 未实现。"
+        )
+
+    def _rule_ingest(
+        self, data: IngestInput, universe: str = REALITY_UNIVERSE
+    ) -> tuple[Node, list[Node]]:
         """阶段 ⓪：规则入库（不经 LLM）——建记录事件 + source 节点，**不连背书边**。
 
-        事件节点记本次 ingest 的整个 ``content``（落时间轴：``timestamp`` 或 now 兜底）；
-        source 按 ``data.source`` 切分。背书目标（本次抽出的概念 / 事实）的 id 要到
-        ⑤ 图更新后才确定，故此处只建节点，背书边由 ``_apply_endorsements`` 单独连。
+        事件节点记本次 ingest 的整个 ``content``（落时间轴：``timestamp`` 或 now 兜底），
+        ``universe`` 固定 ``__reality__``（摄入行为归属现实）；source 按 ``data.source``
+        切分、``universe`` = ``universe``（随本次归属）。背书目标（本次抽出的概念 / 事实）
+        的 id 要到 ⑤ 图更新后才确定，故此处只建节点，背书边由 ``_apply_endorsements`` 单独连。
         """
         timestamp = data.timestamp or _now_iso()
         event_name = data.event_name or _derive_event_name(data.content)
@@ -453,7 +597,7 @@ class WritePipeline:
         )
         source_nodes: list[Node] = []
         if data.source is not None:
-            source_nodes = self._build_source_nodes(data.source)
+            source_nodes = self._build_source_nodes(data.source, universe)
         return event_node, source_nodes
 
     def _build_event_node(self, event_data: EventData) -> Node:
@@ -462,8 +606,6 @@ class WritePipeline:
         创建 ``CLASS_EVENT`` 节点并注入 ``extensions.event_meta``
         （``timestamp`` / ``targets``）。背书边由 ``_connect_endorsement_edges`` 单独连。
         """
-        from mcs.entities.graph import Node
-
         meta: dict[str, Any] = {"targets": list(event_data.target_ids)}
         if event_data.timestamp:
             meta["timestamp"] = event_data.timestamp
@@ -475,20 +617,19 @@ class WritePipeline:
             name=event_data.name,
             content=event_data.content,
             node_class=CLASS_EVENT,
+            universe=REALITY_UNIVERSE,  # 摄入行为事件固定现实世界（不随被读作品变）
             extensions=ext,
         )
         self.store.add_node(node)
         return node
 
-    def _build_source_nodes(self, source_data: SourceData) -> list[Node]:
+    def _build_source_nodes(self, source_data: SourceData, universe: str = REALITY_UNIVERSE) -> list[Node]:
         """Source 建节点原语（不经 LLM，不连边）。
 
         每个 chunk 对应一个 ``CLASS_SOURCE`` 节点并注入 ``extensions.source_meta``
         （``source_type`` / ``chunk`` / ``targets``）。无 chunks 时整条 source 作为一个节点。
         背书边由 ``_connect_endorsement_edges`` 单独连。
         """
-        from mcs.entities.graph import Node
-
         # 若无 chunks，整条 source 作为一个节点
         chunks = source_data.chunks
         if not chunks:
@@ -511,6 +652,7 @@ class WritePipeline:
                 name=source_data.name,
                 content=content,
                 node_class=CLASS_SOURCE,
+                universe=universe,  # source 随本次 ingest 归属（work_id 或现实）
                 extensions=ext,
             )
             self.store.add_node(node)
@@ -553,7 +695,7 @@ class WritePipeline:
                 existing = set(meta.get("targets") or [])
                 meta["targets"] = sorted(existing | set(target_ids))
 
-    def _dispatch_merge(self, decision: Decision) -> None:
+    def _dispatch_merge(self, decision: Decision, universe: str = REALITY_UNIVERSE) -> None:
         """合并：把新概念的名称/别名并入 ``target_id`` 的别名槽，并把
         concept content **语义合并**到目标节点的 content（非子串时 LLM 合并成一个
         稳定定义；落实 unified-graph-schema content 合并守则，不机械追加）。
@@ -563,6 +705,14 @@ class WritePipeline:
         """
         node = self.store.get_node(decision.target_id)  # type: ignore[arg-type]
         if node is None:
+            return
+        # 同 universe 前置判：跨 universe MUST NOT 合并（演义曹操 ≠ 正史曹操）。
+        # query_nodes universe 限域下 target 应同 universe，此为防御。
+        if node.universe != universe:
+            logger.warning(
+                "跨 universe merge 被拒绝：%s(%s) != 本次 %s",
+                node.name, node.universe, universe,
+            )
             return
         # 1) 别名并入 extensions["alias_index"]["aliases"]（AliasIndexPlugin 读取的槽）
         aliases_to_add = list(decision.aliases_to_add)
@@ -623,15 +773,13 @@ class WritePipeline:
             },
         )
 
-    def _dispatch_create(self, decision: Decision) -> Node:
+    def _dispatch_create(self, decision: Decision, universe: str = REALITY_UNIVERSE) -> Node:
         """创建：新节点 + 到 ``edges_to`` 中每个锚点的关联边。
 
         统一模型下：
         - 概念间关联为 ``关联`` 边（无 label；开放谓词落事实节点 content）
         - ``node_class`` 从 decision 读取：概念（默认）或事实
         """
-        from mcs.entities.graph import Node
-
         c = decision.concept
         if c is None:
             raise InvalidDecisionError("create without concept payload")
@@ -642,6 +790,7 @@ class WritePipeline:
             name=c.name,
             content=c.content,
             node_class=nc,
+            universe=universe,
         )
         self.store.add_node(node)
         for edge_info in decision.edges_to or []:
@@ -649,7 +798,9 @@ class WritePipeline:
             self.store.add_edge(node.id, anchor_id, type=EDGE_ASSOC)
         return node
 
-    def _merge_concept_into(self, existing_id: str, decision: Decision) -> Node:
+    def _merge_concept_into(
+        self, existing_id: str, decision: Decision, universe: str = REALITY_UNIVERSE
+    ) -> Node:
         """同名去重：把本应 create 的概念并入既有同名节点，返回既有节点。
 
         复用 ``_dispatch_merge`` 合 content/别名，再把该概念的 ``edges_to`` 锚点边
@@ -661,7 +812,8 @@ class WritePipeline:
                 concept=decision.concept,
                 target_id=existing_id,
                 aliases_to_add=decision.aliases_to_add,
-            )
+            ),
+            universe,
         )
         for edge_info in decision.edges_to or []:
             anchor_id = edge_info.get("target_id", edge_info) if isinstance(edge_info, dict) else edge_info
@@ -677,7 +829,9 @@ class WritePipeline:
         if self.token_budget is None:
             return False
         total = self.token_budget.estimate_node(node)
-        for child in self.store.get_out_hierarchy(node.id) or []:
+        for child in self.store.get_out_hierarchy(
+            node.id, universe=node.universe
+        ) or []:
             total += self.token_budget.estimate_node(child)
             if total > self.token_budget.T:
                 return True

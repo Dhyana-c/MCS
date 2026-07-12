@@ -55,7 +55,7 @@ class FakeStore:
         self.get_node_counts[nid] = self.get_node_counts.get(nid, 0) + 1
         return self.nodes.get(nid)
 
-    def get_out_hierarchy(self, nid: str) -> list[Node]:
+    def get_out_hierarchy(self, nid: str, universe: str | None = None) -> list[Node]:
         self.read_threads.add(threading.get_ident())
         return [
             self.nodes[e.target_id]

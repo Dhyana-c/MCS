@@ -229,17 +229,27 @@ class InMemoryStore(StoreInterface):
 
     # === 层级（骨架）查询 ===
 
-    def get_out_hierarchy(self, node_id: str) -> list[Node]:
-        """下钻成员 = 该节点作 source 的关联出边目标（聚类涌现的组织层级）。"""
+    def get_out_hierarchy(
+        self, node_id: str, universe: str | None = None
+    ) -> list[Node]:
+        """下钻成员 = 该节点作 source 的关联出边目标（聚类涌现的组织层级）。
+
+        ``universe`` 按 **target 成员 universe 单侧**过滤（见基类）：``universe=U`` 仅返
+        ``target.universe==U``；``None`` 返全部（仅旧库兼容）。
+        """
         target_ids = self._assoc_out.get(node_id, set())
-        return [self._nodes[i] for i in target_ids if i in self._nodes]
+        nodes = [self._nodes[i] for i in target_ids if i in self._nodes]
+        if universe is None:
+            return nodes
+        return [n for n in nodes if n.universe == universe]
 
     # === 关系（双向可达）查询 ===
 
     def get_relations(self, node_id: str, limit: int | None = None) -> list[Edge]:
         """该节点作任一端的 关联 / 互斥 边（反查，双向可达）。
 
-        核心节点（概念 / 事实）过滤对端为事件的关联边（载重规则）。
+        载重双类过滤（见基类）：① 跨 universe 边双向过滤；② 同 universe 事件边——
+        核心节点（概念 / 事实）不反查事件（单向）。
         """
         node = self._nodes.get(node_id)
         if node is None:
@@ -254,13 +264,39 @@ class InMemoryStore(StoreInterface):
             edge = self._edges.get(eid)
             if edge is None:
                 continue
-            # 载重规则：核心节点不反查事件（仅关联边；互斥恒为事实↔事实，不受影响）
+            other_id = edge.target_id if edge.source_id == node_id else edge.source_id
+            other = self._nodes.get(other_id)
+            # 载重 ①：跨 universe 边双向过滤（含跨 univ 事件背书；互斥防御）
+            if other is not None and other.universe != node.universe:
+                continue
+            # 载重 ②：同 universe 事件边——核心节点不反查事件（仅关联；互斥恒事实↔事实）
             if is_core and edge.type == EDGE_ASSOC:
-                other_id = edge.target_id if edge.source_id == node_id else edge.source_id
-                other = self._nodes.get(other_id)
                 if other is not None and other.node_class == CLASS_EVENT:
                     continue
             result.append(edge)
+        if limit is not None:
+            result = result[:limit]
+        return result
+
+    def get_cross_universe_edges(
+        self, node_id: str, limit: int | None = None
+    ) -> list[Edge]:
+        """定向查跨 universe 桥（绕载重）：该节点作任一端、对端 universe 不同的边。"""
+        node = self._nodes.get(node_id)
+        if node is None:
+            return []
+        edge_ids = self._assoc_by_node.get(node_id, set()) | self._mutex_by_node.get(
+            node_id, set()
+        )
+        result: list[Edge] = []
+        for eid in edge_ids:
+            edge = self._edges.get(eid)
+            if edge is None:
+                continue
+            other_id = edge.target_id if edge.source_id == node_id else edge.source_id
+            other = self._nodes.get(other_id)
+            if other is not None and other.universe != node.universe:
+                result.append(edge)
         if limit is not None:
             result = result[:limit]
         return result
@@ -315,6 +351,7 @@ class InMemoryStore(StoreInterface):
             return sub
 
         used = token_budget.estimate_node(focus)
+        focus_universe = focus.universe
         visited = {node_id}
         frontier = [node_id]
         while frontier:
@@ -325,6 +362,10 @@ class InMemoryStore(StoreInterface):
                         continue
                     neighbor = self._nodes.get(neighbor_id)
                     if neighbor is None:
+                        continue
+                    # BFS 不跨 universe（第三泄漏点）：概念桥 / 跨 univ 边不展开，
+                    # 否则 link_cross_universe 桥让活跃子图跨 universe 爆 T。
+                    if neighbor.universe != focus_universe:
                         continue
                     cost = token_budget.estimate_node(neighbor)
                     if used + cost > token_budget.T:

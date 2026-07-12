@@ -29,6 +29,13 @@ NODE_CLASSES: frozenset[str] = frozenset(
 #: 核心节点（进核心组织 / 聚类）。事件层不进核心活跃视图（载重规则）。
 CORE_NODE_CLASSES: frozenset[str] = frozenset({CLASS_CONCEPT, CLASS_FACT})
 
+#: 默认现实世界 universe 标识。无明确作品归属（``IngestInput.work_id`` 为空）的
+#: 真实来源共享此世界；明确来源于某作品（``work_id`` 非空）的节点归该作品 universe
+#: （见 change ``multi-universe-graph``、``docs/graph-model-design.md`` §3.1）。
+#: 与 ``node_class`` 并列的**结构行为归属轴**——控制合并 / 互斥 / 聚类 / 载重过滤边界，
+#: MUST NOT 当领域 type。
+REALITY_UNIVERSE = "__reality__"
+
 
 def validate_node_class(node_class: str) -> None:
     """登记制校验：``node_class`` 必须属于 :data:`NODE_CLASSES`，否则抛 ``ValueError``。
@@ -66,6 +73,11 @@ class Node:
     ``node_class ∈ {概念, 事实, 事件, source}`` 区分结构行为（聚类 / 双层 / 产生方式），
     **不引入领域 type**——人物/地点/组织等是 ``extensions`` 软标签。
 
+    ``universe`` 是与 ``node_class`` 并列的**结构行为归属轴**（默认 :data:`REALITY_UNIVERSE`
+    即现实世界）：控制合并 / 互斥 / 聚类 / 载重过滤边界——不同 universe 的同名节点不合并、
+    不判互斥（虚构 vs 真实是两个世界、非矛盾）。对**全部 ``node_class``**（含事件）生效；
+    归属由 ingest 期 ``IngestInput.work_id`` 规则判定（非空 → 该作品 universe），MUST NOT 经 LLM。
+
     ``hub`` 仅为**标记**：打在"组织中心"节点上，只用于反查 / 可观测，**无算法含义**、
     非节点类、非 role。渲染给 LLM 时 hub 节点与普通节点无异。按 ``docs/graph-model-design.md
     §3.1``，``hub`` 是 ``extensions`` 的一个开放属性（``extensions["hub"]``），经本类的
@@ -79,6 +91,7 @@ class Node:
     name: str
     content: str
     node_class: str = CLASS_CONCEPT  # 概念 / 事实 / 事件 / source
+    universe: str = REALITY_UNIVERSE  # 世界归属（与 node_class 并列的结构行为轴，默认现实世界）
     extensions: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -143,6 +156,7 @@ __all__ = [
     "CLASS_SOURCE",
     "NODE_CLASSES",
     "CORE_NODE_CLASSES",
+    "REALITY_UNIVERSE",
     "validate_node_class",
     "EDGE_ASSOC",
     "EDGE_MUTEX",

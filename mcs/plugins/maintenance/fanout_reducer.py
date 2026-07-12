@@ -18,6 +18,7 @@ from mcs.entities.graph import (
     CLASS_FACT,
     CORE_NODE_CLASSES,
     EDGE_ASSOC,
+    REALITY_UNIVERSE,
     SEED_ROOT_ID,
     SEED_ROOT_NAME,
 )
@@ -92,34 +93,60 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             return True
         return False
 
+    def _iter_node_groups(
+        self, node: Node, store: StoreInterface
+    ) -> list[tuple[str, list[Node]]]:
+        """裂变 / 估算用的 ``[(universe, neighbors)]`` 组列表，**保证每组 neighbors
+        同 universe**（铁律一：decide_hub 邻域不混 universe；P8：root 视图按 universe
+        有界）。
+
+        - 普通节点：单一组 ``(node.universe, 同 univ 下钻成员)``——聚类涌现的层级
+          天然同 universe（fanout 限同 univ）。
+        - ``__seed_root__``：其孤儿跨多 universe（所有 universe 孤儿挂同一根），
+          按**孤儿 universe 分组**返回多组——每 universe 的 root 视图独立有界。
+        """
+        if node.id == SEED_ROOT_ID:
+            orphans = store.get_out_hierarchy(node.id)  # root 特例：无参取全部孤儿
+            groups: dict[str, list[Node]] = {}
+            for o in orphans:
+                groups.setdefault(o.universe, []).append(o)
+            return [(u, kids) for u, kids in groups.items()]
+        return [
+            (node.universe, store.get_out_hierarchy(node.id, universe=node.universe))
+        ]
+
     def _has_budget_pressure(
         self, changed_nodes: list[Node], store: StoreInterface
     ) -> bool:
         """是否存在预算压力：root / changed / 受影响节点 任一邻域渲染超 T。"""
-        # 1. root 始终检查（不变量含虚拟根）
+        # 1. root 始终检查（不变量含虚拟根）——按 universe 分组（P8）
         root = store.get_node(SEED_ROOT_ID)
         if root is not None:
-            if self._exceeds_budget(root, store.get_out_hierarchy(root.id)):
-                return True
+            for _, orphans in self._iter_node_groups(root, store):
+                if self._exceeds_budget(root, orphans):
+                    return True
 
         # 2. changed_nodes 检查
         for node in changed_nodes:
-            if self._exceeds_budget(node, store.get_out_hierarchy(node.id)):
-                return True
+            for _, neighbors in self._iter_node_groups(node, store):
+                if self._exceeds_budget(node, neighbors):
+                    return True
 
         # 3. 受影响节点检查（与 changed_nodes 有边的节点）
         changed_ids = {n.id for n in changed_nodes}
         affected_ids: set[str] = set()
         for node in changed_nodes:
-            for neighbor in store.get_out_hierarchy(node.id):
-                if neighbor.id not in changed_ids:
-                    affected_ids.add(neighbor.id)
+            for _, neighbors in self._iter_node_groups(node, store):
+                for neighbor in neighbors:
+                    if neighbor.id not in changed_ids:
+                        affected_ids.add(neighbor.id)
 
         for nid in affected_ids:
             node = store.get_node(nid)
             if node is not None:
-                if self._exceeds_budget(node, store.get_out_hierarchy(nid)):
-                    return True
+                for _, neighbors in self._iter_node_groups(node, store):
+                    if self._exceeds_budget(node, neighbors):
+                        return True
 
         return False
 
@@ -162,12 +189,13 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         result: list[Node] = list(changed_nodes)
         seen: set[str] = {n.id for n in changed_nodes}
 
-        # 受影响节点（与 changed 有边）
+        # 受影响节点（与 changed 有边）——按 universe 分组取下钻（同 univ）
         for node in changed_nodes:
-            for neighbor in store.get_out_hierarchy(node.id):
-                if neighbor.id not in seen:
-                    seen.add(neighbor.id)
-                    result.append(neighbor)
+            for _, neighbors in self._iter_node_groups(node, store):
+                for neighbor in neighbors:
+                    if neighbor.id not in seen:
+                        seen.add(neighbor.id)
+                        result.append(neighbor)
 
         # root（始终检查）
         root = store.get_node(SEED_ROOT_ID)
@@ -185,7 +213,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         """对单个节点执行主动守门 + 整窗单次裂变。
 
         取中心 + 全部一跳子节点一次性喂 decide_hub（不分批、不折半重试），
-        递归直到邻域 ≤ T 或达 max_reorg 上限。
+        递归直到邻域 ≤ T 或达 max_reorg 上限。按 universe 分组独立裂变（root 多组、
+        普通节点单组），保证每组 neighbors 同 universe（铁律一 + P8）。
         """
         # 宪法：裂变只动组织层级。中心限**概念**节点——事实的出边是"命题→端点"语义边
         # （重挂会断两端可达）、事件/source 的出边是背书边（重挂会断 get_related_events
@@ -193,9 +222,26 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         if getattr(node, "node_class", CLASS_CONCEPT) != CLASS_CONCEPT:
             return []
         new_hubs: list[Node] = []
+        for group_universe, neighbors in self._iter_node_groups(node, store):
+            new_hubs.extend(
+                self._compact_group(
+                    node, neighbors, group_universe, store, llm_caller
+                )
+            )
+        return new_hubs
+
+    def _compact_group(
+        self,
+        node: Node,
+        neighbors: list[Node],
+        group_universe: str,
+        store: StoreInterface,
+        llm_caller: Callable,
+    ) -> list[Node]:
+        """对单组同 universe 邻域执行裂变循环（递归直到该组 ≤ T 或达 max_reorg）。"""
+        new_hubs: list[Node] = []
         reorgs = 0
         while reorgs < self.max_reorg:
-            neighbors = store.get_out_hierarchy(node.id)
             if not self._exceeds_budget(node, neighbors):
                 break
             if len(neighbors) < 2:
@@ -213,14 +259,15 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             # 若本批未产出 hub，退出防死循环
             if not batch_hubs:
                 break
-            # 进展检查：邻居数必须下降
-            after_neighbor_count = len(store.get_out_hierarchy(node.id))
-            if after_neighbor_count >= len(neighbors):
+            # 进展检查：重取该 universe 组邻居数（同 universe，铁律一）
+            after = store.get_out_hierarchy(node.id, universe=group_universe)
+            if len(after) >= len(neighbors):
                 logger.warning(
                     "节点 '%s' 本轮重组未减少邻居数（%d → %d），退出",
-                    node.name, len(neighbors), after_neighbor_count,
+                    node.name, len(neighbors), len(after),
                 )
                 break
+            neighbors = after
         if reorgs >= self.max_reorg:
             logger.warning(
                 "节点 '%s' 撞 max_reorg 上限（%d），邻域可能仍超预算",
@@ -242,21 +289,22 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             node = store.get_node(nid)
             if node is None:
                 continue
-            neighbors = store.get_out_hierarchy(nid)
-            if not self._exceeds_budget(node, neighbors):
-                continue
-            if len(neighbors) < 2:
-                continue
-            decision = self._decide_hub(node, neighbors, llm_caller)
-            if decision is None:
-                continue
-            before = len(store.get_out_hierarchy(nid))
-            hub_list = self._reorganize_multi(node, decision, neighbors, store)
-            reorgs += 1
-            for hub in hub_list:
-                queue.append(hub.id)
-            if len(store.get_out_hierarchy(nid)) < before:
-                queue.append(nid)
+            # 按 universe 分组检查（new hub 非 root，单组；防御性统一走 helper）
+            for group_universe, neighbors in self._iter_node_groups(node, store):
+                if not self._exceeds_budget(node, neighbors):
+                    continue
+                if len(neighbors) < 2:
+                    continue
+                decision = self._decide_hub(node, neighbors, llm_caller)
+                if decision is None:
+                    continue
+                before = len(store.get_out_hierarchy(nid, universe=group_universe))
+                hub_list = self._reorganize_multi(node, decision, neighbors, store)
+                reorgs += 1
+                for hub in hub_list:
+                    queue.append(hub.id)
+                if len(store.get_out_hierarchy(nid, universe=group_universe)) < before:
+                    queue.append(nid)
 
         if reorgs >= self.max_reorg:
             logger.warning(
@@ -300,7 +348,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
                 continue  # 有关系关联 → 不挂根
             store.add_edge(root.id, n.id, type=EDGE_ASSOC)
 
-        # 递归分层（自根向下；进展检查 + max_reorg 双重防死循环）
+        # 递归分层（自根向下；进展检查 + max_reorg 双重防死循环）——按 universe 分组
+        # （root 多组、hub 单组），保证每组 neighbors 同 universe（铁律一 + P8）。
         affected: dict[str, Node] = {root.id: root}
         queue: list[str] = [root.id]
         reorgs = 0
@@ -309,23 +358,23 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             node = store.get_node(nid)
             if node is None:
                 continue
-            neighbors = store.get_out_hierarchy(nid)
-            if not self._exceeds_budget(node, neighbors):
-                continue
-            if len(neighbors) < 2:
-                continue
-            # 整窗单次裂变
-            decision = self._decide_hub(node, neighbors, llm_caller)
-            if decision is None:
-                continue
-            before = len(store.get_out_hierarchy(nid))
-            new_hubs = self._reorganize_multi(node, decision, neighbors, store)
-            reorgs += 1
-            for hub in new_hubs:
-                affected[hub.id] = hub
-                queue.append(hub.id)  # 新 hub 自身可能超预算 → 继续分层
-            if len(store.get_out_hierarchy(nid)) < before:
-                queue.append(nid)  # 仍可能超预算，继续收敛
+            for group_universe, neighbors in self._iter_node_groups(node, store):
+                if not self._exceeds_budget(node, neighbors):
+                    continue
+                if len(neighbors) < 2:
+                    continue
+                # 整窗单次裂变
+                decision = self._decide_hub(node, neighbors, llm_caller)
+                if decision is None:
+                    continue
+                before = len(store.get_out_hierarchy(nid, universe=group_universe))
+                new_hubs = self._reorganize_multi(node, decision, neighbors, store)
+                reorgs += 1
+                for hub in new_hubs:
+                    affected[hub.id] = hub
+                    queue.append(hub.id)  # 新 hub 自身可能超预算 → 继续分层
+                if len(store.get_out_hierarchy(nid, universe=group_universe)) < before:
+                    queue.append(nid)  # 仍可能超预算，继续收敛
 
         if reorgs >= self.max_reorg:
             logger.warning(
@@ -374,6 +423,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             for node in nodes:
                 if node.id == hub.id or node.hub:
                     continue  # hub 不吸收其他 hub 的边（避免层级缠绕）
+                if node.universe != hub.universe:
+                    continue  # 同 universe 才吸收（跨 univ 不重连层级边，3.2）
                 if node.node_class != CLASS_CONCEPT:
                     # 宪法：只吸收组织层级边。事实的出边是"命题→端点"语义边、
                     # 事件/source 的出边是背书边——改连 hub 会断两端可达 / 背书反查。
@@ -605,7 +656,8 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             if not comm.member_ids:
                 continue
             strategy = getattr(comm, "strategy", "summarize")
-            hub = self._create_hub_from_community(comm, store, neighbors)
+            hub_universe = neighbors[0].universe if neighbors else REALITY_UNIVERSE
+            hub = self._create_hub_from_community(comm, store, neighbors, hub_universe)
             if hub is None:
                 continue
             members = [n for n in neighbors if n.id in comm.member_ids]
@@ -629,11 +681,17 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             new_hubs.append(hub)
 
         # 校验：中心节点全邻域同口径 token 下降才接受，否则回滚
+        group_universe = (
+            neighbors[0].universe
+            if neighbors
+            else getattr(node, "universe", REALITY_UNIVERSE)
+        )
         if not self._validate_reorg(
             store,
             rollback_state,
             center_node=node,
             before_token_total=before_token_total,
+            group_universe=group_universe,
         ):
             return []
 
@@ -737,6 +795,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         rollback_state: dict,
         center_node: Node,
         before_token_total: int | None = None,
+        group_universe: str = REALITY_UNIVERSE,
     ) -> bool:
         """校验重组后中心节点全邻域 token 总量下降。
 
@@ -756,8 +815,10 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         if before_token_total is None or self.token_budget is None:
             return True
 
-        # 计算重组后中心节点 + 全部一跳邻域的 token（同口径）
-        neighbors = store.get_out_hierarchy(center_node.id)
+        # 计算重组后中心节点 + 全部一跳邻域的 token（同口径，同 universe 组）
+        neighbors = store.get_out_hierarchy(
+            center_node.id, universe=group_universe
+        )
         after_token_total = self._neighborhood_tokens(center_node, neighbors)
 
         if after_token_total >= before_token_total:
@@ -784,6 +845,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
         community: Any,
         store: StoreInterface,
         neighbors: list[Node],
+        universe: str = REALITY_UNIVERSE,
     ) -> Node | None:
         """从社区信息创建/提拔 hub。
 
@@ -829,6 +891,7 @@ class FanoutReducerPlugin(CompactionPluginInterface):
             name=_short_name(summary),
             content=summary,
             node_class=CLASS_CONCEPT,
+            universe=universe,  # 概括 hub 归属本组 universe（聚类限同 universe）
             extensions={"hub": True},
         )
         store.add_node(hub)
