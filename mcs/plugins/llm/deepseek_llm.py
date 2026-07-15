@@ -106,6 +106,11 @@ class DeepSeekLLMPlugin(LLMInterface):
                 "messages": messages,
                 "max_tokens": self.max_tokens,
             }
+            # JSON 模式（PromptBundle.json_output 经 LLMInterface.call 置位）：
+            # 强制输出合法 JSON，根治长输出的引号/逗号语法失误。仅对声明了
+            # json_output 的 purpose 开启——纯文本 purpose（gen_summary 等）不受影响。
+            if getattr(self, "_json_output", False):
+                kwargs["response_format"] = {"type": "json_object"}
             # 透传厂商扩展参数到请求 body 顶层（兼容 OpenAI 协议：SDK 用
             # extra_body 合并不识别的字段，如智谱 GLM 的 thinking 开关）。
             if self.thinking:

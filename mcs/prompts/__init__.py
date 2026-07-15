@@ -14,6 +14,7 @@ from mcs.prompts import (
     decide_directions,
     decide_hub,
     extract_concepts,
+    extract_work_events,
     gen_aliases,
     gen_graph_summary,
     gen_summary,
@@ -29,15 +30,25 @@ from mcs.prompts import (
 )
 
 DEFAULT_PROMPTS: dict[str, PromptBundle] = {
+    # json_output=True：写管线抽取三件套开启后端 JSON 模式（prompt 明确要求 JSON、
+    # 解析器已容忍对象包装）——根治长输出语法失误致 salvage 丢对象（英文语料引号密集时高发）
     "extract_concepts": PromptBundle(
         system=extract_concepts.SYSTEM_PROMPT,
         template=extract_concepts.USER_TEMPLATE,
         parse=extract_concepts.parse,
+        json_output=True,
+    ),
+    "extract_work_events": PromptBundle(
+        system=extract_work_events.SYSTEM_PROMPT,
+        template=extract_work_events.USER_TEMPLATE,
+        parse=extract_work_events.parse,
+        json_output=True,
     ),
     "judge_relations": PromptBundle(
         system=judge_relations.SYSTEM_PROMPT,
         template=judge_relations.USER_TEMPLATE,
         parse=judge_relations.parse,
+        json_output=True,
     ),
     "decide_directions": PromptBundle(
         system=decide_directions.SYSTEM_PROMPT,

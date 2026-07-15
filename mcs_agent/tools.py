@@ -1,8 +1,9 @@
 """记忆 agent 的工具注册表（可配置工具集）。
 
-11 个内置工具落成 ``ToolSpec`` 注册表 ``BUILTIN_TOOLS``，替代旧 ``loop.py`` 硬编码的
+12 个内置工具落成 ``ToolSpec`` 注册表 ``BUILTIN_TOOLS``，替代旧 ``loop.py`` 硬编码的
 ``MEMORY_TOOLS`` 列表 + ``_dispatch`` if/elif。其中 5 个导航 / 写入工具（learn / search /
-associate / reason / recall）+ 2 个只读语义判断工具（``generalize`` / ``arbitrate``）+
+associate / reason / recall）+ 1 个时间线视图工具（``timeline``，某 universe 事件层按
+时间升序、只读不落图）+ 2 个只读语义判断工具（``generalize`` / ``arbitrate``）+
 2 个写图语义重组工具（``split`` / ``merge``，调 MCS LLM 插件产方案 + 执行改图、过守门）+
 2 个跨 universe 工具（``get_cross_universe_edges`` 只读取桥 / ``link_cross_universe`` 建概念桥）。
 只读判断工具不改图、不触发写 / 守门 / 裂变；``learn`` / ``split`` / ``merge`` 为写图工具
@@ -61,6 +62,13 @@ def _reason(memory: Any, args: dict) -> str:
 
 def _recall(memory: Any, args: dict) -> str:
     return memory.recall(args.get("limit", 5))
+
+
+def _timeline(memory: Any, args: dict) -> str:
+    return memory.timeline(
+        args.get("universe", REALITY_UNIVERSE),
+        args.get("limit", 0),
+    )
 
 
 def _generalize(memory: Any, args: dict) -> str:
@@ -258,6 +266,38 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
         },
         handler=_recall,
     ),
+    "timeline": ToolSpec(
+        name="timeline",
+        schema={
+            "type": "function",
+            "function": {
+                "name": "timeline",
+                "description": (
+                    "组装某 universe（世界）的叙事时间线：取该世界事件层的事件、"
+                    "按时间**升序**返回（查询期组装的虚拟视图，不改图）。"
+                    "用于「这部作品的时间线 / 事件先后顺序」类问题。"
+                    "作品世界传作品名（如 三国演义）；查现实事件时间线传 __reality__。"
+                    "作品纪年按数字年排序（\"建安五年\"等混合纪年暂排末尾）；"
+                    "与 recall（现实近期倒排）互补，不要混用。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "universe": {
+                            "type": "string",
+                            "description": "时间线所属世界：作品名或 __reality__",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "返回事件数上限（0=不限，仍受上下文预算约束）",
+                        },
+                    },
+                    "required": ["universe"],
+                },
+            },
+        },
+        handler=_timeline,
+    ),
     "generalize": ToolSpec(
         name="generalize",
         schema={
@@ -451,7 +491,7 @@ class ToolsetConfig:
     """工具集配置：启用子集 + 按工具名覆盖参数。
 
     Attributes:
-        enabled: 启用的工具名列表；None = 全部 11 个内置。含未知名时该名被忽略
+        enabled: 启用的工具名列表；None = 全部 12 个内置。含未知名时该名被忽略
             （不暴露 schema，LLM 调它 → ``[error] 未知工具``）。
         params: 按工具名（非原语名）覆盖参数；合并口径 ``handler(memory, {**llm_args, **params})``
             ——``params`` 覆盖 LLM 同名入参。如 ``{"reason": {"max_hops": 8}}``
@@ -486,6 +526,6 @@ def build_toolset(
     return schemas, dispatch
 
 
-# 已废弃别名：= 全 11 内置 schemas（保外部 ``from ... import MEMORY_TOOLS`` 不断裂）。
+# 已废弃别名：= 全 12 内置 schemas（保外部 ``from ... import MEMORY_TOOLS`` 不断裂）。
 # 逻辑已由 BUILTIN_TOOLS + build_toolset 取代；后续 change 移除。
 MEMORY_TOOLS: list[dict] = [spec.schema for spec in BUILTIN_TOOLS.values()]

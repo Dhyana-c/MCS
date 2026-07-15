@@ -71,7 +71,10 @@ class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):
         return {"aliases": list(data.get("aliases", []))} if data else {"aliases": []}
 
     def deserialize(self, data: dict) -> dict:
-        return {"aliases": list(data.get("aliases", []))} if data else {"aliases": []}
+        # 过滤非 str（历史毒化数据自愈）：dict 等不可哈希项会崩 add_entry 的索引
+        if not data:
+            return {"aliases": []}
+        return {"aliases": [a for a in data.get("aliases", []) if isinstance(a, str)]}
 
     # === IndexInterface ===
 
@@ -97,7 +100,9 @@ class AliasIndexPlugin(IndexInterface, NodeExtensionInterface):
             node.extensions.get(self.get_name(), {}).get("aliases", []) if node.extensions else []
         )
         for term in [node.name, *aliases]:
-            if not term:
+            # 非 str（历史毒化的 dict 别名等）跳过——不可哈希会崩整个索引 build，
+            # 一条坏数据不应报废全图关键词检索（load-on-startup 吞异常后更隐蔽）
+            if not term or not isinstance(term, str):
                 continue
             # 原样索引完整词条。
             self.index.setdefault(term, set()).add(node.id)

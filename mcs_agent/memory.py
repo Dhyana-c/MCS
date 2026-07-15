@@ -120,6 +120,21 @@ def _render_events(nodes: list[Node]) -> str:
     return "\n".join(lines)
 
 
+def _render_timeline(nodes: list[Node], universe: str) -> str:
+    """把叙事时间线渲染为 LLM 可读文本（universe header + 按时间**升序**逐条）。
+
+    与 ``_render_events``（recall，时间倒排）分开：时间线是"从头讲起"的升序视图，
+    header 标注 universe。空列表返回友好空提示。
+    """
+    header = f"叙事时间线（{universe}，按时间升序）"
+    if not nodes:
+        return f"{header}\n(该 universe 暂无事件)"
+    lines = [header]
+    for i, n in enumerate(nodes, 1):
+        lines.append(_render_event_line(n, i))
+    return "\n".join(lines)
+
+
 def _node_to_dict(node: Node) -> dict:
     """把 Node 序列化为 JSON 友好纯 dict（graph_view 人面视图口径）。
 
@@ -199,12 +214,14 @@ def _bfs_path(
 
 
 class MemoryStore:
-    """MCS 的单 worker 线程包装，提供 9 个原语供 agent 调用。
+    """MCS 的单 worker 线程包装，提供 12 个原语供 agent 调用。
 
-    5 个导航 / 写入原语（learn / search / associate / find_path / recall）+ 2 个
+    5 个导航 / 写入原语（learn / search / associate / find_path / recall）+ 1 个
+    时间线视图原语（``timeline``，某 universe 事件层按时间升序、只读不落图）+ 2 个
     只读语义判断原语（``generalize`` / ``arbitrate``，调 MCS LLM 插件、不改图）
     + 2 个写图语义重组原语（``split_concept`` / ``merge_concepts``，调 MCS LLM 插件
-    产方案 + 执行改图、过守门）。
+    产方案 + 执行改图、过守门）+ 2 个跨 universe 原语（``get_cross_universe_edges`` /
+    ``link_cross_universe``）。
 
     Args:
         build_fn: 在 worker 线程内构建并返回 MCS 实例的 callable（SQLite 连接
@@ -342,6 +359,39 @@ class MemoryStore:
     def recall(self, limit: int = 5) -> str:
         """回忆最近发生的事件（时间倒排、纯近期口径，受 limit 与 T 双约束，不伪造）。"""
         return self._submit(self._do_recall, limit)
+
+    # === timeline（叙事时间线视图：某 universe 事件层按时间升序，只读不落图） ===
+
+    def _do_timeline(self, universe: str, limit: int) -> str:
+        """叙事时间线：``query_engine.narrative_timeline`` 升序取事件 → T 截断 → 渲染。
+
+        截断沿用 recall 口径（铁律一）：对「纳入后的完整渲染文本」整体估算，超
+        ``token_budget.T`` 即停；首条无条件纳入（残缺时间线开头无意义）。升序视图
+        从**头部**（最早）开始保留。``limit<=0`` 仅受 T 约束。
+        """
+        qe = self._mcs.query_engine
+        events = qe.narrative_timeline(
+            universe, limit=(limit if limit and limit > 0 else None)
+        )
+        tb = qe.token_budget
+        selected: list[Node] = []
+        for ev in events:
+            if not selected:
+                selected = [ev]  # 首条（最早）无条件纳入
+                continue
+            candidate = selected + [ev]
+            if tb.estimate(_render_timeline(candidate, universe)) > tb.T:
+                break
+            selected = candidate
+        return _render_timeline(selected, universe)
+
+    def timeline(self, universe: str, limit: int = 0) -> str:
+        """叙事时间线：某 universe 事件层按时间升序的虚拟视图（查询期组装、不落图）。
+
+        现实 universe 按 ISO 时间、作品 universe 按作品纪年（数字年可排；
+        "建安五年"等混合纪年 Phase 2 归一化前垫底）。
+        """
+        return self._submit(self._do_timeline, universe, limit)
 
     # === generalize / arbitrate（只读语义判断，调 MCS LLM 插件、不改图） ===
 

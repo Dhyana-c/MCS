@@ -1,7 +1,7 @@
 # 记忆 Agent
 
 > `mcs_agent` 是建在 MCS 之上的对话式记忆助手：一个 **ReAct loop**，让 LLM 经 tool calling 自主决定
-> 如何在记忆图里导航。本文讲架构、11 个工具（5 导航 + 2 只读语义判断 + 2 写图语义重组 + 2 跨 universe）、单线程封装、FastAPI 后端、启动方式，
+> 如何在记忆图里导航。本文讲架构、12 个工具（5 导航 + 1 时间线视图 + 2 只读语义判断 + 2 写图语义重组 + 2 跨 universe）、单线程封装、FastAPI 后端、启动方式，
 > 以及它与 MCP server 的区别。
 >
 > **包结构**（change `mcs-mem-package-extract`）：`mcs_agent/` 是 agent 核心库（ReAct loop /
@@ -31,7 +31,7 @@
 - **导航决策权在 LLM**：选哪个工具、哪个种子、哪种扩展模式、找哪两个节点的路径，都由 LLM 决定；工具只是对
   MCS 能力的薄封装。
 
-## 11 个工具（5 导航 + 2 只读语义判断 + 2 写图语义重组 + 2 跨 universe）
+## 12 个工具（5 导航 + 1 时间线视图 + 2 只读语义判断 + 2 写图语义重组 + 2 跨 universe）
 
 `BUILTIN_TOOLS`（`tools.py`，`ToolSpec` 注册表）定义的工具，经 tool calling 暴露给 agent 的 LLM
 （`MEMORY_TOOLS` 保留为废弃别名）。工具集可经 `ToolsetConfig` 配置（启用子集 / 按工具名覆盖参数）：
@@ -43,6 +43,7 @@
 | `associate` | `seed_id`, `mode` | 从种子 BFS 联想扩展。`mcs`=事实 BFS（主力）；`hot`/`random` | mcs ✅ / hot·random ✗ |
 | `reason` | `source_id`, `target_id` | 在两个已知节点间找连通路径（无向 BFS，允许失败） | ✅ |
 | `recall` | `limit` | 回忆最近发生的事件（时间倒排、纯近期口径，受 `limit` 与 T 双约束） | ✅ |
+| `timeline` | `universe`, `limit?` | 叙事时间线：某 universe 事件层按时间**升序**组装（查询期虚拟视图、只读不落图）。作品世界传作品名、现实传 `__reality__`；作品纪年数字年可排（混合纪年 Phase 2）。与 `recall`（近期倒排）互补 | ✅ |
 | `generalize` | `node_ids`, `focus?` | 概括若干节点的公共上位概念 / 共性（只读 LLM 判断，不改图） | ✅ |
 | `arbitrate` | `node_ids`, `question` | 对若干互斥事实反查背书事件、裁决采信方 + 理由（只读 LLM 判断，不改图） | ✅ |
 | `split` | `node_id`, `focus?` | 拆分粒度耦合的概念节点（类别-特化 / 多实体误并）为多个独立节点（写图，过守门） | ✅ |
@@ -90,7 +91,7 @@ MCS 非线程安全、SQLite 连接绑创建线程，所以 `MemoryStore`（`mem
 同一个单 worker 线程**（`ThreadPoolExecutor(max_workers=1)`）：每个原语经 `_submit` 丢给 worker、阻塞取结果，
 调用方线程绝不直接触碰 MCS / store。
 
-它在 11 个 LLM 工具之外还暴露 `graph_summary`（读图级主题摘要）、`graph_view`（只读可视化视图）
+它在 12 个 LLM 工具之外还暴露 `graph_summary`（读图级主题摘要）、`graph_view`（只读可视化视图）
 等原语。其中 `find_path` 是 `reason` 工具背后的无向 BFS（下钻成员 + 关系边端点都算邻居）；
 `generalize` / `arbitrate` 是调 MCS LLM 插件的只读语义判断原语（见上节）。
 

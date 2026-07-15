@@ -387,11 +387,18 @@ class SQLiteStore(StoreInterface):
 
     # === 定向查事件（绕载重规则）===
 
-    def get_related_events(self, node_id: str, limit: int | None = None) -> list[Node]:
+    def get_related_events(
+        self,
+        node_id: str,
+        universe: str | None = None,
+        limit: int | None = None,
+    ) -> list[Node]:
         """定向查事件：利用关联边索引高效查找，时间倒排 + limit 截断。
 
         覆写基类的全量扫描默认实现——SQLiteStore 有 ``_assoc_by_node`` 索引，
-        直接从 target 侧查 source 为事件的关联边。
+        直接从 target 侧查 source 为事件的关联边。``universe=None`` 全返（含跨
+        universe，保 mug 查出处语义）；传值只返该 universe 事件（叙事时间线用）。
+        时间倒排仅 ``"__reality__"`` 内保证（ISO 可比）。
         """
         node = self._nodes.get(node_id)
         if node is None:
@@ -405,6 +412,8 @@ class SQLiteStore(StoreInterface):
             if edge.target_id == node_id:
                 source = self._nodes.get(edge.source_id)
                 if source is not None and source.node_class == CLASS_EVENT:
+                    if universe is not None and source.universe != universe:
+                        continue  # 显式 universe 过滤（None 全返）
                     events.append(source)
         # 时间倒排（epoch 秒比较，兼容本地裸时间 / UTC aware 混合形态；id 次级键保确定性）
         events.sort(key=event_sort_key, reverse=True)

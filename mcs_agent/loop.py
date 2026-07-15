@@ -52,6 +52,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "- associate：从种子联想扩展（BFS）。mode=mcs 已实现（主力）；hot、random 未实现。\n"
     "- reason：在两个已知节点间找连通路径（允许失败）。\n"
     "- recall：回忆最近发生的事件（按时间倒排），回答「最近记了什么/最近有什么」。\n"
+    "- timeline：组装某世界的叙事时间线（该世界事件层按时间**升序**，只读），回答"
+    "「这部作品的时间线/事件先后」；作品世界传作品名、现实传 __reality__。与 recall 互补。\n"
     "- generalize：概括若干节点的公共上位概念 / 共性，帮你理解一组概念的关系（只读）。\n"
     "- arbitrate：对若干互斥事实反查背书事件、裁决采信哪个 + 理由（只读）。\n"
     "- split：拆分一个粒度耦合的概念节点（content 把类别和特化耦合，或多实体误并）为多个\n"
@@ -86,7 +88,7 @@ class MemoryAgent:
     Args:
         memory: 暴露 learn/search/associate/find_path/recall/generalize/arbitrate 的对象（通常是 ``MemoryStore``）。
         llm: ``(messages, tools) -> dict`` 裸 callable（自动包 ``CallableAgentLLM``）或 ``AgentLLMInterface`` 后端。
-        tools: 工具集配置（启用子集 / 覆盖参数）；None = 全部 11 个内置工具。
+        tools: 工具集配置（启用子集 / 覆盖参数）；None = 全部 12 个内置工具。
         system_prompt: 系统提示词。
         max_turns: 单次 chat 的最大 LLM 轮次（防失控循环）。
         summary_budget: 注入 system prompt 的图摘要字符预算（第二道闸，防归纳超标进入上下文）。
@@ -109,7 +111,7 @@ class MemoryAgent:
         self.llm: AgentLLMInterface = (
             llm if isinstance(llm, AgentLLMInterface) else CallableAgentLLM(llm)
         )
-        # 工具集：build_toolset 产 (schemas_for_llm, dispatch)；tools=None → 全 11 内置
+        # 工具集：build_toolset 产 (schemas_for_llm, dispatch)；tools=None → 全 12 内置
         self.schemas, self.dispatch = build_toolset(BUILTIN_TOOLS, tools)
         self.system_prompt = system_prompt
         self.max_turns = max_turns

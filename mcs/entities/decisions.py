@@ -107,14 +107,17 @@ class MultiHubDecision:
 class EventData:
     """事件规则入库的结构化输入（不经 LLM）。
 
-    宪法 D5：事件按既定结构直接存，不经 LLM。系统创建 ``CLASS_EVENT`` 节点
-    并对 ``target_ids`` 中每个 id 创建 ``事件 → 目标`` 的 ``EDGE_ASSOC`` 边
+    宪法 D5（work-narrative-events 精确化后）：**现实摄入事件**按既定结构直接存、
+    不经 LLM（本结构承载）；作品叙事事件走 LLM 抽取、产 :class:`WorkEventDraft`
+    （MUST NOT 复用本结构）。系统创建 ``CLASS_EVENT`` 节点并对 ``target_ids``
+    中每个 id 创建 ``事件 → 目标`` 的 ``EDGE_ASSOC`` 边
     （背书·提及，方向固定；核心不反查——载重规则已在 store 层落实）。
 
     Extensions 约定（写入 ``node.extensions["event_meta"]``）：
 
-    - ``timestamp``: ISO 8601 字符串，事件发生时间。用于 ``get_related_events``
-      的时间倒排截断（§3 双层）。必填。
+    - ``timestamp``: **universe 内时间语义字符串**（不强制 ISO 8601）——现实
+      universe 为 ISO 8601（供 ``get_related_events`` 时间倒排截断，§3 双层）；
+      作品 universe 为作品纪年（如"200 年" / "建安五年"）。必填。
     - ``targets``: list[str]，背书目标节点 id 列表（= target_ids 的冗余存储，
       方便查询侧直接读取，不进活跃视图 token 口径）。
     - 其余字段由调用方自定义（如 session_id / user_id 等），不限制。
@@ -122,9 +125,37 @@ class EventData:
 
     name: str
     content: str
-    timestamp: str | None = None  # ISO 8601
+    timestamp: str | None = None  # universe 内时间语义（现实 ISO / 作品纪年）
     target_ids: list[str] = field(default_factory=list)
     extensions: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class WorkEventDraft:
+    """作品叙事事件 LLM 抽取的产出（``work_id`` 非空的 ingest 阶段 ③b）。
+
+    从作品文本识别"带时间的叙述发生"（如"200 年曹操杀吕伯奢"）——语义抽取、
+    本就该 LLM（宪法铁律精确化：现实摄入事件不经 LLM；作品叙事事件经 LLM 抽取）。
+
+    与两个近邻结构**并列、语义不混**（MUST NOT 复用）：
+
+    - :class:`EventData`：不经 LLM 的**规则入库**结构输入（现实摄入事件）；
+    - :class:`ConceptDraft`：概念 / 事实抽取产出（无 timestamp，承载不了纪年）。
+
+    字段：
+
+    - ``name``：事件名（简短标识，如"曹操杀吕伯奢"）。
+    - ``content``：发生的叙述描述。
+    - ``narr_timestamp``：作品纪年字符串（如"200 年" / "建安五年"），不强制
+      ISO 8601；文本无明确纪年时为 ``None``（时间线排序垫底）。
+    - ``participants``：参与者**名字**列表（非节点 id）——建节点时限同 universe
+      解析：命中同 universe 同名概念则复用、未命中新建概念，MUST NOT 跨 universe 连。
+    """
+
+    name: str
+    content: str
+    narr_timestamp: str | None = None  # 作品纪年（"200 年" / "建安五年"），非 ISO
+    participants: list[str] = field(default_factory=list)
 
 
 @dataclass

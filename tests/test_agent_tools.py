@@ -12,9 +12,9 @@ from mcs_agent.tools import BUILTIN_TOOLS, MEMORY_TOOLS, ToolSpec, ToolsetConfig
 # === ToolSpec / BUILTIN_TOOLS / MEMORY_TOOLS 别名 ===
 
 
-def test_builtin_tools_has_11():
+def test_builtin_tools_has_12():
     assert set(BUILTIN_TOOLS) == {
-        "learn", "search", "associate", "reason", "recall",
+        "learn", "search", "associate", "reason", "recall", "timeline",
         "generalize", "arbitrate", "split", "merge",
         "get_cross_universe_edges", "link_cross_universe",
     }
@@ -23,15 +23,16 @@ def test_builtin_tools_has_11():
         assert spec.schema["type"] == "function"
 
 
-def test_memory_tools_alias_is_11_schemas():
-    """MEMORY_TOOLS 废弃别名 = 全 11 内置 schemas（保 import 不断裂）。"""
-    assert len(MEMORY_TOOLS) == 11
+def test_memory_tools_alias_is_12_schemas():
+    """MEMORY_TOOLS 废弃别名 = 全 12 内置 schemas（保 import 不断裂）。"""
+    assert len(MEMORY_TOOLS) == 12
     assert [s["function"]["name"] for s in MEMORY_TOOLS] == [
         "learn",
         "search",
         "associate",
         "reason",
         "recall",
+        "timeline",
         "generalize",
         "arbitrate",
         "split",
@@ -44,11 +45,11 @@ def test_memory_tools_alias_is_11_schemas():
 # === build_toolset ===
 
 
-def test_build_toolset_default_all_11():
+def test_build_toolset_default_all_12():
     schemas, dispatch = build_toolset(BUILTIN_TOOLS, None)
     names = {s["function"]["name"] for s in schemas}
     assert names == {
-        "learn", "search", "associate", "reason", "recall",
+        "learn", "search", "associate", "reason", "recall", "timeline",
         "generalize", "arbitrate", "split", "merge",
         "get_cross_universe_edges", "link_cross_universe",
     }

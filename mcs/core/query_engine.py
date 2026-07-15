@@ -197,7 +197,12 @@ class QueryEngine:
         processed = self._run_preprocess(query, ctx)
         return self._locate_seeds(processed, ctx)
 
-    def get_related_events(self, node_id: str, limit: int | None = None) -> list[Node]:
+    def get_related_events(
+        self,
+        node_id: str,
+        universe: str | None = None,
+        limit: int | None = None,
+    ) -> list[Node]:
         """定向查事件：绕过载重规则，获取背书此核心节点的事件（时间倒排）。
 
         宪法载重规则使核心节点 ``get_relations`` 不含事件边。
@@ -205,9 +210,49 @@ class QueryEngine:
 
         Args:
             node_id: 核心节点 id
+            universe: ``None`` = 全返（含跨 universe，查出处）；传值 = 只返该
+                universe 事件（叙事时间线用，避免作品纪年与 ISO 混排）。
             limit: 最多返回的事件数（None = 全部）。用于事件层时间倒排截断。
         """
-        return self.store.get_related_events(node_id, limit=limit)
+        return self.store.get_related_events(node_id, universe=universe, limit=limit)
+
+    def narrative_timeline(
+        self, universe: str, limit: int | None = None
+    ) -> list[Node]:
+        """叙事时间线：取某 universe **事件层**的事件、按 ``timestamp`` 升序组装。
+
+        查询期组装的虚拟视图——MUST NOT 创建节点、MUST NOT 把作品纪年盖到其他
+        universe 的时间轴（每 universe 一条独立时间轴）。排序按 universe 内
+        timestamp 语义（现实 ISO / 作品数字年；``timestamp_sort_value`` 解析），
+        无法解析（含无 timestamp）的事件**垫底**（升序排在末尾）、同值按 id 保确定性。
+        Phase 1 仅数字年纪年（"184" / "200 年"）保证顺序；"建安五年"等混合纪年
+        需 Phase 2 归一化。
+
+        Args:
+            universe: 时间线所属 universe（作品 id 或 ``"__reality__"``）。
+            limit: 最多返回的事件数（None = 全部），从时间线**头部**截取。
+        """
+        from mcs.entities.graph import CLASS_EVENT
+        from mcs.utils.timestamps import timestamp_sort_value
+
+        events = [
+            n for n in self.store.get_nodes_by_class(CLASS_EVENT)
+            if n.universe == universe
+        ]
+
+        def _key(node: Node) -> tuple[int, float, str]:
+            meta = (node.extensions or {}).get("event_meta", {})
+            ts = meta.get("timestamp", "") if isinstance(meta, dict) else ""
+            v = timestamp_sort_value(ts)
+            # 升序时间线：可解析的按时间升序在前；解析失败（-inf）垫底在末尾
+            if v == float("-inf"):
+                return (1, 0.0, node.id)
+            return (0, v, node.id)
+
+        events.sort(key=_key)
+        if limit is not None:
+            events = events[:limit]
+        return events
 
     # === 阶段辅助方法 ===
 

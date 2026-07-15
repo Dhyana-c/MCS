@@ -342,6 +342,7 @@ def test_default_prompts_registry_complete() -> None:
         "split",
         "merge",
         "merge_content",
+        "extract_work_events",
     }
     assert set(DEFAULT_PROMPTS.keys()) == expected_purposes
 

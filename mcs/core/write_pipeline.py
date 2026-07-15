@@ -34,6 +34,7 @@ from mcs.entities.decisions import (
     EventData,
     IngestInput,
     SourceData,
+    WorkEventDraft,
 )
 from mcs.entities.graph import (
     CLASS_CONCEPT,
@@ -78,6 +79,11 @@ class WriteContext:
     - ``event_node``: 本次 ingest 记录的事件节点（落时间轴）
     - ``source_nodes``: 按 ``IngestInput.source`` 规则切分建的 source 节点列表
 
+    作品叙事事件产物（③b/⑤b 段，仅 ``work_id`` 非空时非空）：
+
+    - ``work_events``: 阶段 ③b LLM 抽取的 ``WorkEventDraft`` 列表
+    - ``work_event_nodes``: 阶段 ⑤b 建的作品叙事事件节点（``universe=work``、纪年 timestamp）
+
     参见 openspec/specs/write-pipeline/spec.md "WriteContext 含八个状态字段"。
     """
 
@@ -93,6 +99,8 @@ class WriteContext:
     event_node: Node | None = None
     source_nodes: list[Node] = field(default_factory=list)
     target_universe: str = REALITY_UNIVERSE
+    work_events: list[WorkEventDraft] = field(default_factory=list)
+    work_event_nodes: list[Node] = field(default_factory=list)
 
 
 class WritePipeline:
@@ -181,33 +189,53 @@ class WritePipeline:
                 free_args={"text": processed},
             ) or []
             ctx.concepts = concepts
-            if not concepts:
-                # 概念数为 0：跳过 ④⑤⑥，但事件 / source 已在 ⓪ 建好（add_node 自动跟踪），
-                # 仍随 ⑦ 落盘（记录行为已发生）。
+
+            # 阶段 ③b: 作品叙事事件抽取（LLM，仅 work universe 启用）。
+            # 宪法铁律精确化：现实摄入事件不经 LLM（⓪ 规则）；作品叙事事件
+            # （带作品纪年的叙述发生）经 LLM 抽取、MUST NOT 由规则产生。
+            if ctx.target_universe != REALITY_UNIVERSE:
+                ctx.work_events = self.llm.call(
+                    purpose="extract_work_events",
+                    nodes_in=[],
+                    free_args={"text": processed, "work_id": ctx.target_universe},
+                ) or []
+
+            if not concepts and not ctx.work_events:
+                # 概念与作品事件均为 0：跳过 ④⑤⑥，但事件 / source 已在 ⓪ 建好
+                # （add_node 自动跟踪），仍随 ⑦ 落盘（记录行为已发生）。
                 self._run_persist(ctx)
                 self._mark_ingested_if_success(ctx)
                 return ctx
 
-            # 阶段 ④: 关系判定
-            decisions = self.llm.call(
-                purpose="judge_relations",
-                nodes_in=ctx.related,
-                free_args={"concepts": _format_concepts(concepts)},
-            ) or []
-            # 重新附加完整的 ConceptDraft 对象（解析器只知道名称）
-            _reattach_concepts(decisions, concepts)
-            # 丢弃结构上无法应用的坏决策（LLM 偶发 target_id=null），避免整次摄入失败
-            decisions = self._sanitize_decisions(decisions)
+            # 阶段 ④: 关系判定（无概念时跳过——作品事件不走关系判定）
+            decisions: DecisionList = []
+            if concepts:
+                decisions = self.llm.call(
+                    purpose="judge_relations",
+                    nodes_in=ctx.related,
+                    free_args={"concepts": _format_concepts(concepts)},
+                ) or []
+                # 重新附加完整的 ConceptDraft 对象（解析器只知道名称）
+                _reattach_concepts(decisions, concepts)
+                # 丢弃结构上无法应用的坏决策（LLM 偶发 target_id=null），避免整次摄入失败
+                decisions = self._sanitize_decisions(decisions)
             ctx.decisions = decisions
 
             # 阶段 ⑤: 图更新（含事件 / source → 本次概念 / 事实 背书连边）
-            ctx.changed = self._apply_decisions(decisions, ctx.target_universe)
+            ctx.changed = (
+                self._apply_decisions(decisions, ctx.target_universe)
+                if decisions else []
+            )
+            # 阶段 ⑤b: 作品叙事事件建节点（先于背书——新建参与者概念与本次概念
+            # 同属产出，摄入事件 / source 对其一并背书、source_tracking 一并挂载）
+            if ctx.work_events:
+                ctx.changed.extend(self._build_work_event_nodes(ctx))
             self._apply_endorsements(ctx)
             self._attach_pending_source(ctx)
             self._notify_indexes(ctx.changed)
 
-            # 阶段 ⑥: 压缩判定插件链（含不变量守门）
-            self._run_compaction(ctx.changed)
+            # 阶段 ⑥: 压缩判定插件链（含不变量守门；作品叙事事件一并过守门）
+            self._run_compaction(ctx.changed + ctx.work_event_nodes)
         except Exception:
             self._rollback_rule_ingest(ctx)
             raise
@@ -238,7 +266,8 @@ class WritePipeline:
         下次 flush 时清掉该行——此处再做一次 best-effort flush 使 DB 即刻一致，
         失败不掩盖原始异常（仅告警）。
         """
-        for node in [ctx.event_node, *ctx.source_nodes]:
+        # 作品叙事事件一并回滚：事件无同名去重，残留会在调用方重试时重复建
+        for node in [ctx.event_node, *ctx.source_nodes, *ctx.work_event_nodes]:
             if node is None:
                 continue
             try:
@@ -247,6 +276,7 @@ class WritePipeline:
                 logger.warning("回滚事件/source 节点失败: %s", node.id, exc_info=True)
         ctx.event_node = None
         ctx.source_nodes = []
+        ctx.work_event_nodes = []
         auto_persist = getattr(self.config, "auto_persist", True) if self.config else True
         flush = getattr(self.store, "flush_changes", None)
         if auto_persist and callable(flush) and getattr(self.store, "conn", None) is not None:
@@ -659,6 +689,75 @@ class WritePipeline:
             created.append(node)
         return created
 
+    def _build_work_event_nodes(self, ctx: WriteContext) -> list[Node]:
+        """阶段 ⑤b：作品叙事事件建节点（消费 ③b 的 ``WorkEventDraft``）。
+
+        - 事件节点：``universe=ctx.target_universe``、``node_class=事件``、
+          ``event_meta.timestamp=作品纪年``（``None`` 则不写，时间线排序垫底）；
+          落 ``ctx.work_event_nodes``（不进 ``changed``——与现实摄入事件对称，
+          事件名不进 alias 索引）。
+        - ``participants``（名字）**限同 universe 解析**（复用 ``_apply_decisions``
+          的同名去重口径 ``_norm_name``）：命中同 universe 同名核心节点则复用其 id、
+          未命中新建概念（``universe=work``）；MUST NOT 跨 universe 连参与者
+          （作品事件只背书作品概念，跨 universe 桥另走 ``link_cross_universe``）。
+        - 背书边：``事件 —关联→ 参与者概念``（载重规则下核心侧不反查、事件侧可达）。
+
+        返回**新建的参与者概念**列表（并入 ``ctx.changed``：随后被摄入事件 / source
+        背书、挂 source_tracking、过阶段 ⑥ 守门）。
+        """
+        universe = ctx.target_universe
+        # 同 universe 同名解析索引（仅核心节点；跨 universe 不解析、不复用）
+        by_name: dict[str, str] = {}
+        for n in self.store.get_all_nodes():
+            if n.node_class not in CORE_NODE_CLASSES or n.universe != universe:
+                continue
+            key = _norm_name(n.name)
+            if key:
+                by_name.setdefault(key, n.id)
+
+        new_concepts: list[Node] = []
+        for draft in ctx.work_events:
+            participant_ids: list[str] = []
+            seen: set[str] = set()
+            for pname in draft.participants:
+                key = _norm_name(pname)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                pid = by_name.get(key)
+                if pid is None or self.store.get_node(pid) is None:
+                    pnode = Node(
+                        id=str(uuid.uuid4()),
+                        name=pname,
+                        content=pname,
+                        node_class=CLASS_CONCEPT,
+                        universe=universe,
+                    )
+                    self.store.add_node(pnode)
+                    new_concepts.append(pnode)
+                    by_name[key] = pnode.id
+                    pid = pnode.id
+                participant_ids.append(pid)
+
+            meta: dict[str, Any] = {
+                "targets": list(participant_ids),
+                "participants": list(participant_ids),
+            }
+            if draft.narr_timestamp:
+                meta["timestamp"] = draft.narr_timestamp
+            event = Node(
+                id=str(uuid.uuid4()),
+                name=draft.name,
+                content=draft.content,
+                node_class=CLASS_EVENT,
+                universe=universe,  # 作品叙事事件归属作品 universe（≠ 摄入事件的 __reality__）
+                extensions={"event_meta": meta},
+            )
+            self.store.add_node(event)
+            ctx.work_event_nodes.append(event)
+            self._connect_endorsement_edges(event.id, participant_ids, kind="work_event")
+        return new_concepts
+
     def _connect_endorsement_edges(
         self, endorser_id: str, target_ids: list[str], kind: str = "endorse"
     ) -> None:
@@ -722,6 +821,11 @@ class WritePipeline:
             slot = node.extensions.setdefault("alias_index", {"aliases": []})
             existing = slot.setdefault("aliases", [])
             for alias in aliases_to_add:
+                # 仅收字符串：非 str（LLM 偶发对象格式）进图会毒化 alias 槽、
+                # 崩掉 AliasIndexPlugin.build（unhashable dict）——写入侧最后闸门
+                if not isinstance(alias, str):
+                    logger.warning("忽略非字符串别名 %r（node=%s）", alias, node.name)
+                    continue
                 if alias and alias != node.name and alias not in existing:
                     existing.append(alias)
         # 2) concept content 语义合并到目标节点 content（非子串时 LLM 合并成一个

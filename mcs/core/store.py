@@ -164,7 +164,12 @@ class StoreInterface(ABC):
         """
         ...
 
-    def get_related_events(self, node_id: str, limit: int | None = None) -> list[Node]:
+    def get_related_events(
+        self,
+        node_id: str,
+        universe: str | None = None,
+        limit: int | None = None,
+    ) -> list[Node]:
         """定向查事件：绕过载重规则，返回指向此核心节点的事件节点（时间倒排）。
 
         宪法载重规则使核心节点 ``get_relations`` 不含事件边（核心不反查）。
@@ -175,8 +180,19 @@ class StoreInterface(ABC):
         的节点列表，按 **时间倒排**（extensions.event_meta.timestamp 降序，
         无 timestamp 的排末尾），Phase 1 limit=None 返回全部。
 
+        ``universe`` 过滤按参数分流（work-narrative-events，MUST NOT 改默认语义）：
+
+        - ``None``（默认）返回**全部**背书事件（含跨 universe）——保
+          multi-universe-graph 锁定的"作品 fact 无参查出处（现实摄入事件亦返）"；
+        - 传 ``universe=U`` 时只返 ``node.universe==U`` 的事件——叙事时间线
+          MUST 显式传 ``universe=work``，避免作品纪年与现实 ISO 混排坏掉。
+
+        时间倒排仅在 ``universe="__reality__"`` 内保证（ISO 可比）；作品 universe
+        的事件排序由叙事时间线视图负责（数字年可排，混合纪年 Phase 2 归一化）。
+
         Args:
             node_id: 核心节点 id
+            universe: ``None`` = 全返（含跨 universe）；传值 = 只返该 universe 事件。
             limit: 最多返回的事件数（None = 全部）。用于事件层时间倒排截断。
         """
         # 默认实现：扫全量边找 target==node_id 且 source 为事件的关联边
@@ -191,6 +207,8 @@ class StoreInterface(ABC):
                 continue
             source = self.get_node(edge.source_id)
             if source is not None and source.node_class == "事件":
+                if universe is not None and source.universe != universe:
+                    continue  # 显式 universe 过滤（None 全返，保 mug 查出处语义）
                 events.append(source)
         # 时间倒排：有 timestamp 的排前、降序；无 timestamp 的排末尾
         events.sort(key=_event_sort_key, reverse=True)

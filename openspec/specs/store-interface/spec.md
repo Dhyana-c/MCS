@@ -25,7 +25,7 @@
 
 **有界子图 BFS（`get_subgraph`）：** 沿关联出边邻接（`_assoc_out`）扩展、受 `T` 约束的活跃视图构建 MUST 按 universe 过滤——BFS 邻居扩展 MUST NOT 跨 universe（跨 universe 边 / 概念桥 MUST NOT 被 BFS 展开），否则 `link_cross_universe` 概念桥会让 BFS 跨 universe 扩展、破坏"单 universe 活跃视图 ≤ T"。`get_subgraph` 虽属正让位 agent 的框架版 BFS，但仍是 `StoreInterface` 契约、仍受 `T` 约束，本 change 阶段 MUST 补过滤。
 
-**定向查事件（`get_related_events`，绕载重）：** 该原语绕载重规则、按需取连向节点的事件。本 change 引入跨 universe 事件背书边（`现实摄入 event(__reality__) —背书→ 作品 fact(<work_id>)`）后，对作品 fact 定向查 SHALL 返回其现实摄入背书事件（**跨 universe 亦返**——定向查本就绕载重，作品 fact 的出处确是那次现实摄入行为）。此语义 MUST 显式定义、不留白；per-universe 事件层的 universe 感知细化留 `work-narrative-events`。
+**定向查事件（`get_related_events`，绕载重）：** 该原语绕载重规则、按需取连向节点的事件。本 change 引入跨 universe 事件背书边（`现实摄入 event(__reality__) —背书→ 作品 fact(<work_id>)`）后，对作品 fact 定向查 SHALL 返回其现实摄入背书事件（**跨 universe 亦返**——定向查本就绕载重，作品 fact 的出处确是那次现实摄入行为）。此语义 MUST 显式定义、不留白；universe 感知（参数分流）见「定向查事件按 universe 过滤」requirement（`work-narrative-events` 已落地）。
 
 关系边 MUST **只存一份**（`主→宾`），两端邻接索引 MUST 都能取到；MUST NOT 双向对存、MUST NOT 提供 `bidirectional` / `direction` 参数。消费者 MUST 依赖 `StoreInterface` 而非具体实现。
 
@@ -249,3 +249,34 @@
 - **WHEN** 同一图分别用 `InMemoryStore` 与 `SQLiteStore`
 - **THEN** `get_cross_universe_edges` 返回结果 MUST 一致
 
+### Requirement: 定向查事件按 universe 过滤
+
+`StoreInterface` SHALL 提供 `get_related_events(node_id, universe=None, limit=None) -> list[Node]`——绕过载重规则、返回背书此核心节点的事件（时间倒排 + `limit` 截断）。**`universe` 参数过滤按参数分流，MUST NOT 改既有默认语义**：
+
+- **`universe=None`（默认）返回全部背书事件（含跨 universe）**——`multi-universe-graph` 已实现并测试锁定"`get_related_events(作品 fact)` 无参跨 universe 亦返（查出处：该 fact 经哪次现实摄入进来）"。本语义 MUST 保持（`None` 全返），MUST NOT 改成"从节点继承 universe"——否则砍掉作品 fact 出处查询。
+- **传 `universe=U` 时才只返 `node.universe==U` 的事件**——叙事时间线（作品 universe）MUST 显式传 `universe=work_id`，避免作品纪年（非 ISO）经 ISO 排序坏掉。
+
+时间倒排仅在 `universe="__reality__"` 内保证（ISO 可比）；作品 universe 的事件排序由叙事时间线视图（`unified-graph-schema`）负责。`event_sort_key` 对非 ISO timestamp（作品纪年）MUST 容错（不抛）并做**数字年最小解析**（纯数字纪年可排；混合 / 非数字纪年如"建安五年"垫底，Phase 2 归一化）。`InMemoryStore` 与 `SQLiteStore` 双实现 MUST 一致。
+
+#### Scenario: 无参全返、跨 universe 背书亦返（兼容 mug 锁定语义）
+
+- **WHEN** 作品 fact（`universe=<work_id>`）有现实摄入背书事件（`universe="__reality__"`），调 `get_related_events(作品 fact)`（无 `universe` 参数）
+- **THEN** MUST 返回该现实摄入背书事件（跨 universe 亦返，查出处）
+- **AND** MUST NOT 破坏 `multi-universe-graph` 的跨 universe 背书亦返测试
+
+#### Scenario: 传 universe 才按 universe 过滤
+
+- **WHEN** 核心节点连着 `"__reality__"` 事件与作品 universe 事件（跨 universe 背书）
+- **THEN** `get_related_events(核心节点, universe="__reality__")` MUST 只返回 `"__reality__"` 事件
+- **AND** MUST NOT 返回作品 universe 事件
+
+#### Scenario: 非 ISO timestamp 容错
+
+- **WHEN** 事件 timestamp 为作品纪年（非 ISO，如"200 年"）
+- **THEN** `event_sort_key` MUST 容错（不抛）
+- **AND** 时间倒排仅在 `"__reality__"` 内保证
+
+#### Scenario: 双实现一致
+
+- **WHEN** 同一图分别用 `InMemoryStore` 与 `SQLiteStore`
+- **THEN** `get_related_events`（同 `universe`）返回结果 MUST 一致

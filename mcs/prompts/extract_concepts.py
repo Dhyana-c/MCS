@@ -92,8 +92,11 @@ def parse(raw: str) -> list[ConceptDraft]:
                 data = data[key]
                 break
         else:
-            # 单个概念对象（不管字段名是什么）
-            data = [data]
+            # 任意键包装的数组（JSON 模式下模型可能自选包装键）：仅**单键 dict 且值
+            # 为列表**才视为包装拆开——概念对象自身也带列表字段（relation_hints），
+            # 多键 dict 必须按单个概念对象处理，不可误拆。
+            only_val = next(iter(data.values())) if len(data) == 1 else None
+            data = only_val if isinstance(only_val, list) else [data]
 
     if not isinstance(data, list):
         raise LLMParseError(

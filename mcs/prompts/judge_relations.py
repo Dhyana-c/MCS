@@ -104,6 +104,12 @@ def parse(raw: str) -> list[Decision]:
             data = data["decisions"]
         elif "results" in data and isinstance(data["results"], list):
             data = data["results"]
+        else:
+            # 任意键包装的数组（JSON 模式下模型可能自选包装键）：仅单键 dict 且值为
+            # 列表才视为包装（决策对象自身带 edges_to 等列表字段，多键不可误拆）。
+            only_val = next(iter(data.values())) if len(data) == 1 else None
+            if isinstance(only_val, list):
+                data = only_val
 
     if not isinstance(data, list):
         raise LLMParseError(
@@ -143,7 +149,7 @@ def parse(raw: str) -> list[Decision]:
                     or item.get("edges_to_concepts", [])
                     or []
                 ),
-                aliases_to_add=item.get("aliases_to_add", []) or [],
+                aliases_to_add=_normalize_aliases(item.get("aliases_to_add", []) or []),
                 reason=item.get("reason"),
                 node_class=node_class,
                 mutex_with=mutex_with,
@@ -151,6 +157,28 @@ def parse(raw: str) -> list[Decision]:
             )
         )
     return decisions
+
+
+def _normalize_aliases(raw: list) -> list[str]:
+    """规范化 aliases_to_add 为 list[str]。
+
+    LLM 偶发把别名写成对象（如 ``{"target_name": "CMC"}``，混淆 edges_to_names
+    格式）——非字符串直接进图会毒化 alias 槽、令 AliasIndexPlugin.build 在
+    ``setdefault(dict)`` 上崩掉（load-on-startup 索引残缺、关键词检索报废）。
+    此处收口：str 保留；dict 取首个非空字符串值兜底（保留别名语义）；其余丢弃。
+    """
+    result: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            s = item.strip()
+            if s:
+                result.append(s)
+        elif isinstance(item, dict):
+            for v in item.values():
+                if isinstance(v, str) and v.strip():
+                    result.append(v.strip())
+                    break
+    return result
 
 
 def _normalize_edges_to(raw: list) -> list[dict]:

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PromptBundle:
-    """完整描述一个用途的三个制品。
+    """完整描述一个用途的制品。
 
     - system：系统提示词（可能包含绑定到 free_args 的 {...} 占位符；
       如果没有占位符，则原样使用）
@@ -41,11 +41,18 @@ class PromptBundle:
       其他 {...} 占位符绑定到 free_args）
     - parse：可调用对象 (raw: str) -> Any，将原始 LLM
       响应转换为此用途的类型化结果
+    - json_output：该 purpose 是否要求 LLM 输出 JSON（后端提示）。``True`` 时
+      支持结构化输出的后端（如 DeepSeek ``response_format=json_object``）SHOULD
+      开启 JSON 模式，根治长输出的引号/逗号语法失误（salvage 保留作纵深防御）。
+      **前提**：该 purpose 的 prompt 明确要求 JSON、且解析器容忍对象包装
+      （json_object 模式可能返回 ``{"key": [...]}`` 而非裸数组）。默认 ``False``
+      （不改变任何既有行为；纯文本 purpose 如 gen_summary 必须保持 False）。
     """
 
     system: str
     template: str
     parse: Callable[[str], Any]
+    json_output: bool = False
 
 
 class LLMInterface(Plugin):
@@ -121,6 +128,11 @@ class LLMInterface(Plugin):
         material = self._render_nodes(nodes_in or [], purpose)
         args = dict(free_args or {})
         args.setdefault("material", material)
+
+        # 结构化输出提示（每次 call 覆写，作用域=本次 _raw_call）：后端据此决定是否
+        # 开 JSON 模式（如 DeepSeek response_format）。实例级传递与 _recorder 同模式
+        # ——LLM 插件实例在单线程管线/单 worker agent 内顺序使用，无并发覆写。
+        self._json_output = bundle.json_output
 
         user = _safe_format(bundle.template, args)
         system = _safe_format(bundle.system, args)
@@ -199,8 +211,13 @@ class LLMInterface(Plugin):
         system: str | None = None,
         template: str | None = None,
         parser: Callable[[str], Any] | None = None,
+        json_output: bool | None = None,
     ) -> None:
-        """覆盖某个用途的 PromptBundle 的一个或多个组件。"""
+        """覆盖某个用途的 PromptBundle 的一个或多个组件。
+
+        未指定的组件从现有 bundle 继承——含 ``json_output``（只覆盖 prompt 文本
+        不会静默关掉该 purpose 的 JSON 模式）。
+        """
         if not hasattr(self, "_prompt_overrides"):
             self._prompt_overrides: dict[str, PromptBundle] = {}
         current = self.get_prompt(purpose)
@@ -208,6 +225,7 @@ class LLMInterface(Plugin):
             system=system if system is not None else current.system,
             template=template if template is not None else current.template,
             parse=parser if parser is not None else current.parse,
+            json_output=json_output if json_output is not None else current.json_output,
         )
 
     def get_prompt(self, purpose: str) -> PromptBundle:
