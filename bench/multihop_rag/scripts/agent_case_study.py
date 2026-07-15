@@ -67,17 +67,18 @@ class CapturingMemory(MemoryStore):
     def reset(self) -> None:
         self.records = []
 
-    def _do_search(self, query: str, mode: str) -> str:
+    def _do_search(self, query: str, mode: str, universe: str) -> str:
+        # 与当前 MemoryStore 签名一致（multi-universe-graph 后含 universe 轴）
         mcs = self._mcs
         nodes: list[Any] = []
         if mode == "keyword":
-            nodes = [n for n in (mcs.query_engine.locate_seeds(query) or []) if n]
+            nodes = [n for n in (mcs.query_engine.locate_seeds(query, universe=universe) or []) if n]
             text = self._render_seed(nodes, "种子节点（keyword）")
         elif mode == "direct":
-            nodes = [n for n in (mcs.store.get_out_hierarchy(_SEED_ROOT) or []) if n]
+            nodes = [n for n in (mcs.store.get_out_hierarchy(_SEED_ROOT, universe=universe) or []) if n]
             text = self._render_seed(nodes, "顶层种子（direct）")
         else:
-            text = super()._do_search(query, mode)
+            text = super()._do_search(query, mode, universe)
         self.records.append({"tool": "search", "args": {"query": query, "mode": mode},
                              "nodes": list(nodes), "result": text})
         return text
@@ -95,7 +96,7 @@ class CapturingMemory(MemoryStore):
             self.records.append({"tool": "associate", "args": {"seed_id": seed_id, "mode": mode},
                                  "nodes": [], "result": text})
             return text
-        result = mcs.query("", existing_context=[node])
+        result = mcs.query("", existing_context=[node], universe=node.universe)
         nodes = list(getattr(result, "nodes", []) or [])
         text = render_query_result(result, mcs.read_manager)
         self.records.append({"tool": "associate", "args": {"seed_id": seed_id, "mode": mode},

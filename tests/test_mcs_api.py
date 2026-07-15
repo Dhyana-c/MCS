@@ -301,3 +301,38 @@ def test_shutdown_empty_managers_no_error(mock_llm):
     # mock_llm 已注册，但 shutdown 应正常工作
     mcs.shutdown()
     # 不应抛异常
+
+# === MCS.query universe 透传（回归：agent associate 曾因门面漏透传对真实 MCS 必炸） ===
+
+
+def test_query_forwards_universe_to_query_engine(mock_llm):
+    """MCS.query(universe=...) 必须透传给 QueryEngine.query（P7 单 universe 封闭）。"""
+    mcs = _build_mcs(mock_llm)
+    captured: dict = {}
+
+    def _spy(text, existing_context=None, universe="__reality__"):
+        captured.update(
+            text=text, existing_context=existing_context, universe=universe
+        )
+        return "ok"
+
+    mcs.query_engine.query = _spy  # type: ignore[method-assign]
+
+    node = Node(id="n1", name="种子", content="种子", universe="w1")
+    assert mcs.query("", existing_context=[node], universe="w1") == "ok"
+    assert captured["universe"] == "w1"
+    assert captured["existing_context"] == [node]
+
+
+def test_query_without_universe_uses_engine_default(mock_llm):
+    """不传 universe 时沿用 QueryEngine 默认值（老调用零改动）。"""
+    mcs = _build_mcs(mock_llm)
+    captured: dict = {}
+
+    def _spy(text, existing_context=None, universe="__reality__"):
+        captured.update(universe=universe)
+        return "ok"
+
+    mcs.query_engine.query = _spy  # type: ignore[method-assign]
+    mcs.query("hello")
+    assert captured["universe"] == "__reality__"

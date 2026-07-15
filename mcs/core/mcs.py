@@ -66,11 +66,19 @@ class MCS:
         self,
         text: str,
         existing_context: list | None = None,
+        universe: str | None = None,
     ) -> Any:
         """执行查询管线。默认返回 ``Subgraph``（nodes + 选中事实边 edges），
         后处理插件可将其转换为其他类型（如自然语言字符串）。
+
+        ``universe``：查询限定的 universe（P7 单 universe 封闭）；``None`` 沿用
+        ``QueryEngine`` 默认（现实世界 ``__reality__``）。
         """
-        return self.query_engine.query(text, existing_context=existing_context)
+        if universe is None:
+            return self.query_engine.query(text, existing_context=existing_context)
+        return self.query_engine.query(
+            text, existing_context=existing_context, universe=universe
+        )
 
     def run_compaction(self, changed_nodes: list[Any]) -> None:
         """public 守门入口：转发 ``write_pipeline.run_compaction``，供外部图手术
