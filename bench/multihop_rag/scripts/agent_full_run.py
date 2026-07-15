@@ -45,9 +45,6 @@ _BENCH = _ROOT / "bench" / "multihop_rag"
 FRAMEWORK_RESULTS = _BENCH / "outputs" / "dschat_full_16k_bfsroot_newprompt" / "results.jsonl"
 QA = _BENCH / "data" / "multihoprag_qa.json"
 OUT_DIR = _BENCH / "outputs" / "agent_full_run"
-RESULTS = OUT_DIR / "results.jsonl"
-INTERNAL_LLM = OUT_DIR / "agent_llm_calls.jsonl"
-REPORT = OUT_DIR / "AGENT_REPORT.md"
 
 
 def load_cases() -> list[dict]:
@@ -72,10 +69,12 @@ def _count_lines(p: Path) -> int:
         return sum(1 for _ in f)
 
 
-def run(limit: int) -> None:
+def run(limit: int, graph_dir: Path = GRAPH_DIR, out_dir: Path = OUT_DIR) -> None:
     setup_env()
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    db = db_path(GRAPH_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results = out_dir / "results.jsonl"
+    internal_llm = out_dir / "agent_llm_calls.jsonl"
+    db = db_path(graph_dir)
     if not db.exists():
         raise SystemExit(f"未找到图库 {db}")
 
@@ -85,8 +84,8 @@ def run(limit: int) -> None:
 
     # 断点续跑:已完成 query_id
     done: set[str] = set()
-    if RESULTS.exists():
-        for l in RESULTS.read_text(encoding="utf-8").splitlines():
+    if results.exists():
+        for l in results.read_text(encoding="utf-8").splitlines():
             if l.strip():
                 try:
                     done.add(json.loads(l)["query_id"])
@@ -96,21 +95,21 @@ def run(limit: int) -> None:
     print(f"案例 {len(cases)}（已完成 {len(done)}，待跑 {len(todo)}）；图 {db}")
     if not todo:
         print("全部已完成,直接生成报告。")
-        write_report()
+        write_report(out_dir)
         return
 
     def _build_mcs() -> Any:
         return _make_mcs("deepseek", str(db), token_budget=TOKEN_BUDGET,
-                         record_path=str(INTERNAL_LLM), rerank=True)
+                         record_path=str(internal_llm), rerank=True)
 
     memory = CapturingMemory(_build_mcs)
     agent, traces = build_agent(memory)
 
-    fh = RESULTS.open("a", encoding="utf-8")
+    fh = results.open("a", encoding="utf-8")
     t_run = time.time()
     consecutive_fail = 0
     for i, c in enumerate(todo, 1):
-        internal_before = _count_lines(INTERNAL_LLM)
+        internal_before = _count_lines(internal_llm)
         t0 = time.time()
         try:
             # 整题处理(chat + 评分 + 组装记录)全包进 try——任一步异常都隔离,
@@ -140,7 +139,7 @@ def run(limit: int) -> None:
                 "ranked": ranked, "reached_gold": reached,
                 "n_tools": len(memory.records), "n_nodes": len(touched),
                 "n_llm_agent": n_llm, "tokens_agent": tokens,
-                "n_llm_internal": _count_lines(INTERNAL_LLM) - internal_before,
+                "n_llm_internal": _count_lines(internal_llm) - internal_before,
                 "wall_s": round(time.time() - t0, 1),
                 "reply": reply[:500],
             }
@@ -162,15 +161,17 @@ def run(limit: int) -> None:
             print(f"  进度 {i}/{len(todo)}  用时 {el/60:.1f}min  "
                   f"均 {el/i:.0f}s/题  预计剩 {el/i*(len(todo)-i)/60:.0f}min")
     fh.close()
-    write_report()
+    write_report(out_dir)
 
 
-def write_report() -> None:
+def write_report(out_dir: Path = OUT_DIR) -> None:
     """读 agent + 框架两边 results.jsonl,同口径算指标,写 markdown 报告。"""
-    if not RESULTS.exists():
+    results = out_dir / "results.jsonl"
+    report = out_dir / "AGENT_REPORT.md"
+    if not results.exists():
         print("无 agent 结果,跳过报告。")
         return
-    agent_res = [json.loads(l) for l in RESULTS.read_text(encoding="utf-8").splitlines() if l.strip()]
+    agent_res = [json.loads(l) for l in results.read_text(encoding="utf-8").splitlines() if l.strip()]
     fr_res = [json.loads(l) for l in FRAMEWORK_RESULTS.read_text(encoding="utf-8").splitlines() if l.strip()]
     # 只对比 agent 实际跑了的 query_id（部分完成也可比）
     done_ids = {r["query_id"] for r in agent_res}
@@ -199,7 +200,7 @@ def write_report() -> None:
 
     L = []
     L.append("# Agent vs 固定流程：MultiHop-RAG 评测报告\n")
-    L.append(f"> 同图 `dschat_full_16k`，同 {n} 个非-null query，同 lexical `doc_rerank` 评分。")
+    L.append(f"> 图库由 `--graph-dir` 指定（本目录 {out_dir.name}），同 {n} 个非-null query，同 lexical `doc_rerank` 评分。")
     L.append("> agent = deepseek-chat ReAct（search/associate/reason 导航），框架 = 固定 BFS + select_facts。")
     L.append(f"> 框架基线取自 `dschat_full_16k_bfsroot_newprompt`，仅对比 agent 已跑的 {n} 题。\n")
 
@@ -261,9 +262,9 @@ def write_report() -> None:
     L.append("- 代价是数量级更高的 LLM 调用/token（见成本）。增益主体可低成本移植（查询拆解），整套 agent 的扩展层对召回无额外贡献。")
     L.append("- hit@10 看排序：reached 提升能否转化为 hit@10，取决于 doc_rerank（跨语言词法弱，见既有 REPORT）。\n")
 
-    REPORT.write_text("\n".join(L), encoding="utf-8")
-    print(f"报告已写 {REPORT}")
-    (OUT_DIR / "metrics_agent.json").write_text(json.dumps(am, ensure_ascii=False, indent=2), encoding="utf-8")
+    report.write_text("\n".join(L), encoding="utf-8")
+    print(f"报告已写 {report}")
+    (out_dir / "metrics_agent.json").write_text(json.dumps(am, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def main() -> None:
@@ -271,11 +272,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 题（0=全部 200）")
     ap.add_argument("--report-only", action="store_true", help="只用现有 results.jsonl 重生报告")
+    ap.add_argument("--graph-dir", default=str(GRAPH_DIR),
+                    help="图库目录（默认框架建的 dschat_full_16k；agent 建图传 outputs/agent_build）")
+    ap.add_argument("--out-dir", default=str(OUT_DIR),
+                    help="输出目录（默认 outputs/agent_full_run）")
     args = ap.parse_args()
     if args.report_only:
-        write_report()
+        write_report(Path(args.out_dir))
     else:
-        run(args.limit)
+        run(args.limit, Path(args.graph_dir), Path(args.out_dir))
 
 
 if __name__ == "__main__":

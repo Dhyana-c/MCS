@@ -27,6 +27,9 @@ bench/multihop_rag/data/
 └── multihoprag_qa.json
 ```
 
+> 《黄金笼》小说数据集已独立为平级评测 [`bench/golden_cage/`](../../golden_cage/README.md)
+> （纯 agent 建图 + 查询），数据与脚本都在那边。
+
 ## 默认路径
 
 评测脚本默认从 `bench/multihop_rag/data/` 读取数据（即本目录）。

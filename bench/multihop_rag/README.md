@@ -30,6 +30,22 @@ python -m bench.multihop_rag
 `--dry-run`、`--exclude-null`（只评非 null 的可达 query）。API key 从环境变量
 `DEEPSEEK_API_KEY` 读取（CLI 会尝试自动加载项目根 `.env`）。
 
+## agent 方式建图（与固定流程对照）
+
+`scripts/agent_build.py`：ReAct agent（learn/search/merge/split）逐篇新闻决策写入，
+通用循环在 `bench/agent_build.py`（与 `bench/golden_cage` 共享）。语料保真（learn 钉死
+`title: body` 全文，同框架 `whole_doc` 口径）+ doc 级溯源（`doc_id=title`）+ 按
+`document_chunks` 断点续跑；agent 未调 learn 强制补写（`forced` 计数）。
+
+```bash
+.venv/Scripts/python.exe bench/multihop_rag/scripts/agent_build.py --limit 3  # 冒烟
+.venv/Scripts/python.exe bench/multihop_rag/scripts/agent_build.py           # 全量 609（续跑）
+```
+
+产出 `outputs/agent_build/`：`graph.db` / `build_log.jsonl`（逐篇轨迹：tool_seq /
+forced / token / 耗时）/ `build_llm_calls.jsonl`。实测约 60s/篇（deepseek-chat，
+T=16000），全量约 10 小时。建成的图可直接被 `agent_full_run.py` / `--db` 类查询复用。
+
 ## 查询重排（reranker）与零成本验证
 
 `query()` 召回好但**排名差**（gold 文档中位 rank 36/~165），是 Hit@k 偏低的主因。

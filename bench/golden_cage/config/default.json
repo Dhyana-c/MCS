@@ -1,0 +1,7 @@
+{
+  "llm": "deepseek",
+  "token_budget": 16000,
+  "build_max_turns": 6,
+  "query_max_turns": 8,
+  "output": "outputs/agent_run"
+}
