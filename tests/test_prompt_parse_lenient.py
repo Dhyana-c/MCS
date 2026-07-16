@@ -14,18 +14,26 @@ from mcs.prompts.navigate_hub import parse as parse_navigate_hub
 
 
 def test_extract_concepts_prompt_enforces_time_attribution():
-    """extract_concepts prompt 守时间归属（防回归）：
-    删除「日期」作概念叶子属性的鼓励 + 加概念/事实时间归属约束。
+    """extract_concepts prompt 守时间归属（防回归，real-narrative-events 精确化后）：
+    概念零时间 / 事实禁相对时间不动摇；判据 = 时间形态——带固定历史时间的
+    已完成世界发生 = 合法历史事实命题（可抽），清单逐条抽取。
     """
     from mcs.prompts.extract_concepts import SYSTEM_PROMPT, USER_TEMPLATE
     # 「日期」不再作为概念叶子属性鼓励（概念零时间）
     assert "数值、日期、地点" not in SYSTEM_PROMPT
-    # 时间归属约束
+    # 时间归属约束（保留的原有防线）
     assert "时间归属" in SYSTEM_PROMPT
     assert "概念 content MUST NOT 含任何时间词" in SYSTEM_PROMPT
     assert "事实 content MUST NOT 含相对/单次时间词" in SYSTEM_PROMPT
-    # USER_TEMPLATE 提醒不放时间词
-    assert "content 不放任何时间词" in USER_TEMPLATE
+    # real-narrative-events：历史事实命题解禁 + 清单逐条 + 全面禁令消失
+    assert "历史事实命题" in SYSTEM_PROMPT
+    assert "已完成世界发生" in SYSTEM_PROMPT
+    assert "逐条抽取" in SYSTEM_PROMPT
+    assert "MUST NOT 抽事件性命题" not in SYSTEM_PROMPT  # 旧全面禁令必须移除
+    # USER_TEMPLATE 同步：零时间提醒仍在（新措辞）+ 历史事实解禁 + 逐条抽取
+    assert "概念 content 零时间" in USER_TEMPLATE
+    assert "历史事实" in USER_TEMPLATE
+    assert "逐条抽取" in USER_TEMPLATE
 
 
 def test_merge_content_prompt_splits_time_attribution_by_node_class():
