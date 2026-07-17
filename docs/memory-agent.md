@@ -23,7 +23,8 @@
 ```
 
 - **MemoryAgent**（`loop.py`）：ReAct 循环。每轮把最新**图级主题摘要**注入 system prompt（让"要不要进图
-  探索"的路由判断有据），LLM 返回工具调用或最终答复；工具结果回灌、最多 `max_turns` 轮。
+  探索"的路由判断有据），LLM 返回工具调用或最终答复；工具结果回灌、最多 `max_turns` 轮。开启
+  `context_budget` 时每轮组装经**会话上下文自治**（存根折叠 / pin / FINISH，见下文专节）。
 - **自有 LLM（可插拔）**：agent 的 chat LLM **独立于 MCS 的 `read_llm`**，实现 `AgentLLMInterface`
   （`chat(messages, tools) -> AssistantMessage`）。内置 `OpenAIAgentLLM`（openai 兼容，覆盖 deepseek / ollama）
   与 `AnthropicAgentLLM`（原生 claude）；裸 callable 经 `CallableAgentLLM` 自动适配（测试可注入脚本化 mock）。
@@ -84,6 +85,67 @@
 - **`merge`（合并）**：给若干节点 id → 经 `merge` purpose 判是否**本就同一个**（异名/同义/重复建）→ 产出合并方案（keep/absorb/merged_content/aliases）→ 执行（边与事件背书迁向 keep、aliases 收口、absorb 的 hub 标记继承到 keep、删 absorb）→ 过守门。**互斥禁合三闸**（keep↔absorb 塌缩 / absorb↔absorb 塌缩 / absorb 带互斥边且 keep 非 fact 无法承接）；非同义 `noop`。core 写入已自动合并同义，本工具用于 agent 发觉残留重复、主动收口。
 
 两工具的 `node_id(s)` 由前序工具返回的 `[id:...]` 提供；返回文本含产物 / keep 节点 id（**守门前快照**——`run_compaction` 的 `decide_hub` 可能重组 / 合并产物或 keep 邻域，agent 后续引用前建议重新 `search` 定位）。两者 `readonly=False`，排除出 `/recall` 只读召回白名单（保"召回 MUST NOT 写图"）。
+
+## 会话上下文自治（`context_budget`，默认关闭）
+
+> change `agent-context-autonomy`：框架保证**单一硬预算**（会话层铁律一：估算口径 == 发送口径，
+> MUST NOT 交 LLM 自估），预算内的取舍全部交模型自决策。`MemoryAgent(context_budget=None)`
+> （默认）零行为变化；bench / 调用方显式传预算开启。实现在 `mcs_agent/context.py`（`SessionContext`），
+> loop 只做接线；原始消息历史**永不改写**，折叠 / 逐出均为每轮组装期的视图操作（幂等重算）。
+
+**新参数**（`MemoryAgent`）：`context_budget`（会话预算 token，None=关闭）、`fold_after_turns`
+（存根折叠轮龄 N，默认 2）、`pin_cap_ratio`（pin 总量防御上限占预算比例，默认 0.7）、
+`token_counter`（token 估算函数，默认保守经验式 `CalibratedEstimator`）。
+
+**存根折叠（减脂层）**：距当前 ≥ N 轮且未 pin 的工具结果折叠为一行存根（id 来源：解析工具
+返回文本的 `[id:...]`）；存根不比全文短则不折（总量不降的重组无效）：
+
+```
+[已折叠 #1] search({"query": "Sam Altman"}) → 12 节点: [id:a1f], [id:9c3], ...
+[已折叠 #2] associate({"seed_id": "a1f"}) → 5 节点: [id:x9] (+4 已见)
+```
+
+- id **窗口级去重**：首见全文列出、已见计数省略（`(+4 已见)`）；被折叠内容按 `[id:...]` 经
+  associate/search 取回，或直接 `PIN: #k` 恢复该存根全文（**遗忘可逆**）。
+- **同参标注**：与窗口内存根同工具同参的再次调用**正常执行**（不拦截不缓存——相关性判断是
+  积累集依赖的，重看可得新判断；learn 会改图，缓存亦不正确），仅在结果头部标注
+  `（与存根 #1 同参）`。
+
+**pin / FINISH（自治层——回复文本标记，框架解析，不新增工具、不占轮次）**：
+
+- `PIN: #k`（可多个，空格分隔）钉住已确认支撑答案的结果，不被折叠 / 逐出；`UNPIN: #k` 换出。
+  pin 总量超防御上限时该 PIN 被拒绝（trace 记 `pin_rejected`）。
+- `FINISH` + `USED: #k`：模型判断**无需再遍历**时显式收束，终止回复携带最终答案与支撑引用
+  （存根编号 / 节点 id）；框架剥离标记后返回答案。无标记且无工具调用的回复仍宽松接受
+  （记 `implicit`，不为格式合规浪费轮次）。
+- **收尾轮**：剩余 1 轮时预算段替换为「最后一轮请直接作答」；轮次耗尽仍未作答则追加**一次**
+  有界收尾调用（注入「立即交付」硬指令、忽略其中的工具调用）——有内容即剥离标记交付
+  （记 `finalized`，forced 从"无答案失败"降级为"降级交付"）、无内容保持 forced 兜底。
+- **交付契约（调用方输入）**：`USED:` 的具体要求（如"列出支撑答案的来源节点、按相关性降序、
+  宁缺毋滥"）由**调用方**经 `system_prompt` 附加段声明——框架只提供标记槽位与解析
+  （`ChatTrace.used_refs` 保序），不硬编码任何任务/配额知识；模型显式知道调用目的，
+  但契约内容永远归调用方（评测契约见 `bench/multihop_rag/scripts/agent_case_study.py`
+  的 `USED_CONTRACT_PROMPT`，`--used-contract` 开启）。
+
+**确定性兜底**（超预算时按序，MUST NOT 死锁 / 静默截断中段）：全量折叠（含近轮）→ 逐出最旧
+未 pin 存根（墓碑 `[已逐出 #k]`——openai 格式要求 tool_call 配对结果消息，不物理删除）→
+仍超则新工具调用**不执行**、以受保护（不折不逐）的 `[预算耗尽]` tool 消息告知模型换出或收尾。
+
+**预算可见**：每轮 system prompt 注入管理约定段 + 动态段「已用 X/Y token，剩余轮次 Z」——
+终止信号，模型据此决定收尾或继续。
+
+**可观测**：折叠 / 逐出 / pin / unpin / 拒绝注入 / overflow / dup_call（同参重发，detail 含
+pin 集是否变化）事件入 `ChatTrace.context_events`（fold 含前后 token）；终止类型
+（`finish` / `implicit` / `finalized` / `forced` / `error`）与 `USED:` 引用入
+`ChatTrace.termination` / `used_refs`。
+
+**A/B 验收结果**（multihop 200 题三臂，2026-07-18，详见
+`bench/multihop_rag/reports/agent_context_autonomy_20260718.md`）：ctx 臂 token/题 **-33%**
+（127K→85K）、reached **+5.0pt**（0.880→0.930）、32K 预算零逐出零拒注（折叠层独立守住硬闸）；
+**USED 契约臂全面最优**——reached 0.975、hit@10 0.855（基线 0.795）、mrr@10 0.577、token 仍 -12%，
+收尾轮把无答案 forced 从 56% 压到 9%。已知边界：pin 语义对 deepseek-chat 采纳≈0（收益全部来自
+不依赖模型配合的折叠层）；盲目重复率 4.6%；USED 引用格式采纳率 12%（下一改进杠杆）；
+排序天花板仍在词法 doc_rerank（黄金笼结论一致）。
 
 ## MemoryStore：MCS 的单线程封装
 

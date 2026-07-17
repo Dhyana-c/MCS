@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sys
 import time
 import traceback
@@ -69,32 +70,57 @@ def _count_lines(p: Path) -> int:
         return sum(1 for _ in f)
 
 
-def run(limit: int, graph_dir: Path = GRAPH_DIR, out_dir: Path = OUT_DIR) -> None:
+def _merged_results(out_dir: Path) -> list[dict]:
+    """合并 out_dir 下全部 results*.jsonl（分片并发 + 断点续跑），按 query_id 去重。"""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for f in sorted(out_dir.glob("results*.jsonl")):
+        for l in f.read_text(encoding="utf-8").splitlines():
+            if not l.strip():
+                continue
+            try:
+                r = json.loads(l)
+            except Exception:
+                continue
+            if r.get("query_id") and r["query_id"] not in seen:
+                seen.add(r["query_id"])
+                out.append(r)
+    return out
+
+
+def run(limit: int, graph_dir: Path = GRAPH_DIR, out_dir: Path = OUT_DIR,
+        context_budget: int | None = None, used_contract: bool = False,
+        shard: str = "0/1") -> None:
     setup_env()
     out_dir.mkdir(parents=True, exist_ok=True)
-    results = out_dir / "results.jsonl"
-    internal_llm = out_dir / "agent_llm_calls.jsonl"
-    db = db_path(graph_dir)
-    if not db.exists():
-        raise SystemExit(f"未找到图库 {db}")
+    si, sk = (int(x) for x in shard.split("/"))
+    suffix = f".shard{si}of{sk}" if sk > 1 else ""
+    results = out_dir / f"results{suffix}.jsonl"
+    internal_llm = out_dir / f"agent_llm_calls{suffix}.jsonl"
+    src_db = db_path(graph_dir)
+    if not src_db.exists():
+        raise SystemExit(f"未找到图库 {src_db}")
+    # 分片并发：每片独立图库副本（SQLite 单写者 + read-repair 互扰双回避，
+    # 沿用既有"每查询实验独立 db 副本"惯例）；查询为只读负载，副本可比
+    if sk > 1:
+        db = out_dir / f"graph.shard{si}.db"
+        if not db.exists():
+            shutil.copyfile(src_db, db)
+    else:
+        db = src_db
 
     cases = load_cases()
     if limit:
         cases = cases[:limit]
 
-    # 断点续跑:已完成 query_id
-    done: set[str] = set()
-    if results.exists():
-        for l in results.read_text(encoding="utf-8").splitlines():
-            if l.strip():
-                try:
-                    done.add(json.loads(l)["query_id"])
-                except Exception:
-                    pass
-    todo = [c for c in cases if c["query_id"] not in done]
-    print(f"案例 {len(cases)}（已完成 {len(done)}，待跑 {len(todo)}）；图 {db}")
+    # 断点续跑:已完成 query_id（全部分片文件并集——分片间/串行残留都不重跑）
+    done = {r["query_id"] for r in _merged_results(out_dir)}
+    todo = [c for i, c in enumerate(cases)
+            if c["query_id"] not in done and i % sk == si]
+    print(f"案例 {len(cases)}（已完成 {len(done)}，本分片 {shard} 待跑 {len(todo)}）；图 {db}；"
+          f"context_budget={context_budget or '关'}")
     if not todo:
-        print("全部已完成,直接生成报告。")
+        print("本分片已无待跑,生成报告。")
         write_report(out_dir)
         return
 
@@ -103,7 +129,8 @@ def run(limit: int, graph_dir: Path = GRAPH_DIR, out_dir: Path = OUT_DIR) -> Non
                          record_path=str(internal_llm), rerank=True)
 
     memory = CapturingMemory(_build_mcs)
-    agent, traces = build_agent(memory)
+    agent, traces = build_agent(memory, context_budget=context_budget,
+                                used_contract=used_contract)
 
     fh = results.open("a", encoding="utf-8")
     t_run = time.time()
@@ -130,17 +157,37 @@ def run(limit: int, graph_dir: Path = GRAPH_DIR, out_dir: Path = OUT_DIR) -> Non
             gold = set(c["gold"])
             reached = sorted(gold & set(retrieved_docs(touched)))
 
+            # 混合评分：USED 引用的节点 → 文档排前（模型相关性判断优先），
+            # 词法 doc_rerank 兜底补满余位（USED 为空时退化为纯词法，两口径同跑可比）
             ct = traces[-1] if traces else None
+            used_ids = [u[4:-1] for u in (ct.used_refs if ct else [])
+                        if u.startswith("[id:") and u.endswith("]")]
+            id2node = {n.id: n for n in touched}
+            used_nodes = [id2node[i] for i in used_ids if i in id2node]
+            used_docs = list(dict.fromkeys(retrieved_docs(used_nodes)))
+            ranked_used = used_docs + [d for d in ranked if d not in used_docs]
+
             n_llm = len(ct.llm_calls) if ct else 0
             tokens = sum((x.token_usage.total_tokens if x.token_usage else 0)
                          for x in (ct.llm_calls if ct else []))
+            ev = ct.context_events if ct else []
             rec = {
                 "query_id": c["query_id"], "type": c["type"], "gold": c["gold"],
-                "ranked": ranked, "reached_gold": reached,
+                "ranked": ranked, "ranked_used": ranked_used,
+                "used_refs": (ct.used_refs if ct else []),
+                "reached_gold": reached,
                 "n_tools": len(memory.records), "n_nodes": len(touched),
                 "n_llm_agent": n_llm, "tokens_agent": tokens,
                 "n_llm_internal": _count_lines(internal_llm) - internal_before,
                 "wall_s": round(time.time() - t0, 1),
+                # agent-context-autonomy 观测（预算关闭时均为 0/implicit，字段兼容）
+                "termination": ct.termination if ct else "",
+                "ctx_folds": sum(1 for e in ev if e.kind == "fold"),
+                "ctx_evicts": sum(1 for e in ev if e.kind == "evict"),
+                "ctx_rejects": sum(1 for e in ev if e.kind == "reject"),
+                "ctx_pins": sum(1 for e in ev if e.kind == "pin"),
+                "ctx_dup_calls": sum(1 for e in ev if e.kind == "dup_call"),
+                "ctx_blind_dups": sum(1 for e in ev if e.kind == "dup_call" and "未变" in e.detail),
                 "reply": reply[:500],
             }
             fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -166,12 +213,11 @@ def run(limit: int, graph_dir: Path = GRAPH_DIR, out_dir: Path = OUT_DIR) -> Non
 
 def write_report(out_dir: Path = OUT_DIR) -> None:
     """读 agent + 框架两边 results.jsonl,同口径算指标,写 markdown 报告。"""
-    results = out_dir / "results.jsonl"
     report = out_dir / "AGENT_REPORT.md"
-    if not results.exists():
+    agent_res = _merged_results(out_dir)
+    if not agent_res:
         print("无 agent 结果,跳过报告。")
         return
-    agent_res = [json.loads(l) for l in results.read_text(encoding="utf-8").splitlines() if l.strip()]
     fr_res = [json.loads(l) for l in FRAMEWORK_RESULTS.read_text(encoding="utf-8").splitlines() if l.strip()]
     # 只对比 agent 实际跑了的 query_id（部分完成也可比）
     done_ids = {r["query_id"] for r in agent_res}
@@ -276,11 +322,19 @@ def main() -> None:
                     help="图库目录（默认框架建的 dschat_full_16k；agent 建图传 outputs/agent_build）")
     ap.add_argument("--out-dir", default=str(OUT_DIR),
                     help="输出目录（默认 outputs/agent_full_run）")
+    ap.add_argument("--context-budget", type=int, default=0,
+                    help="会话上下文预算 token（0=关闭保现状；agent-context-autonomy A/B 传如 32000）")
+    ap.add_argument("--used-contract", action="store_true",
+                    help="启用 USED top-10 交付契约 system 段（需配合 --context-budget）")
+    ap.add_argument("--shard", default="0/1",
+                    help="分片并发：i/k（k 个进程各跑 i≡idx mod k 的 case，独立图库副本与结果分片）")
     args = ap.parse_args()
     if args.report_only:
         write_report(Path(args.out_dir))
     else:
-        run(args.limit, Path(args.graph_dir), Path(args.out_dir))
+        run(args.limit, Path(args.graph_dir), Path(args.out_dir),
+            context_budget=args.context_budget or None, used_contract=args.used_contract,
+            shard=args.shard)
 
 
 if __name__ == "__main__":

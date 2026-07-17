@@ -21,6 +21,7 @@ import logging
 import time
 from typing import Any, Callable
 
+from mcs_agent.context import CONTEXT_MANAGEMENT_PROMPT, SessionContext
 from mcs_agent.llms import AgentLLMInterface, CallableAgentLLM
 from mcs_agent.tools import BUILTIN_TOOLS, MEMORY_TOOLS, ToolsetConfig, build_toolset
 from mcs_agent.trace import ChatTrace, LLMCallTrace, ToolCallTrace
@@ -93,6 +94,12 @@ class MemoryAgent:
         max_turns: 单次 chat 的最大 LLM 轮次（防失控循环）。
         summary_budget: 注入 system prompt 的图摘要字符预算（第二道闸，防归纳超标进入上下文）。
         on_trace: ``chat()`` 完成后的追踪回调（接收 ``ChatTrace``），None 则不回调。
+        context_budget: 会话级上下文预算（token）。None（默认）= 关闭，行为与现状完全
+            一致；开启后每轮组装 messages 经会话上下文自治机制（``mcs_agent.context``：
+            存根折叠 / pin / FINISH / 确定性兜底），并注入管理约定与动态预算段。
+        fold_after_turns: 工具结果距当前 ≥ N 轮且未 pin 时折叠为存根（预算开启时生效）。
+        pin_cap_ratio: pin 总量防御上限占预算比例（防囤积）。
+        token_counter: token 估算函数（估算口径 == 发送口径）；None 用保守经验式。
     """
 
     def __init__(
@@ -105,6 +112,10 @@ class MemoryAgent:
         max_turns: int = 8,
         summary_budget: int = 1000,
         on_trace: Callable[[ChatTrace], None] | None = None,
+        context_budget: int | None = None,
+        fold_after_turns: int = 2,
+        pin_cap_ratio: float = 0.7,
+        token_counter: Callable[[str], int] | None = None,
     ) -> None:
         self.memory = memory
         # 裸 callable 自动包 CallableAgentLLM（保既有注入式测试零改动）；AgentLLMInterface 直用
@@ -117,28 +128,51 @@ class MemoryAgent:
         self.max_turns = max_turns
         self.summary_budget = summary_budget
         self.on_trace = on_trace
+        self.context_budget = context_budget
+        self.fold_after_turns = fold_after_turns
+        self.pin_cap_ratio = pin_cap_ratio
+        self.token_counter = token_counter
 
     def chat(self, user_message: str) -> str:
         """跑一轮 ReAct：LLM 决定调工具或给最终答案，返回最终答复文本。
 
         每轮注入最新图级摘要进 system prompt（「当前记忆图主题」段），使路由判断有据。
+        开启 ``context_budget`` 时（agent-context-autonomy）：``messages`` 为原始历史
+        （只增不改写），每轮经 ``SessionContext.assemble`` 折叠出发送视图并保证 ≤ 预算；
+        assistant 文本解析 PIN/UNPIN/FINISH 标记；预算耗尽时新工具调用不执行、以
+        [预算耗尽] tool 消息告知模型换出或收尾。
         """
         t_start = time.perf_counter()
         llm_traces: list[LLMCallTrace] = []
         tool_traces: list[ToolCallTrace] = []
 
+        ctx: SessionContext | None = None
+        system = self._build_system(self._fetch_summary())
+        if self.context_budget is not None:
+            ctx = SessionContext(
+                self.context_budget,
+                fold_after_turns=self.fold_after_turns,
+                pin_cap_ratio=self.pin_cap_ratio,
+                count_tokens=self.token_counter,
+            )
+            system = f"{system}\n\n{CONTEXT_MANAGEMENT_PROMPT}"
+
         messages: list[dict] = [
-            {"role": "system", "content": self._build_system(self._fetch_summary())},
+            {"role": "system", "content": system},
             {"role": "user", "content": user_message},
         ]
         reply = ""
-        for _ in range(self.max_turns):
+        termination = "implicit"
+        used_refs: list[str] = []
+        for turn in range(self.max_turns):
+            send = ctx.assemble(messages, turn, self.max_turns) if ctx is not None else messages
             try:
-                assistant = self.llm.chat(messages, self.schemas)  # -> AssistantMessage
+                assistant = self.llm.chat(send, self.schemas)  # -> AssistantMessage
             except Exception as exc:
                 # LLM 调用失败（网络/限流/鉴权/空 tools 400 等）：优雅降级、仍构造并触发 trace
                 logger.warning("agent LLM 调用失败: %s", exc)
                 reply = f"（助手暂时不可用：{type(exc).__name__}）"
+                termination = "error"
                 break
 
             # trace 为一等字段（替旧 dict["_trace"] hack）
@@ -152,14 +186,25 @@ class MemoryAgent:
                 entry["tool_calls"] = assistant.tool_calls
             messages.append(entry)
 
+            if ctx is not None and assistant.content:
+                ctx.apply_pins(assistant.content, messages)
+
             tool_calls = assistant.tool_calls
             if not tool_calls:
                 reply = assistant.content or ""
+                if ctx is not None:
+                    reply, termination, used_refs = ctx.parse_finish(reply)
                 break
             for tool_call in tool_calls:
-                result, tc_trace = self._dispatch(tool_call)
-                if tc_trace is not None:
-                    tool_traces.append(tc_trace)
+                if ctx is not None and ctx.exhausted:
+                    # 兜底链④：预算耗尽——不执行工具、以 [预算耗尽] 告知（拒绝注入新结果）
+                    result = ctx.refuse(tool_call, len(messages), turn)
+                else:
+                    result, tc_trace = self._dispatch(tool_call)
+                    if tc_trace is not None:
+                        tool_traces.append(tc_trace)
+                    if ctx is not None:
+                        result = ctx.register_result(result, tool_call, len(messages), turn)
                 messages.append(
                     {
                         "role": "tool",
@@ -169,6 +214,21 @@ class MemoryAgent:
                 )
         else:
             reply = "（达到最大轮次，未能给出最终答复。）"
+            termination = "forced"
+            if ctx is not None:
+                # 收尾轮（有界 +1 调用，仅预算开启时）：轮次耗尽仍未作答 → 注入
+                # 「立即交付」硬指令再调一次，工具调用被忽略——forced 从「无答案失败」
+                # 降级为「降级交付」（termination=finalized）；仍无内容则保持 forced 兜底。
+                try:
+                    send = ctx.assemble(messages, self.max_turns, self.max_turns, finalize=True)
+                    assistant = self.llm.chat(send, self.schemas)
+                    if isinstance(assistant.trace, LLMCallTrace):
+                        llm_traces.append(assistant.trace)
+                    if assistant.content:
+                        reply, _, used_refs = ctx.parse_finish(assistant.content)
+                        termination = "finalized"
+                except Exception as exc:
+                    logger.warning("收尾轮 LLM 调用失败: %s", exc)
 
         # 构造 ChatTrace 并回调
         total_latency_ms = (time.perf_counter() - t_start) * 1000
@@ -178,6 +238,9 @@ class MemoryAgent:
             llm_calls=llm_traces,
             tool_calls=tool_traces,
             total_latency_ms=total_latency_ms,
+            context_events=ctx.events if ctx is not None else [],
+            termination=termination,
+            used_refs=used_refs,
         )
 
         if self.on_trace is not None:

@@ -12,6 +12,8 @@
 | [glm_query_200.md](glm_query_200.md) | 2026-06-15 | GLM-5.1 查询侧（同图换 read 模型）· 全量 200 query（llm doc_rerank, T=16k，分两批续跑）：**hit@10=0.765**（vs deepseek 同图 0.770，基本持平；inference 反超 +5.7pp）；含端点配置文件化 + query 级续跑 + 配额软上限/熔断保护 |
 | [agent_vs_framework.md](agent_vs_framework.md) | 2026-06-24 | agent（deepseek ReAct）vs 固定流程框架 · 同图同 200 query 同口径（自动指标表）：**agent hit@10=0.825 vs 框架 0.695** |
 | [agent_vs_framework_investigation.md](agent_vs_framework_investigation.md) | 2026-06-24 | 上者的**完整调查报告**：召回/排序拆分、建图非瓶颈审计、闭卷泄漏探针、null 诚实性、差因、成本、两条可移植杠杆 |
+| [agent_build_20260715.md](agent_build_20260715.md) | 2026-07-15 | 纯 agent 建图（609 篇）+ 三方对照：agent图+agent查 hit@10=0.795；健壮性收益 + alias 毒化修复 |
+| [agent_context_autonomy_20260718.md](agent_context_autonomy_20260718.md) | 2026-07-18 | **agent-context-autonomy 三臂总报告**（基线 / ctx32k / USED 契约 · 200 query）：ctx token **-33%** reached +5pt；**USED 契约臂全面最优 hit@10=0.855、reached=0.975、token -12%**；收尾轮治 forced 丢答案；配套 [agent_context_autonomy_ab.md](agent_context_autonomy_ab.md)、[agent_context_used_ab.md](agent_context_used_ab.md) |
 
 ## 指标口径
 

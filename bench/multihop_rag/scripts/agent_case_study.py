@@ -40,7 +40,7 @@ from bench.multihop_rag.metrics import retrieved_docs  # noqa: E402
 from bench.multihop_rag.scripts._common import PROJECT_ROOT, db_path, setup_env  # noqa: E402
 from mcs.rendering import render_query_result  # noqa: E402
 from mcs_agent.llm import make_openai_llm_call  # noqa: E402
-from mcs_agent.loop import MemoryAgent  # noqa: E402
+from mcs_agent.loop import DEFAULT_SYSTEM_PROMPT, MemoryAgent  # noqa: E402
 from mcs_agent.memory import _SEED_ROOT, MemoryStore  # noqa: E402
 from mcs_agent.trace import ChatTrace  # noqa: E402
 
@@ -125,7 +125,24 @@ def load_qa_by_qid() -> dict[str, dict]:
     return out
 
 
-def build_agent(memory: CapturingMemory) -> tuple[MemoryAgent, list[ChatTrace]]:
+# 评测交付契约（--used-contract）：把「返回 top-10 支撑来源」定为收束的可交付物——
+# 给 FINISH 设证据配额（治过早自信收束），并把模型相关性判断接进排序（USED 优先混合评分）。
+USED_CONTRACT_PROMPT = (
+    "\n\n# 评测交付契约\n"
+    "这是封闭语料检索评测：最终答复必须以 `USED:` 单独一行列出支撑答案的来源节点，"
+    "格式 [id:...]、按相关性降序、最多 10 个、宁缺毋滥。探索时留意积累候选来源；"
+    "证据不足以支撑答案时优先继续探索，不要提前收束；探索充分即 FINISH 收尾。"
+)
+
+
+def build_agent(
+    memory: CapturingMemory, *, context_budget: int | None = None, used_contract: bool = False
+) -> tuple[MemoryAgent, list[ChatTrace]]:
+    """context_budget=None 保持现状；传值开启会话上下文自治（agent-context-autonomy A/B）。
+
+    used_contract=True 追加「USED top-10 交付契约」system 段（需配合 context_budget 开启，
+    否则 USED 标记不解析）。
+    """
     traces: list[ChatTrace] = []
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
@@ -133,7 +150,9 @@ def build_agent(memory: CapturingMemory) -> tuple[MemoryAgent, list[ChatTrace]]:
     model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     llm_call = make_openai_llm_call(model, api_key, base_url)
-    agent = MemoryAgent(memory, llm_call, on_trace=traces.append)
+    system = DEFAULT_SYSTEM_PROMPT + (USED_CONTRACT_PROMPT if used_contract else "")
+    agent = MemoryAgent(memory, llm_call, on_trace=traces.append,
+                        context_budget=context_budget, system_prompt=system)
     return agent, traces
 
 

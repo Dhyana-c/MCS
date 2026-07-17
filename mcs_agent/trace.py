@@ -63,6 +63,24 @@ class ToolCallTrace:
 
 
 @dataclass
+class ContextEvent:
+    """一次会话上下文管理事件（change agent-context-autonomy）。
+
+    ``kind`` 取值：``fold``（工具结果首次折叠为存根）/ ``evict``（逐出为墓碑）/
+    ``pin`` / ``unpin`` / ``pin_rejected``（超防御上限）/ ``reject``（预算耗尽拒绝
+    注入新工具结果）/ ``overflow``（折叠+逐出后仍超预算，降级发送）/
+    ``dup_call``（同参重复调用，detail 含 pin 集是否变化——盲目重复率数据源）。
+    ``tokens_before`` / ``tokens_after`` 仅 fold 事件填写（折叠前后 token）。
+    """
+
+    kind: str
+    stub_no: int | None = None
+    detail: str = ""
+    tokens_before: int | None = None
+    tokens_after: int | None = None
+
+
+@dataclass
 class ChatTrace:
     """一次完整 chat 链路追踪。
 
@@ -76,6 +94,14 @@ class ChatTrace:
     llm_calls: list[LLMCallTrace] = field(default_factory=list)
     tool_calls: list[ToolCallTrace] = field(default_factory=list)
     total_latency_ms: float = 0.0
+    # agent-context-autonomy：上下文管理事件与终止类型。
+    # termination：finish（FINISH 显式收束）/ implicit（无标记无工具调用）/
+    # finalized（轮次耗尽后收尾轮交付答案）/ forced（超 max_turns 且收尾轮也无内容）/
+    # error（LLM 调用失败）；预算关闭时无 FINISH 解析、无收尾轮，正常收尾均记 implicit。
+    # used_refs 为 FINISH / 收尾轮的 USED: 引用（存根编号 / 节点 id）。
+    context_events: list[ContextEvent] = field(default_factory=list)
+    termination: str = "implicit"
+    used_refs: list[str] = field(default_factory=list)
     total_tokens: int | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
