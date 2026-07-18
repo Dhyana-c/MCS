@@ -16,6 +16,8 @@ MCS **不依赖 embedding / 向量检索**，靠大模型直接阅读"装得下�
 MCS 专注"记忆本身"，把合成答案、多轮对话、追问加深留给上层（RAG / Agent / Chatbot）；后处理插件可把
 `Subgraph` 转成其他形态（如自然语言字符串）。
 
+![MCS 系统全景：核心库 mcs/ 内 MCS 瘦门面分别委托 WritePipeline(写) / QueryEngine(读)；write_manager / read_manager 双 PluginManager 分离注册、各配 write_llm / read_llm；底层 StoreInterface(InMemoryStore / SQLiteStore)；mcs_mcp / mcs_agent / bench 三应用包平级单向依赖 mcs](diagrams/arch-system-overview.png)
+
 ## 核心不变量
 
 MCS 维持一条硬不变量：
@@ -86,6 +88,8 @@ MCS 把图分成两层，**载重命根**是"核心不反查事件"：
 - **read-repair（读时收敛）**：查询工作集里撞见重名 / 同义节点当场合并，合并产物同样过守门。
 - 关系边 token 的有界由查询渲染期按 `priority` 截断兜底（**关系侧不聚类**，聚类会坏归属语义）。
 
+> 📊 守门 + 聚类裂变机制图（一进多出 / 三种重组 / 边吸收 / 递归收敛）见 [graph-model-design.md §5.1](graph-model-design.md)。
+
 ## 读写管线
 
 MCS 的核心是两条管线，由 `MCS` 瘦门面分别委托给 `WritePipeline` 与 `QueryEngine`。
@@ -105,6 +109,8 @@ input: str | IngestInput   (str → IngestInput(content=text)，now、无 source
 OUTPUT: 图状态更新 + 已持久化
 ```
 
+> 📊 完整 ingest 流程图（含 universe 判定 / 作品叙事事件分流 / 守门裂变）见 [graph-model-design.md §5.1](graph-model-design.md)。
+
 ⓪ 规则入库由内部原语 `_build_event_node` / `_build_source_nodes`（建节点）+ `_connect_endorsement_edges`
 （连背书边）实现，**不经 LLM**。事件 / source **只能经统一 `ingest` 产生**——无独立的公开 `ingest_event` /
 `ingest_source` 入口，背书目标固定为本次 `ingest` 抽出的概念 / 事实（非调用方指定）。
@@ -119,6 +125,8 @@ input: query, [existing_context]
 ④ 后处理        重排 / 裁剪（postprocess 插件链）
 OUTPUT: Subgraph（nodes + 选中的关联 / 互斥 edges）
 ```
+
+> 📊 完整 query 流程图（种子定位 / 核心 BFS / 双角色筛选 / 按需事件定向查）见 [graph-model-design.md §5.2](graph-model-design.md)。
 
 写入复用读流程做"关联节点提取"——这是读写对称性的体现。
 
@@ -219,6 +227,6 @@ tests/        # 测试套件
 
 - [graph-model-design.md](graph-model-design.md) — 完整、权威的图模型与核心算法设计
 - [getting-started.md](getting-started.md) — 5 分钟上手
-- [plugin-system.md](plugin-system.md) — 14 类插件逐一说明 + 自定义插件开发
+- [plugin-system.md](plugin-system.md) — 13 类插件逐一说明 + 自定义插件开发
 - [api-reference.md](api-reference.md) — 公开方法 / 数据类 / Builder / MCP 工具
 - [Spec 索引](../openspec/specs/INDEX.md) — 按能力域分组的契约规范

@@ -1,0 +1,26 @@
+flowchart LR
+    subgraph REAL["universe = __reality__（现实世界）"]
+        direction TB
+        RC["核心：概念 / 事实<br/>有界 · 聚类归纳"]
+        RE["事件层：摄入事件<br/>规则 · 不经 LLM"]
+        RE -. "事件→核心 单向背书<br/>核心侧 get_relations 过滤" .-> RC
+    end
+
+    subgraph WORK["universe = work（作品世界）"]
+        direction TB
+        WC["核心：概念 / 事实"]
+        WE["事件层：作品叙事事件<br/>LLM 抽取 · 作品纪年"]
+        WE -. "单向背书 · 核心不反查" .-> WC
+    end
+
+    RC -. "跨 universe 边" .-> WC
+    WC -. "两端双向过滤<br/>仅 get_cross_universe_edges 可达" .-> RC
+
+    UM["universe 元节点（概念 · 不持成员）<br/>每个 canonical universe 一个<br/>身份锚点 + 查询 foothold"]
+
+    classDef core fill:#90EE90,stroke:#333,color:#003300
+    classDef event fill:#FFD700,stroke:#333,color:#000
+    classDef meta fill:#E6E6FA,stroke:#333,color:#4b0082
+    class RC,WC core
+    class RE,WE event
+    class UM meta

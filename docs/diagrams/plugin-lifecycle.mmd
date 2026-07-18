@@ -1,0 +1,31 @@
+stateDiagram-v2
+    [*] --> Unbuilt
+    Unbuilt --> Initialized : build() 实例化<br/>initialize(context) 调一次
+    Initialized --> Active : 进入管线
+    Active --> Active : ingest / query 反复 execute()
+    Active --> Shutdown : MCS.shutdown()<br/>每实例一次 · 共享插件不重复
+    Shutdown --> [*]
+
+    note right of Initialized
+        一次性准备：访问 graph / config
+        如 IndexInterface.build
+    end note
+
+    note right of Active
+        写 / 读两套 PluginManager 复用同一实例
+        共享插件(NODE_EXTENSION / LLM)同实例注册两侧
+    end note
+
+    note right of Shutdown
+        幂等：共享插件只 shutdown 一次
+    end note
+
+    classDef ruleState fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef gateState fill:#90EE90,stroke:#333,color:#003300
+    classDef llmState fill:#FFD700,stroke:#333,color:#000
+    classDef endState fill:#D3D3D3,stroke:#333,color:#333
+
+    class Unbuilt ruleState
+    class Initialized gateState
+    class Active llmState
+    class Shutdown endState

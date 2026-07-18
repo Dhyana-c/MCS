@@ -1,0 +1,72 @@
+flowchart TB
+    %% ===== 应用包层（与 mcs/ 平级、单向依赖核心库）=====
+    subgraph APPS["应用包 · 单向依赖 mcs/"]
+        MCP["mcs_mcp<br/>MCP(stdio) server"]
+        AGENT["mcs_agent<br/>ReAct loop + FastAPI + 前端"]
+        BENCH["bench<br/>multihop_rag / extraction_quality"]
+    end
+
+    %% ===== 核心库 mcs/ =====
+    subgraph MCSLIB["核心库 mcs/（纯库）"]
+        direction TB
+
+        subgraph FACADE["顶层瘦门面"]
+            MCS["MCS<br/>顶层门面 · ingest / query / 维护 / 插件注册"]
+        end
+
+        subgraph PIPES["双管线 · 门面分别委托"]
+            direction LR
+            WP["WritePipeline<br/>写入 ingest"]
+            QE["QueryEngine<br/>查询 query → Subgraph"]
+        end
+
+        subgraph MGRS["双 PluginManager · 分离注册"]
+            direction LR
+            WM["write_manager<br/>WRITE_PREPROCESS / TRIM / ..."]
+            RM["read_manager<br/>QUERY_PREPROCESS / POSTPROCESS / ..."]
+        end
+
+        subgraph STORE["StoreInterface · 统一存储抽象"]
+            direction LR
+            MEM["InMemoryStore<br/>无持久化"]
+            SQL["SQLiteStore<br/>默认 · auto_persist 增量落盘"]
+        end
+    end
+
+    %% ===== 门面 → 双管线 =====
+    MCS -->|"写 ingest"| WP
+    MCS -->|"读 query"| QE
+
+    %% ===== 双管线 → 双 manager =====
+    WP -. 注册 / 调用 .-> WM
+    QE -. 注册 / 调用 .-> RM
+
+    %% ===== LLM 后端分离（虚线标注，不在核心库内）=====
+    WM -. 用 write_llm 后端 .-> WL["LLM 后端<br/>DeepSeek / Claude / Ollama"]
+    RM -. 用 read_llm 后端 .-> RL["LLM 后端<br/>（可与 write_llm 不同）"]
+
+    %% ===== 管线 → 存储 =====
+    WP -->|"persist / 增量落盘"| STORE
+    QE -->|"读取节点 / 边 / 反查"| STORE
+
+    %% ===== 应用包 → 门面（单向依赖）=====
+    MCP --> MCS
+    AGENT --> MCS
+    BENCH --> MCS
+
+    %% ===== 样式：复用色板 =====
+    classDef facade fill:#90EE90,stroke:#333,color:#003300
+    classDef write fill:#FFD700,stroke:#333,color:#000
+    classDef read fill:#87CEEB,stroke:#333,color:#001a66
+    classDef rule fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef store fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef app fill:#FFFFFF,stroke:#333,color:#000
+
+    class MCS facade
+    class WP write
+    class QE read
+    class WM write
+    class RM read
+    class MEM,SQL store
+    class WL,RL rule
+    class MCP,AGENT,BENCH app

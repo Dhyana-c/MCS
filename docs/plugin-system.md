@@ -1,6 +1,6 @@
 # 插件体系
 
-> MCS 的核心引擎稳定不变，功能通过插件链组合。本文讲清 14 类插件、统一基类、注册机制、生命周期，
+> MCS 的核心引擎稳定不变，功能通过插件链组合。本文讲清 13 类插件、统一基类、注册机制、生命周期，
 > 以及如何写一个自定义插件。契约见 [`openspec/specs/plugin-protocol`](../openspec/specs/plugin-protocol/spec.md)。
 
 ## 统一基类
@@ -18,9 +18,9 @@
 
 每类插件还各有一个**接口 ABC**（`mcs/interfaces/`），在 `Plugin` 之上定义该类型的专属方法。
 
-## 14 类 PluginType
+## 13 类 PluginType
 
-`PluginType` 枚举（`mcs/core/plugin.py`）定义 14 个有效类型 + 2 个废弃别名：
+`PluginType` 枚举（`mcs/core/plugin.py`）定义 13 个有效类型 + 1 个废弃别名：
 
 | PluginType | 接口（`mcs/interfaces/`） | 关键方法 | Phase 1 内置 |
 |---|---|---|---|
@@ -50,6 +50,8 @@
 按 `PluginType` 索引插件；同类型多个插件按 `get_priority()` 排序成链。写 / 读分离让两侧可用不同 LLM 后端
 （`write_llm` / `read_llm`），也让 LLM、`NodeExtension` 这类**共享插件**用同一实例注册到两侧。
 
+![插件链执行流：write_manager / read_manager 双侧并列、shared_plugins 同实例横跨登记两侧、每侧内按 PluginType + priority 排序成链](diagrams/plugin-chain.png)
+
 ## 注册机制
 
 插件不在代码里硬编码，而是经 `MCSConfig` 的三个列表声明，由 `MCSBuilder.build()` 按名解析、实例化、注册：
@@ -75,9 +77,7 @@ config = MCSConfig(
 
 ## 生命周期
 
-```
-build()  →  实例化插件  →  initialize(context)  →  [ ingest / query 反复调用 ]  →  shutdown()
-```
+![插件生命周期状态机：Unbuilt → build / initialize(一次) → Active(ingest / query 反复 execute) → Shutdown(每实例一次，共享插件不重复)](diagrams/plugin-lifecycle.png)
 
 - `initialize(context)`：build 时调用，可访问 graph / config 等做一次性准备（如 `IndexInterface.build`）。
 - `shutdown()`：`MCS.shutdown()` 时调用，每个插件实例只 shutdown 一次（共享插件不重复）。

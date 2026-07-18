@@ -14,37 +14,7 @@
 
 > 下图是贯穿全文的**图模型总览**：核心图（概念 + 事实，有界）承载结构，事件层（事件 → 核心单向背书）叠加其上；节点 4 类、边 2 类，`universe` 归属轴对全部节点生效（详见 §3）。
 
-```mermaid
-flowchart TB
-    subgraph CORE["核心图 · 有界（任意节点活跃视图 ≤ T）"]
-        direction TB
-        C1["概念 Concept"]
-        C2["概念"]
-        F1["事实 / 命题 Fact<br/>谓词落 content"]
-        F2["事实 Fact"]
-        C1 -->|关联| F1
-        C1 -->|关联| C2
-        F1 <-->|互斥| F2
-    end
-
-    subgraph EVT["事件层 · 时间倒序 · 不聚类 · 不进活跃视图"]
-        E1["事件 Event<br/>universe = work<br/>LLM 抽取"]
-        E2["摄入事件<br/>universe = __reality__<br/>规则产生"]
-    end
-
-    SRC["source<br/>规则入库 · 不经 LLM"] -->|关联| F1
-    E1 -->|单向背书| C1
-    E2 -. 核心 get_relations 不反查 .-> F1
-
-    classDef concept fill:#90EE90,stroke:#333,color:#003300
-    classDef fact fill:#87CEEB,stroke:#333,color:#001a66
-    classDef event fill:#FFD700,stroke:#333,color:#000
-    classDef source fill:#E6E6FA,stroke:#333,color:#4b0082
-    class C1,C2 concept
-    class F1,F2 fact
-    class E1,E2 event
-    class SRC source
-```
+![图模型总览：核心图（概念+事实，有界）+ 事件层（事件→核心单向背书）+ source；universe 归属轴对全部节点生效](diagrams/overview.png)
 
 MCS（Maximum Context Subgraph，最大上下文子图）是一种把知识组织成图、并保证可检索子图有界的方法。它的核心是一条不变量：
 
@@ -143,34 +113,7 @@ extensions    边的元信息（置信度、时间……，默认不填充）
 
 > 下图示意**双层结构 + universe 归属轴 + 载重双类过滤**：核心（概念 / 事实，有界）与事件层（事件 → 核心单向绑入）分离；每个 universe 自成封闭世界——同 universe 事件边在核心侧单向过滤、跨 universe 边两端双向过滤，二者都不进单 universe 活跃视图（4 处过滤落点见下方「载重规则」）。
 
-```mermaid
-flowchart LR
-    subgraph REAL["universe = __reality__（现实世界）"]
-        direction TB
-        RC["核心：概念 / 事实<br/>有界 · 聚类归纳"]
-        RE["事件层：摄入事件<br/>规则 · 不经 LLM"]
-        RE -. "事件→核心 单向背书<br/>核心侧 get_relations 过滤" .-> RC
-    end
-
-    subgraph WORK["universe = work（作品世界）"]
-        direction TB
-        WC["核心：概念 / 事实"]
-        WE["事件层：作品叙事事件<br/>LLM 抽取 · 作品纪年"]
-        WE -. "单向背书 · 核心不反查" .-> WC
-    end
-
-    RC -. "跨 universe 边" .-> WC
-    WC -. "两端双向过滤<br/>仅 get_cross_universe_edges 可达" .-> RC
-
-    UM["universe 元节点（概念 · 不持成员）<br/>每个 canonical universe 一个<br/>身份锚点 + 查询 foothold"]
-
-    classDef core fill:#90EE90,stroke:#333,color:#003300
-    classDef event fill:#FFD700,stroke:#333,color:#000
-    classDef meta fill:#E6E6FA,stroke:#333,color:#4b0082
-    class RC,WC core
-    class RE,WE event
-    class UM meta
-```
+![universe 归属轴 + 载重双类过滤：现实 / 作品各自封闭世界，同 universe 事件边核心侧单向过滤、跨 universe 边两端双向过滤](diagrams/universe.png)
 
 把图分两层，**有界只对核心负责**：
 
@@ -228,6 +171,8 @@ flowchart LR
 | **visited** | 否 | 已处理节点的 id，去重、防重复遍历 | 不占（仅存 id） |
 | **frontier** | 否 | BFS 待扩展的节点 id 队列 | 不占（仅存 id） |
 
+![一次查询的四个工作区 + 预算归属：积累区 + 活跃区进 LLM 合计 ≤ T；visited + frontier 仅存 id 不计 token；每轮组装 S + 查询 + 积累 + 活跃 + R ≤ W](diagrams/gmd-workzones.png)
+
 - **每轮真正喂给 LLM 的** = `S`（指令）+ 查询 + 积累区（已确认）+ 活跃区（本轮候选）+ `R`（结果余量），整体 ≤ `W`；即 **积累区 + 活跃区 ≤ 查询窗口 `T`**。积累区逐轮变大、活跃区空间随之收缩，逼近 `token_budget` 即停。
 - **把积累区也放进上下文**，是为了让 LLM 带着"已经确认了什么"来判断下一跳值不值得扩——代价是它占预算、必须封顶。
 - **visited / frontier 只存轻量 id**，不渲染、不进上下文、不计 token。它们保证 BFS 不重复、不遗漏，却不消耗大模型"看"的预算——**簿记留在算法侧，只有"已确认 + 当前在看"才花 token**，这正是 MCS 能在大图上游走而上下文不爆的关键。
@@ -243,26 +188,7 @@ flowchart LR
 
 把原始输入入库（结构部分按规则、文本部分靠 LLM）、**对齐已有节点**、连边，写入期就把核心组织成有界。
 
-```mermaid
-flowchart TD
-    IN([原始输入 IngestInput]) --> S0
-    S0["⓪ universe 判定 · 不经 LLM<br/>work_id → 注册表规范化"] --> S1
-    S1["① 规则入库 · 不经 LLM<br/>输入 → 摄入事件 / source 切分"] --> S2
-    S2["② 关联节点提取<br/>复用 read 取回已有相关节点"] --> S3
-    S3["③ LLM 抽取 + 对齐<br/>名词 → 概念 · 命题 → 事实"] --> D{work_id 非空?}
-    D -->|是| S3b["③b 作品叙事事件抽取 · LLM<br/>带纪年叙述 → 事件(universe=work)"]
-    D -->|否| S4
-    S3b --> S4
-    S4["④ 连边<br/>事实—端点 · 事件—背书 · 事实—互斥 · 孤儿—根"] --> S5
-    S5["⑤ 守门 + 聚类裂变<br/>循环至收敛（见下细化）"] --> S6([⑥ 持久化 save_full])
-
-    classDef rule fill:#E6E6FA,stroke:#333,color:#4b0082
-    classDef llm fill:#FFD700,stroke:#333,color:#000
-    classDef gate fill:#90EE90,stroke:#333,color:#003300
-    class S0,S1 rule
-    class S3,S3b llm
-    class S5 gate
-```
+![ingest 写入流程：⓪ universe 判定 → ① 规则入库 → ② 关联节点提取 → ③ LLM 抽取对齐 → ③b 作品叙事事件（work_id 非空）→ ④ 连边 → ⑤ 守门裂变 → ⑥ 持久化](diagrams/ingest.png)
 
 **各步说明：**
 
@@ -288,27 +214,7 @@ flowchart TD
 
 **守门 + 聚类（细化）**
 
-```mermaid
-flowchart TD
-    START(["写入 / 连边 / 合并后<br/>对每个受影响节点"]) --> G1
-    G1["① 守门：估层级视图<br/>中心 content + 层级子节点 · 不含关系边"] --> DEC{超 T?}
-    DEC -->|否·放行| DONE(["收敛：处处一跳邻域 ≤ T"])
-    DEC -->|是·即将超 T| S2
-    S2["② 整窗单次喂：中心 + 全部层级子节点 → decide_hub<br/>不变量保证此刻 ≤ T · 一次装下"] --> S3
-    S3["③ LLM 归纳成若干语义内聚社区<br/>禁纯图聚类"] --> S4
-    S4["④ 社区三选一重组<br/>合并同义(仅概念·事实不并) / 找关键概念 / 概括新概念"] --> S5
-    S5["⑤ 重挂：成员 →关联→ 组织中心 H(打 hub 标记)<br/>允许重叠 · 无法归类留原中心 · 滤幻觉 id"] --> S6
-    S6["⑥ 边吸收：扫 H 成员父节点，若 X 子节点 ⊇ H 全员<br/>→ 删 X→各成员、加 X→H(复用 hub · 减边减扇出)"] --> REC{新中心仍 > T?}
-    REC -->|是·递归| S2
-    REC -->|否| DONE
-
-    classDef gate fill:#87CEEB,stroke:#333,color:#001a66
-    classDef llm fill:#FFD700,stroke:#333,color:#000
-    classDef done fill:#90EE90,stroke:#333,color:#003300
-    class G1 gate
-    class S3,S4 llm
-    class DONE done
-```
+![守门 + 聚类裂变：估层级视图 → 超 T 即整窗喂 decide_hub → 语义社区重组（合并同义 / 找关键概念 / 概括新概念）→ 重挂 + 边吸收 → 递归至收敛](diagrams/guard.png)
 
 - **守门口径 = 层级视图（不含关系边）**：守门估的是受影响节点的**层级视图**（中心 content + 层级子节点），**不含关系边 token**——因为 `decide_hub` 只处理节点、聚不了关系边；关系边的有界由**查询期 Phase 2 按 `priority` 截断**兜。"估算 == 渲染"（铁律一）针对的是**查询视图（`select_facts`，含关系边）**的渲染估算，与守门的 fanout 估算是**两个不同对象**，不要混。
 - **事实只重组不合并**（合并会断掉背书 / 互斥）；禁"信息碎片集合"这类空洞聚合标签。
@@ -336,27 +242,7 @@ flowchart TD
 
 种子定位后在核心做 BFS；积累区 / 活跃区进 LLM，visited / frontier 只做簿记；事件默认不进、按需取。
 
-```mermaid
-flowchart TD
-    Q([查询]) --> S1
-    S1["① 种子定位<br/>顶层种子 / 切词·字面匹配名·别名 / embedding<br/>→ 节点仲裁 → 入口种子 → frontier"] --> LOOP
-    LOOP["② 从 frontier 取一节点<br/>渲染活跃视图(关联邻居 · ≤ 剩余 T) → 活跃区"] --> S3
-    S3["③ LLM 双角色筛选活跃区命题/邻居<br/>结果 → 积累区(吃 T) · 探索 → frontier(不吃 T)"] --> S4
-    S4["④ 选中者(任一角色)入 visited 去重<br/>事实边端点随边角色补入"] --> DEC{"继续?<br/>未达 max_rounds<br/>且未超 token_budget"}
-    DEC -->|是| LOOP
-    DEC -->|否| S5
-    S5{{⑤ 需出处/证据?}} -->|是| S5b["事实 → 事件 定向查<br/>(默认不带事件)"]
-    S5 -->|否| S6
-    S5b --> S6
-    S6([⑥ 后处理(重排/裁剪)<br/>返回子图 = 积累区])
-
-    classDef seed fill:#E6E6FA,stroke:#333,color:#4b0082
-    classDef llm fill:#FFD700,stroke:#333,color:#000
-    classDef acc fill:#87CEEB,stroke:#333,color:#001a66
-    class S1 seed
-    class LOOP,S3 llm
-    class S4,S6 acc
-```
+![query 查询流程：种子定位 → 核心 BFS（渲染活跃视图 → LLM 双角色筛选：结果进积累区 / 探索进 frontier）→ 需出处时事实→事件定向查 → 后处理返回子图](diagrams/query.png)
 
 > **预算归属**：进 LLM·吃 T 预算 = 积累区 + 活跃区；只存 id·不进 LLM = visited + frontier。frontier 另受 `max_frontier_nodes` 阀兜；种子定位里的"热门事件反查"属**未来**能力（暂未实现，不在 `unified-graph-schema` change 内）。
 
@@ -374,7 +260,7 @@ flowchart TD
 ### 6.1 核心设计（稳定契约，不轻易动）
 
 - **4 类节点**：概念 / 事实 / 事件 / source。
-- **产生方式**：概念 / 事实靠 LLM 语义抽取；事件 / source 由**规则**入库、不经 LLM（事件按既定结构直接存、source 按类型切分分类）。
+- **产生方式**：概念 / 事实靠 LLM 语义抽取；**现实摄入事件 / source 由规则入库、不经 LLM**（摄入事件按既定结构直接存、source 按类型切分分类）；**作品叙事事件（`work_id` 非空）由 LLM 抽取**（`extract_work_events`，识别作品文本里带纪年的叙述发生 → `WorkEventDraft`）。
 - **有向边 + 极简类型**：基础结构边 `关联`，语义当前仅 `互斥`（无独立层级边——层级由聚类涌现）。
 - **hub 仅为标记**（反查用，无算法含义）。
 - **核心不变量**：任意节点活跃视图 ≤ T；估算口径 == 渲染口径。

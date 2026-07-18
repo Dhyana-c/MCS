@@ -20,7 +20,7 @@
 | 上手指南 | [getting-started.md](getting-started.md) | 5 分钟跑通：安装 → 写入 → 查询 → 持久化 → MCP → Agent |
 | 架构总览 | [architecture.md](architecture.md) | 系统定位、4 类节点 / 2 类边、双层结构、读写管线、插件体系、目录结构 |
 | 图模型设计 | [graph-model-design.md](graph-model-design.md) | **完整、权威**的图模型与核心算法设计（v1.0，已实现） |
-| 插件体系 | [plugin-system.md](plugin-system.md) | 14 类 PluginType、接口签名、注册机制、生命周期、自定义插件开发 |
+| 插件体系 | [plugin-system.md](plugin-system.md) | 13 类 PluginType、接口签名、注册机制、生命周期、自定义插件开发 |
 | API 参考 | [api-reference.md](api-reference.md) | MCS 公开方法、核心数据类、Builder / 工厂、MCP 工具 |
 | 配置文件 | [configuration.md](configuration.md) | YAML 配置加载（preset 叠加、`${VAR}` 插值、import-path 插件、受信输入） |
 | MCP Server | [mcp-server.md](mcp-server.md) | MCP（stdio）server：`query` / `ingest` 工具、Claude Desktop 接入 |

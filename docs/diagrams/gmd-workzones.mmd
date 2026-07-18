@@ -1,0 +1,39 @@
+flowchart TD
+    SEED([种子定位完成<br/>核心 BFS 启动]) --> ROUND
+
+    subgraph ROUND["每轮循环 · 单次喂 LLM 的内容 = S + 查询 + 积累区 + 活跃区 + R ≤ W"]
+        direction TB
+
+        subgraph BUDGET["进 LLM · 占 T 预算（积累区 + 活跃区 ≤ T）"]
+            direction LR
+            ACC["积累区<br/>已确认相关 · 逐轮累积<br/>最终成答案子图<br/>受 token_budget ≤ T 封顶"]
+            ACT["活跃区<br/>本轮候选 · 当前节点活跃视图<br/>占 T 的剩余 = T − 积累区"]
+        end
+
+        subgraph BOOK["不进 LLM · 不计 token（仅存 id · 簿记留在算法侧）"]
+            direction LR
+            VIS["visited<br/>已处理节点 id<br/>去重 · 防重复遍历"]
+            FRT["frontier<br/>BFS 待扩展 id 队列<br/>另受 max_frontier_nodes 兜"]
+        end
+
+        ACC -. 本轮一起喂 .-> LLM
+        ACT ==>|本轮推理 / 双角色筛选| LLM["LLM<br/>select_facts<br/>结果·探索双角色"]
+        LLM -->|结果 → 进积累区<br/>逐轮变大 · 吃 T| ACC
+        LLM -. 探索 → 进 frontier<br/>宽召回 · 不吃 T .-> FRT
+        VIS -. 标记本轮已处理 .-> ACC
+    end
+
+    ROUND --> DEC{"积累区逼近<br/>token_budget?"}
+    DEC -->|否 · 继续 BFS| ROUND
+    DEC -->|是 · 停| POST["后处理（重排 / 裁剪）"]
+    POST --> OUT([返回 Subgraph<br/>积累区 = 答案子图])
+
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef acc fill:#87CEEB,stroke:#333,color:#001a66
+    classDef act fill:#90EE90,stroke:#333,color:#003300
+    classDef book fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef term fill:#FFD700,stroke:#333,color:#000
+    class LLM,POST,OUT term
+    class ACC acc
+    class ACT act
+    class VIS,FRT book

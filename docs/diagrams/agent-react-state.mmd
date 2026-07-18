@@ -1,0 +1,54 @@
+stateDiagram-v2
+    direction TB
+
+    [*] --> assemble
+
+    state assemble <<choice>>
+    note right of assemble
+        开启 context_budget 时
+        每轮组装前先经会话上下文自治拦截：
+        存根折叠 / PIN / FINISH / 预算闸
+        （估算口径 == 发送口径，框架保证 ≤ 预算）
+    end note
+
+    assemble --> thinking : 组装 messages
+
+    state thinking : 思考中（LLM 决策）
+    thinking --> decide : AssistantMessage 返回
+
+    state decide <<choice>>
+    decide : 有工具调用?
+
+    decide --> exec_tool : 是（tool_calls 非空）
+    decide --> terminate : 否（纯文本回复）
+
+    state exec_tool : 执行工具（12 原语之一）
+    exec_tool --> refill : 工具结果带 [id:...]
+
+    state refill : 结果回灌（assistant + tool 消息入史）
+    refill --> check_turns
+
+    state check_turns <<choice>>
+    check_turns : 已达 max_turns?
+
+    check_turns --> assemble : 否（进入下一轮）
+    note right of check_turns
+        下一轮回到组装阶段；
+        若 context_budget 开启
+        再次过自治拦截
+    end note
+    check_turns --> forced : 是（轮次耗尽）
+
+    state terminate : 返回最终答复（终止）
+    state forced : 降级交付 / 无答案兜底
+
+    terminate --> [*]
+    forced --> [*]
+
+    note left of terminate
+        终止类型（ChatTrace.termination）：
+        · implicit  无标记无工具调用的宽松接受
+        · finish    FINISH + USED:#k 显式收束
+        · finalized 收尾轮注入硬指令的有界交付
+        · forced    轮次耗尽仍未作答
+    end note

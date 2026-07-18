@@ -1,0 +1,19 @@
+flowchart TD
+    START(["写入 / 连边 / 合并后<br/>对每个受影响节点"]) --> G1
+    G1["① 守门：估层级视图<br/>中心 content + 层级子节点 · 不含关系边"] --> DEC{超 T?}
+    DEC -->|否·放行| DONE(["收敛：处处一跳邻域 ≤ T"])
+    DEC -->|是·即将超 T| S2
+    S2["② 整窗单次喂：中心 + 全部层级子节点 → decide_hub<br/>不变量保证此刻 ≤ T · 一次装下"] --> S3
+    S3["③ LLM 归纳成若干语义内聚社区<br/>禁纯图聚类"] --> S4
+    S4["④ 社区三选一重组<br/>合并同义(仅概念·事实不并) / 找关键概念 / 概括新概念"] --> S5
+    S5["⑤ 重挂：成员 →关联→ 组织中心 H(打 hub 标记)<br/>允许重叠 · 无法归类留原中心 · 滤幻觉 id"] --> S6
+    S6["⑥ 边吸收：扫 H 成员父节点，若 X 子节点 ⊇ H 全员<br/>→ 删 X→各成员、加 X→H(复用 hub · 减边减扇出)"] --> REC{新中心仍 > T?}
+    REC -->|是·递归| S2
+    REC -->|否| DONE
+
+    classDef gate fill:#87CEEB,stroke:#333,color:#001a66
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef done fill:#90EE90,stroke:#333,color:#003300
+    class G1 gate
+    class S3,S4 llm
+    class DONE done

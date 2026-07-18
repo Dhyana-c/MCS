@@ -1,0 +1,35 @@
+flowchart TD
+    START(["每轮组装<br/>原始消息历史 · 永不改写"]) --> S1
+    S1["① 存根折叠（减脂层）<br/>距当前 ≥ N 轮且未 pin 的工具结果<br/>折为 [id:...] 一行存根 · 存根不比全文短则不折"] --> S2
+    S2["② 窗口级去重<br/>首见全文列 · 已见 (+k 已见) 省略<br/>遗忘可逆：按 id 取回 / PIN: #k 恢复"] --> S3
+    S3["③ pin / unpin 标记解析<br/>回复文本标记 · 不新增工具 · 不占轮次<br/>PIN: #k 钉住 · 超防御上限则 pin_rejected"] --> S4
+    S4["④ 估算 token<br/>框架估算（MUST NOT 交 LLM 自估）"] --> DEC{"token ≤ 预算?"}
+    DEC -->|是| S6
+    DEC -->|否| FB1
+    subgraph FALLBACK["确定性兜底 · 按序 · MUST NOT 死锁 / 静默截断中段"]
+        direction TB
+        FB1["兜底① 全量折叠<br/>含近轮也折为存根"] --> FB2
+        FB2{"仍超?"}
+        FB2 -->|是| FB3["兜底② 逐出最旧未 pin 存根<br/>墓碑 [已逐出 #k] · 不物理删除"]
+        FB2 -->|否| FB_EXIT(["兜底退出 · 回主流程"])
+        FB3 --> FB4{"仍超?"}
+        FB4 -->|是| FB5["兜底③ [预算耗尽]<br/>新工具调用不执行<br/>受保护(不折不逐)tool 消息告知模型换出或收尾"]
+        FB4 -->|否| FB_EXIT
+        FB5 --> FB_EXIT
+    end
+    FB_EXIT --> S5
+    S5["⑤ 注入 system prompt<br/>管理约定段 + 动态段「已用 X/Y token · 剩余轮次 Z」"] --> S6(["发送 LLM<br/>估算口径 == 发送口径"])
+
+    START -. 幂等重算 · 折叠/逐出为每轮视图操作 .-> S1
+    DEC -. 否分支 .-> FALLBACK
+
+    classDef rule fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef gate fill:#90EE90,stroke:#333,color:#003300
+    classDef decision fill:#87CEEB,stroke:#333,color:#001a66
+    classDef fallback fill:#FFE4E1,stroke:#a33,color:#600
+    class S1,S2,S5 rule
+    class S4 llm
+    class S3 gate
+    class DEC,FB2,FB4 decision
+    class FB1,FB3,FB5 fallback

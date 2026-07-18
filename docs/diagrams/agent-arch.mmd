@@ -1,0 +1,16 @@
+flowchart TD
+    UI(["浏览器前端<br/>static/ · index.html"]) -->|HTTP| API
+    API["FastAPI<br/>app.py · create_app(agent)"] --> AGENT
+    AGENT["MemoryAgent · loop.py<br/>ReAct loop（自有 LLM · 独立于 MCS read_llm）"] --> STORE
+    STORE["MemoryStore · memory.py<br/>ThreadPoolExecutor max_workers=1<br/>_submit 阻塞取结果"] --> MCS(["MCS<br/>图 + 读写管线"])
+    API -. /graph/expand 旁路 ·.-> GV["memory.graph_view<br/>只读可视化视图"]
+    GV -. 转发 .-> STORE
+
+    classDef infra fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef gate fill:#90EE90,stroke:#333,color:#003300
+    classDef sink fill:#87CEEB,stroke:#333,color:#001a66
+    class UI,API,STORE infra
+    class AGENT llm
+    class MCS gate
+    class GV sink

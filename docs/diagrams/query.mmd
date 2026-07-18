@@ -1,0 +1,19 @@
+flowchart TD
+    Q([查询]) --> S1
+    S1["① 种子定位<br/>顶层种子 / 切词·字面匹配名·别名 / embedding<br/>→ 节点仲裁 → 入口种子 → frontier"] --> LOOP
+    LOOP["② 从 frontier 取一节点<br/>渲染活跃视图(关联邻居 · ≤ 剩余 T) → 活跃区"] --> S3
+    S3["③ LLM 双角色筛选活跃区命题/邻居<br/>结果 → 积累区(吃 T) · 探索 → frontier(不吃 T)"] --> S4
+    S4["④ 选中者(任一角色)入 visited 去重<br/>事实边端点随边角色补入"] --> DEC{"继续?<br/>未达 max_rounds<br/>且未超 token_budget"}
+    DEC -->|是| LOOP
+    DEC -->|否| S5
+    S5{"需出处 / 证据 ?"} -->|是| S5b["事实 → 事件 定向查<br/>(默认不带事件)"]
+    S5 -->|否| S6
+    S5b --> S6
+    S6(["⑥ 后处理(重排/裁剪)<br/>返回子图 = 积累区"])
+
+    classDef seed fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef acc fill:#87CEEB,stroke:#333,color:#001a66
+    class S1 seed
+    class LOOP,S3 llm
+    class S4,S6 acc

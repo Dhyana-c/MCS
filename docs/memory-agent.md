@@ -12,15 +12,7 @@
 
 ## 架构
 
-```
-浏览器前端 (static/)  ──HTTP──▶  FastAPI (app.py)  ──▶  MemoryAgent (loop.py)
-                                     │                      │ ReAct loop（自有 LLM）
-                                     │                      ▼
-                                     └──/graph/expand──▶  MemoryStore (memory.py)
-                                                            │ 单 worker 线程
-                                                            ▼
-                                                           MCS（图 + 读写管线）
-```
+![记忆 Agent 架构：前端 → FastAPI → MemoryAgent(ReAct loop，自有 LLM 独立于 MCS read_llm) → MemoryStore(单 worker 线程) → MCS；/graph/expand 旁路直转只读视图](diagrams/agent-arch.png)
 
 - **MemoryAgent**（`loop.py`）：ReAct 循环。每轮把最新**图级主题摘要**注入 system prompt（让"要不要进图
   探索"的路由判断有据），LLM 返回工具调用或最终答复；工具结果回灌、最多 `max_turns` 轮。开启
@@ -31,6 +23,8 @@
   详见下文「构造与可插拔 LLM 后端」。
 - **导航决策权在 LLM**：选哪个工具、哪个种子、哪种扩展模式、找哪两个节点的路径，都由 LLM 决定；工具只是对
   MCS 能力的薄封装。
+
+![ReAct loop 单轮状态流转：组装→思考→有工具调用? 是则执行+回灌进下一轮(最多 max_turns) / 否则终止；context_budget 开启时组装前过会话上下文自治拦截；终止类型 implicit / finish / finalized / forced](diagrams/agent-react-state.png)
 
 ## 12 个工具（5 导航 + 1 时间线视图 + 2 只读语义判断 + 2 写图语义重组 + 2 跨 universe）
 
@@ -51,6 +45,8 @@
 | `merge` | `node_ids`, `focus?` | 合并若干本就同一个的节点（异名/同义/重复建）为一个（写图，互斥禁合，过守门） | ✅ |
 | `get_cross_universe_edges` | `node_id`, `limit?` | 定向查某节点的跨 universe 桥（只读，绕载重）——单 universe 查询默认不跨，需确认跨世界关系（如演义曹操↔正史曹操）时用 | ✅ |
 | `link_cross_universe` | `source_id`, `target_id` | 给两个不同 universe 的节点建概念桥（写图，唯一创建路径）——仅"同一实体的不同世界叙述"时调；同 universe 勿用 | ✅ |
+
+![12 工具分类与典型链式协作：5 导航 + 1 时间线 + 2 只读语义判断 + 2 写图重组 + 2 跨 universe；典型链式 search→associate→reason / →generalize·arbitrate / →split·merge / →get_cross_universe_edges→link_cross_universe](diagrams/agent-tools.png)
 
 未实现的模式以**空壳诚实返回**提示（不伪造）；工具返回的节点都带 `[id:...]`，供后续工具引用
 （`search → associate → reason` 链式导航）。
@@ -96,6 +92,8 @@
 **新参数**（`MemoryAgent`）：`context_budget`（会话预算 token，None=关闭）、`fold_after_turns`
 （存根折叠轮龄 N，默认 2）、`pin_cap_ratio`（pin 总量防御上限占预算比例，默认 0.7）、
 `token_counter`（token 估算函数，默认保守经验式 `CalibratedEstimator`）。
+
+![会话上下文自治每轮组装：原始历史(永不改写) → 存根折叠 → 窗口级去重 → pin/unpin 解析 → 估算 ≤ 预算? 否走确定性兜底(全量折叠 → 逐出 → 预算耗尽拒注) / 是 → 注入 system prompt → 发送 LLM；估算口径 == 发送口径](diagrams/agent-context.png)
 
 **存根折叠（减脂层）**：距当前 ≥ N 轮且未 pin 的工具结果折叠为一行存根（id 来源：解析工具
 返回文本的 `[id:...]`）；存根不比全文短则不折（总量不降的重组无效）：

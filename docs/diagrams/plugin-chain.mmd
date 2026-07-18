@@ -1,0 +1,31 @@
+flowchart TB
+
+    WSTART(["写入 ingest<br/>write_manager"]) --> W1
+    W1["ENTRY 链<br/>按 priority↓ · alias_entry=100 → hub_fallback=0"] --> W2
+    W2["WRITE_PREPROCESS 链<br/>idempotency_check（幂等跳重）"] --> W3
+    W3["LLM 抽取 + 连边<br/>（见 ingest 流程）"] --> W4
+    W4["COMPACTION 链<br/>fanout_reducer / summary_regen / graph_summary<br/>守门 + 裂变收敛"] --> WEND([写入完成])
+
+    RSTART(["查询 query<br/>read_manager"]) --> R1
+    R1["ENTRY 链<br/>按 priority↓ · alias_entry=100 → hub_fallback=0"] --> R2
+    R2["TRIM 链<br/>priority_trim（按 priority 截断候选）"] --> R3
+    R3["QUERY_PREPROCESS 链<br/>查询文本预处理"] --> R4
+    R4["核心 BFS + LLM 双角色筛选<br/>（见 query 流程）"] --> R5
+    R5["POSTPROCESS 链<br/>rerank（重排 · opt-in）"] --> REND([返回 Subgraph])
+
+    SH1["LLM 后端<br/>deepseek / claude / ollama"] -. 同实例登记 .-> W3
+    SH1 -. 同实例登记 .-> R4
+    SH2["NodeExtension / StorageSchemaExt<br/>source_tracking / summary"] -. 节点扩展 .-> WEND
+    SH2 -. 节点扩展 .-> REND
+
+    classDef entry fill:#90EE90,stroke:#333,color:#003300
+    classDef proc fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef gate fill:#90EE90,stroke:#333,color:#003300
+    classDef shared fill:#87CEEB,stroke:#333,color:#001a66
+    classDef se fill:#90EE90,stroke:#333,color:#003300
+    class W1,R1 entry
+    class W2,W4,R2,R3,R5 proc
+    class W3,R4 llm
+    class WSTART,RSTART,WEND,REND se
+    class SH1,SH2 shared

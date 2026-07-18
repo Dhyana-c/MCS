@@ -1,0 +1,59 @@
+flowchart TD
+    %% ===== 12 工具按 5 类分组 + 典型链式协作 =====
+    %% 配色：导航绿 / 只读判断蓝 / 写图金(强调改图) / 跨universe紫
+    %% 实线 --> 为典型链式协作；-.虚线.- 为同组归类
+
+    subgraph NAV["5 导航（绿·只读·图上找）"]
+        direction TB
+        LEARN["learn<br/>写入记忆图"]
+        SEARCH["search<br/>入口种子(keyword/direct/vector)"]
+        ASSOC["associate<br/>BFS 联想扩展(mcs/hot/random)"]
+        REASON["reason<br/>两节点找路径"]
+        RECALL["recall<br/>近期事件倒排"]
+    end
+
+    subgraph TL["1 时间线（绿·只读·虚拟视图）"]
+        direction TB
+        TIME["timeline<br/>某 universe 升序组装"]
+    end
+
+    subgraph RO["2 只读语义判断（蓝·调 LLM · 不改图）"]
+        direction TB
+        GEN["generalize<br/>归纳公共上位概念"]
+        ARB["arbitrate<br/>裁决互斥事实采信方"]
+    end
+
+    subgraph WRITE["2 写图语义重组（金·调 LLM · 改图 · 过守门）"]
+        direction TB
+        SPLIT["split<br/>拆耦合概念节点"]
+        MERGE["merge<br/>合并同义/重复节点"]
+    end
+
+    subgraph XUNI["2 跨 universe（紫·绕载重定向查 / 建桥）"]
+        direction TB
+        GETX["get_cross_universe_edges<br/>定向查跨世界桥(只读)"]
+        LINKX["link_cross_universe<br/>建概念桥(写图·唯一路径)"]
+    end
+
+    %% ===== 典型链式协作（均以 search 为起点，[id:...] 流转）=====
+    SEARCH --> ASSOC --> REASON
+    SEARCH --> GEN
+    SEARCH --> ARB
+    SEARCH --> SPLIT
+    SEARCH --> MERGE
+    SEARCH --> GETX --> LINKX
+
+    %% ===== 链式协作标注 =====
+    SEARCH -.->|"捞到 [id:...]<br/>供后续工具引用"| ASSOC
+    GETX -.->|"确认跨世界<br/>同一实体后建桥"| LINKX
+
+    %% ===== 配色 =====
+    classDef nav fill:#90EE90,stroke:#333,color:#003300
+    classDef readonly fill:#87CEEB,stroke:#333,color:#001a66
+    classDef write fill:#FFD700,stroke:#333,color:#000
+    classDef xuni fill:#E6E6FA,stroke:#333,color:#4b0082
+
+    class LEARN,SEARCH,ASSOC,REASON,RECALL,TIME nav
+    class GEN,ARB readonly
+    class SPLIT,MERGE write
+    class GETX,LINKX xuni

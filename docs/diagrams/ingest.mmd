@@ -1,0 +1,18 @@
+flowchart TD
+    IN([原始输入 IngestInput]) --> S0
+    S0["⓪ universe 判定 · 不经 LLM<br/>work_id → 注册表规范化"] --> S1
+    S1["① 规则入库 · 不经 LLM<br/>输入 → 摄入事件 / source 切分"] --> S2
+    S2["② 关联节点提取<br/>复用 read 取回已有相关节点"] --> S3
+    S3["③ LLM 抽取 + 对齐<br/>名词 → 概念 · 命题 → 事实"] --> D{work_id 非空?}
+    D -->|是| S3b["③b 作品叙事事件抽取 · LLM<br/>带纪年叙述 → 事件(universe=work)"]
+    D -->|否| S4
+    S3b --> S4
+    S4["④ 连边<br/>事实—端点 · 事件—背书 · 事实—互斥 · 孤儿—根"] --> S5
+    S5["⑤ 守门 + 聚类裂变<br/>循环至收敛（见下细化）"] --> S6([⑥ 持久化 save_full])
+
+    classDef rule fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef gate fill:#90EE90,stroke:#333,color:#003300
+    class S0,S1 rule
+    class S3,S3b llm
+    class S5 gate
