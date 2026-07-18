@@ -61,3 +61,10 @@ _run_mem_demo.py
 
 # 本地运行配置实例（密钥经 ${VAR} 走环境变量；配置本身每环境不同、不入库）
 mcs.yaml
+
+# 本地画图 skill（仅本地使用，不入库；位于 .claude/skills/）
+.claude/skills/design-doc-mermaid/
+.claude/skills/mermaid/
+
+# 文档配图渲染临时产物（mermaid 源 / 渲染图 / 浏览器配置，不入库）
+docs/diagrams/

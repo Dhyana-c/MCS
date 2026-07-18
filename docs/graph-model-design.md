@@ -12,6 +12,40 @@
 
 ## 1. 算法概述
 
+> 下图是贯穿全文的**图模型总览**：核心图（概念 + 事实，有界）承载结构，事件层（事件 → 核心单向背书）叠加其上；节点 4 类、边 2 类，`universe` 归属轴对全部节点生效（详见 §3）。
+
+```mermaid
+flowchart TB
+    subgraph CORE["核心图 · 有界（任意节点活跃视图 ≤ T）"]
+        direction TB
+        C1["概念 Concept"]
+        C2["概念"]
+        F1["事实 / 命题 Fact<br/>谓词落 content"]
+        F2["事实 Fact"]
+        C1 -->|关联| F1
+        C1 -->|关联| C2
+        F1 <-->|互斥| F2
+    end
+
+    subgraph EVT["事件层 · 时间倒序 · 不聚类 · 不进活跃视图"]
+        E1["事件 Event<br/>universe = work<br/>LLM 抽取"]
+        E2["摄入事件<br/>universe = __reality__<br/>规则产生"]
+    end
+
+    SRC["source<br/>规则入库 · 不经 LLM"] -->|关联| F1
+    E1 -->|单向背书| C1
+    E2 -. 核心 get_relations 不反查 .-> F1
+
+    classDef concept fill:#90EE90,stroke:#333,color:#003300
+    classDef fact fill:#87CEEB,stroke:#333,color:#001a66
+    classDef event fill:#FFD700,stroke:#333,color:#000
+    classDef source fill:#E6E6FA,stroke:#333,color:#4b0082
+    class C1,C2 concept
+    class F1,F2 fact
+    class E1,E2 event
+    class SRC source
+```
+
 MCS（Maximum Context Subgraph，最大上下文子图）是一种把知识组织成图、并保证可检索子图有界的方法。它的核心是一条不变量：
 
 > **图中任意节点的"活跃视图"，渲染成 token 后不超过阈值 `T`（`T` 是上下文窗口分给"查询内容"的那段预算，窗口划分见 §4）。**
@@ -107,6 +141,37 @@ extensions    边的元信息（置信度、时间……，默认不填充）
 
 ### 3.3 有界与分层（核心不变量如何成立）
 
+> 下图示意**双层结构 + universe 归属轴 + 载重双类过滤**：核心（概念 / 事实，有界）与事件层（事件 → 核心单向绑入）分离；每个 universe 自成封闭世界——同 universe 事件边在核心侧单向过滤、跨 universe 边两端双向过滤，二者都不进单 universe 活跃视图（4 处过滤落点见下方「载重规则」）。
+
+```mermaid
+flowchart LR
+    subgraph REAL["universe = __reality__（现实世界）"]
+        direction TB
+        RC["核心：概念 / 事实<br/>有界 · 聚类归纳"]
+        RE["事件层：摄入事件<br/>规则 · 不经 LLM"]
+        RE -. "事件→核心 单向背书<br/>核心侧 get_relations 过滤" .-> RC
+    end
+
+    subgraph WORK["universe = work（作品世界）"]
+        direction TB
+        WC["核心：概念 / 事实"]
+        WE["事件层：作品叙事事件<br/>LLM 抽取 · 作品纪年"]
+        WE -. "单向背书 · 核心不反查" .-> WC
+    end
+
+    RC -. "跨 universe 边" .-> WC
+    WC -. "两端双向过滤<br/>仅 get_cross_universe_edges 可达" .-> RC
+
+    UM["universe 元节点（概念 · 不持成员）<br/>每个 canonical universe 一个<br/>身份锚点 + 查询 foothold"]
+
+    classDef core fill:#90EE90,stroke:#333,color:#003300
+    classDef event fill:#FFD700,stroke:#333,color:#000
+    classDef meta fill:#E6E6FA,stroke:#333,color:#4b0082
+    class RC,WC core
+    class RE,WE event
+    class UM meta
+```
+
 把图分两层，**有界只对核心负责**：
 
 | 层 | 内容 | 如何有界 |
@@ -178,52 +243,37 @@ extensions    边的元信息（置信度、时间……，默认不填充）
 
 把原始输入入库（结构部分按规则、文本部分靠 LLM）、**对齐已有节点**、连边，写入期就把核心组织成有界。
 
+```mermaid
+flowchart TD
+    IN([原始输入 IngestInput]) --> S0
+    S0["⓪ universe 判定 · 不经 LLM<br/>work_id → 注册表规范化"] --> S1
+    S1["① 规则入库 · 不经 LLM<br/>输入 → 摄入事件 / source 切分"] --> S2
+    S2["② 关联节点提取<br/>复用 read 取回已有相关节点"] --> S3
+    S3["③ LLM 抽取 + 对齐<br/>名词 → 概念 · 命题 → 事实"] --> D{work_id 非空?}
+    D -->|是| S3b["③b 作品叙事事件抽取 · LLM<br/>带纪年叙述 → 事件(universe=work)"]
+    D -->|否| S4
+    S3b --> S4
+    S4["④ 连边<br/>事实—端点 · 事件—背书 · 事实—互斥 · 孤儿—根"] --> S5
+    S5["⑤ 守门 + 聚类裂变<br/>循环至收敛（见下细化）"] --> S6([⑥ 持久化 save_full])
+
+    classDef rule fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef gate fill:#90EE90,stroke:#333,color:#003300
+    class S0,S1 rule
+    class S3,S3b llm
+    class S5 gate
 ```
-                原始输入
-                   │
-                   ▼
-  ⓪ universe 判定（不经 LLM）
-       • IngestInput.work_id 非空 → 经 universe 注册表（元节点 name + 别名字面匹配）规范化为 canonical universe id
-       • 命中复用 canonical、未命中自动建 universe 元节点（概念 / universe=__reality__（作品作为现实造物）/ 不持成员）
-       • 无 work_id → __reality__；摄入行为事件 universe 固定 __reality__（不随被读作品变）
-       • 概念 / 事实 / source 归 canonical universe；合并 / 互斥 / 同名去重均限同 universe（跨 universe 不合并、不互斥）
-                   │
-                   ▼
-  ① 规则入库（不经 LLM）
-       • 整个输入（content）→ 记为一个事件节点（记录这一摄入行为、落用户时间轴，universe 固定 __reality__）
-       • 原始资料（source）  → 按类型切分分类，存为 source 节点（保真不改写）
-       • content 内转述的过去事件（"三年前发生 X"）→ 不盖成时间轴事件：有 work_id 走 ③b 作品叙事事件，否则由 ③ 抽成带时间属性的事实
-                   │
-                   ▼
-  ② 关联节点提取（复用 read 的检索能力）
-       以输入的字面线索为种子 → 跑 read 的种子定位 + BFS
-       把图中**已有的相关节点**（概念 / 事实）取进来，作为 ③ 的对齐上下文
-                   │
-                   ▼
-  ③ LLM 语义抽取 + 对齐（带着 ② 取回的已有节点）
-       • 名词       → 概念（与已有同义概念合并 / 复用，不重复建）
-       • 关系命题   → 事实（谓词落 content；与已有事实对齐、判互斥）
-       （记录概念 / 事实来自哪个 source / 事件，供 ④ 连背书边）
-                   │
-                   ▼
-  ③b 作品叙事事件抽取（LLM，仅 work_id 非空）
-       • 从作品文本识别"带时间的叙述发生" → WorkEventDraft（name / content / 作品纪年 / 参与者名）
-       • 建事件节点（universe=work、event_meta.timestamp=纪年）；参与者名限同 universe 解析
-         （命中同名概念复用、未命中新建概念），事件 ──单向──> 参与者概念（背书）
-                   │
-                   ▼
-  ④ 连边
-       • 事实  ──关联──>  端点概念
-       • 事件  ──单向──>  事实 / 概念（背书·提及，按来源链接）
-       • 事实  ──互斥──   事实
-       • 无任何关联的孤儿  ──关联──>  虚拟根
-                   │
-                   ▼
-  ⑤ 守门 + 聚类（仅核心：概念 / 事实，循环至收敛；作品叙事事件与新建参与者概念一并过守门）—— 见下「细化」
-                   │
-                   ▼
-  ⑥ 持久化
-```
+
+**各步说明：**
+
+- **⓪ universe 判定（不经 LLM）**：`work_id` 非空 → 经 universe 注册表（元节点 name + 别名字面匹配）规范化为 canonical universe id；命中复用、未命中自动建 universe 元节点（概念 / `universe="__reality__"` / 不持成员）。无 `work_id` → `__reality__`；摄入行为事件 universe 固定 `__reality__`（不随被读作品变）。概念 / 事实 / source 归 canonical；合并 / 互斥 / 同名去重均限同 universe（跨 universe 不合并、不互斥）。
+- **① 规则入库（不经 LLM）**：整个输入（content）→ 摄入事件节点（记录这一摄入行为、落用户时间轴，universe 固定 `__reality__`）；source 按类型切分分类、保真不改写；content 内转述的过去事件（"三年前发生 X"）→ 不盖成时间轴事件：有 `work_id` 走 ③b 作品叙事事件、否则由 ③ 抽成带时间属性的事实。
+- **② 关联节点提取**：以输入字面线索为种子跑 read（种子定位 + BFS），把图中已有相关节点（概念 / 事实）取进来，作 ③ 的对齐上下文。
+- **③ LLM 抽取 + 对齐**：名词 → 概念（与已有同义合并 / 复用，不重复建）；关系命题 → 事实（谓词落 content、与已有事实对齐判互斥）；记录概念 / 事实来自哪个 source / 事件，供 ④ 连背书边。
+- **③b 作品叙事事件抽取（LLM，仅 work_id 非空）**：从作品文本识别"带时间的叙述发生" → `WorkEventDraft`（name / content / 作品纪年 / 参与者名）；建事件节点（`universe=work`、`event_meta.timestamp=纪年`），参与者名限同 universe 解析（命中同名概念复用、未命中新建），事件 ──单向──> 参与者概念（背书）。
+- **④ 连边**：事实 ──关联──> 端点概念；事件 ──单向──> 事实 / 概念（背书·提及）；事实 ──互斥── 事实；无任何关联的孤儿 ──关联──> 虚拟根。
+- **⑤ 守门 + 聚类**：仅核心（概念 / 事实）循环至收敛；作品叙事事件与新建参与者概念一并过守门——见下「细化」。
+- **⑥ 持久化**。
 
 > **实现现状**：4 类节点 / 2 类边 / 双层 / 守门 / 互斥 / read-repair 均已落地；①④ 的
 > **event/source 接入统一 `ingest`** 已实现——每次 `ingest` 把整个输入记为一个事件节点
@@ -238,37 +288,26 @@ extensions    边的元信息（置信度、时间……，默认不填充）
 
 **守门 + 聚类（细化）**
 
-```
-  写入 / 连边 / 合并后，对每个受影响节点：
-                │
-                ▼
-   ① 守门：估其层级视图（中心 content + 层级子节点，不含关系边）
-                │
-        ┌───────┴───────┐
-      ≤ T            即将 > T
-        │               │
-        ▼               ▼
-      放行    ╭─► ② 整窗单次喂：中心 + 全部层级子节点 → decide_hub
-              │        │      （不变量保证此刻 ≤ T、一次装下）
-              │        ▼
-              │   ③ LLM 归纳成若干语义内聚社区（禁纯图聚类）
-              │        │
-              │        ▼
-              │   ④ 社区三选一重组：
-              │        合并同义(仅概念·事实不并) / 找关键概念 / 概括新概念
-              │        │
-              │        ▼
-              │   ⑤ 重挂：成员 →关联→ 组织中心 H（打 hub 标记）
-              │        允许重叠 · 无法归类留原中心 · 滤幻觉 id
-              │        │
-              │        ▼
-              │   ⑥ 边吸收：扫 H 成员的父节点，若某 X 的子节点 ⊇ H 全部成员
-              │        → 删 X→各成员、加 X→H（复用 hub、减边减扇出）
-              │        │
-              ╰── 新中心仍 > T？— 是（递归）
-                       │ 否
-                       ▼
-                    收敛：处处一跳邻域 ≤ T
+```mermaid
+flowchart TD
+    START(["写入 / 连边 / 合并后<br/>对每个受影响节点"]) --> G1
+    G1["① 守门：估层级视图<br/>中心 content + 层级子节点 · 不含关系边"] --> DEC{超 T?}
+    DEC -->|否·放行| DONE(["收敛：处处一跳邻域 ≤ T"])
+    DEC -->|是·即将超 T| S2
+    S2["② 整窗单次喂：中心 + 全部层级子节点 → decide_hub<br/>不变量保证此刻 ≤ T · 一次装下"] --> S3
+    S3["③ LLM 归纳成若干语义内聚社区<br/>禁纯图聚类"] --> S4
+    S4["④ 社区三选一重组<br/>合并同义(仅概念·事实不并) / 找关键概念 / 概括新概念"] --> S5
+    S5["⑤ 重挂：成员 →关联→ 组织中心 H(打 hub 标记)<br/>允许重叠 · 无法归类留原中心 · 滤幻觉 id"] --> S6
+    S6["⑥ 边吸收：扫 H 成员父节点，若 X 子节点 ⊇ H 全员<br/>→ 删 X→各成员、加 X→H(复用 hub · 减边减扇出)"] --> REC{新中心仍 > T?}
+    REC -->|是·递归| S2
+    REC -->|否| DONE
+
+    classDef gate fill:#87CEEB,stroke:#333,color:#001a66
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef done fill:#90EE90,stroke:#333,color:#003300
+    class G1 gate
+    class S3,S4 llm
+    class DONE done
 ```
 
 - **守门口径 = 层级视图（不含关系边）**：守门估的是受影响节点的**层级视图**（中心 content + 层级子节点），**不含关系边 token**——因为 `decide_hub` 只处理节点、聚不了关系边；关系边的有界由**查询期 Phase 2 按 `priority` 截断**兜。"估算 == 渲染"（铁律一）针对的是**查询视图（`select_facts`，含关系边）**的渲染估算，与守门的 fanout 估算是**两个不同对象**，不要混。
@@ -297,31 +336,29 @@ extensions    边的元信息（置信度、时间……，默认不填充）
 
 种子定位后在核心做 BFS；积累区 / 活跃区进 LLM，visited / frontier 只做簿记；事件默认不进、按需取。
 
-```
-              查询
-               │
-               ▼
-  ① 种子定位  顶层种子 / 切词·字面匹配名·别名 / embedding / 热门事件反查（**未来**，暂未实现、不在 `unified-graph-schema` change 内）
-               │           → 节点仲裁 → 入口种子 → frontier
-               ▼
-  ╭─► ② 从 frontier 取一节点，渲染活跃视图（关联邻居，≤ 剩余 T）→ 活跃区
-  │        │
-  │        ▼
-  │   ③ LLM 双角色筛选活跃区命题 / 邻居：`结果` → 积累区（吃 T）；
-  │        │   `探索` → 下一轮 frontier（不吃 T）；两者入双方
-  │        ▼
-  │   ④ 选中者（任一角色）入 visited 去重；事实边端点随边角色补入
-  │        │
-  ╰── 继续：未达 max_rounds 且未超 token_budget（frontier 另受 max_frontier_nodes 阀兜）
-           │ 否则 ↓
-           ▼
-  ⑤ 需出处 / 证据？— 是 → 事实 → 事件 定向查（默认不带事件）
-           │
-           ▼
-  ⑥ 后处理（重排 / 裁剪）→ 返回子图（= 积累区）
+```mermaid
+flowchart TD
+    Q([查询]) --> S1
+    S1["① 种子定位<br/>顶层种子 / 切词·字面匹配名·别名 / embedding<br/>→ 节点仲裁 → 入口种子 → frontier"] --> LOOP
+    LOOP["② 从 frontier 取一节点<br/>渲染活跃视图(关联邻居 · ≤ 剩余 T) → 活跃区"] --> S3
+    S3["③ LLM 双角色筛选活跃区命题/邻居<br/>结果 → 积累区(吃 T) · 探索 → frontier(不吃 T)"] --> S4
+    S4["④ 选中者(任一角色)入 visited 去重<br/>事实边端点随边角色补入"] --> DEC{"继续?<br/>未达 max_rounds<br/>且未超 token_budget"}
+    DEC -->|是| LOOP
+    DEC -->|否| S5
+    S5{{⑤ 需出处/证据?}} -->|是| S5b["事实 → 事件 定向查<br/>(默认不带事件)"]
+    S5 -->|否| S6
+    S5b --> S6
+    S6([⑥ 后处理(重排/裁剪)<br/>返回子图 = 积累区])
 
-  进 LLM·吃 T 预算： 积累区 + 活跃区      只存 id·不进 LLM： visited + frontier
+    classDef seed fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef acc fill:#87CEEB,stroke:#333,color:#001a66
+    class S1 seed
+    class LOOP,S3 llm
+    class S4,S6 acc
 ```
+
+> **预算归属**：进 LLM·吃 T 预算 = 积累区 + 活跃区；只存 id·不进 LLM = visited + frontier。frontier 另受 `max_frontier_nodes` 阀兜；种子定位里的"热门事件反查"属**未来**能力（暂未实现，不在 `unified-graph-schema` change 内）。
 
 - **探索口径 ≠ 结果口径（双角色解耦）**：③ 的 `select_facts` 同一次调用输出双角色——`探索`（宽召回，进 frontier、仅驱动 BFS 下一跳、不进 LLM、不吃 T）与 `结果`（精筛，进积累区、吃 T、是返回集）**成员可不同**。frontier 用完即弃（不返回），避免"宽召回直接撑大进 LLM 的积累区"。写侧 `select_facts_write`（窄召回）输出纯编号，`parse` 归一为"两者"，写路径逐字等价。
 - **写入的 ② 关联节点提取复用的就是 ①–④ 这套**（种子定位 + BFS），见 §5.1。
