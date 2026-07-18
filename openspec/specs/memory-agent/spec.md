@@ -76,7 +76,7 @@ TBD - created by archiving change memory-agent-skeleton, updated by memory-agent
 - **存根折叠**：距当前 ≥ N 轮且未 pin 的工具结果消息 SHALL 替换为单行存根（工具名 + 参数摘要 + 触达节点 id）；id **窗口级去重**——窗口内首次触达的 id MUST 全文列出，已在早前存根出现的 id 以计数省略；折叠 MUST NOT 丢弃窗口内尚未出现的 id（id 是可逆取回的句柄——被折叠内容可按 id 经 search/associate 取回）。assistant / user 消息 MUST NOT 折叠。
 - **重复调用不拦截**：与窗口内存根同工具同参的再次调用 MUST NOT 被拒绝或返回缓存（相关性判断是积累集依赖的——积累/pin 集变化后重看同一节点可得不同判断；且会话中 learn 会改图）；框架 SHALL 在新结果头部标注同参存根编号——"以前看过"作为信号提示，重看与否由模型自决。
 - **pin 语义**：模型 MAY 在回复中以固定标记声明 pin / unpin 工具结果；pin 项不被折叠 / 自动逐出。管理决策 MUST 折叠进既有回复，MUST NOT 占用独立轮次；pin 总量 SHALL 有防御性上限（防囤积）。
-- **显式终止**：系统提示词 SHALL 约定终止标记（与 pin 同族，如 `FINISH` + `USED: #k`）——模型判断无需再遍历时以该标记收束，终止回复 SHALL 携带最终答案与支撑证据引用（存根编号 / 节点 id）；框架 SHALL 解析并剥离标记后返回答案，将终止类型（`finish` / `implicit` / `finalized` / `forced`）与支撑引用记入 `ChatTrace`。无标记且无工具调用的回复 SHALL 仍被接受为最终答复（记 `implicit`，不为格式合规浪费轮次）。
+- **显式终止**：系统提示词 SHALL 约定终止标记（与 pin 同族，如 `FINISH` + `USED: #k`）——模型判断无需再遍历时以该标记收束，终止回复 SHALL 携带最终答案与支撑证据引用（存根编号 / 节点 id）；框架 SHALL 解析并剥离标记后返回答案，将终止类型（`finish` / `implicit` / `finalized` / `forced`）与支撑引用记入 `ChatTrace`。无标记且无工具调用的回复 SHALL 仍被接受为最终答复（记 `implicit`，不为格式合规浪费轮次）。引用提取两级：规范 `USED:` 行优先（显式声明按相关性有序，不掺入散落提及）；无规范行时 SHALL **宽松提取**终止回复中出现的全部 `[id:...]`（按出现序去重）作为支撑引用。
 - **收尾轮**：剩余 1 轮时预算段 SHALL 替换为「最后一轮请直接作答」指令；轮次耗尽仍未作答时框架 SHALL 追加**一次**收尾调用（有界 +1，注入「立即交付」硬指令、忽略其中的工具调用）——有内容则剥离标记交付（记 `finalized`）、无内容则保持 forced 兜底文本。MUST NOT 超过一次收尾调用。
 - **确定性兜底**：超预算时框架 SHALL 依序：折叠可折叠项 → 逐出最旧未 pin 存根 → 仍超则拒绝注入新工具结果并以 tool 消息告知模型（请换出或收尾）。MUST NOT 静默截断消息中段、MUST NOT 死锁。
 - **预算可见**：每轮 SHALL 向 system prompt 注入已用 / 剩余预算与剩余轮次（终止信号——模型据此收尾）。
@@ -167,39 +167,42 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 - **WHEN** 注入 `AgentLLMInterface` 子类实例
 - **THEN** loop MUST 直接调用其 `chat()`，并把返回的 `AssistantMessage.trace` 计入追踪（替代读取 `assistant_dict["_trace"]`）
 
-### Requirement: 记忆工具集（learn / search / associate / reason / recall）
+### Requirement: 记忆工具集（导航 / 时间线视图 / 语义判断 / 概念重组 / 跨 universe）
 
-`MemoryAgent` SHALL 经 `ToolSpec` 注册表（`BUILTIN_TOOLS`）向 LLM 暴露**可配置的**导航 / 语义判断 / 概念重组工具集，**默认 9 个**（learn / search / associate / reason / recall / generalize / arbitrate / **split** / **merge**），分发到 `MemoryStore` 对应原语；工具集经 `ToolsetConfig` 可启用 / 禁用子集、覆盖参数：
+`MemoryAgent` SHALL 经 `ToolSpec` 注册表（`BUILTIN_TOOLS`）向 LLM 暴露**可配置的**导航 / 时间线视图 / 语义判断 / 概念重组 / 跨 universe 工具集，**默认 12 个**（learn / search / associate / reason / recall / timeline / generalize / arbitrate / **split** / **merge** / get_cross_universe_edges / **link_cross_universe**），分发到 `MemoryStore` 对应原语；工具集经 `ToolsetConfig` 可启用 / 禁用子集、覆盖参数：
 
 - `learn(text)` → `memory.learn`
 - `search(query, mode)` → `memory.search`
 - `associate(seed_id, mode)` → `memory.associate`
 - `reason(source_id, target_id)` → `memory.find_path`
 - `recall(limit)` → `memory.recall`
+- `timeline(universe, limit?)` → `memory.timeline`（叙事时间线：某 universe 事件层按时间**升序**组装的只读虚拟视图、不落图）
 - `generalize(node_ids, focus?)` → `memory.generalize`（归纳概括：LLM 概括若干节点的公共上位概念）
 - `arbitrate(node_ids, question)` → `memory.arbitrate`（互斥裁决：反查背书事件、LLM 裁决采信方 + 理由）
 - `split(node_id, focus?)` → `memory.split_concept`（概念拆分：LLM 判耦合 + 产方案 + 执行改图）
 - `merge(node_ids, focus?)` → `memory.merge_concepts`（概念合并：LLM 判同义 + 产方案 + 执行改图）
+- `get_cross_universe_edges(node_id, limit?)` → `memory.get_cross_universe_edges`（跨 universe 桥定向查：只读、绕载重，列出对端 universe 不同的关联 / 互斥边）
+- `link_cross_universe(source_id, target_id)` → `memory.link_cross_universe`（建跨 universe 概念桥：写图、唯一创建路径，两端 universe 必须不同）
 
-导航 / 判断 / 重组决策权交给 LLM：由 LLM 决定选哪个工具、哪个种子、哪种模式、哪两个节点找路径、**对哪几个节点归纳 / 仲裁 / 拆分 / 合并**。`generalize` / `arbitrate` 是**只读**语义判断工具（调 MCS 的 LLM 插件、不改图、不触发写 / 守门 / 裂变）；`learn` / `split` / `merge` 是**写图**工具——`ToolSpec.readonly=False`，自动排除出只读召回（`/recall` 白名单），保"召回 MUST NOT 写图"铁律。**新增写图工具 MUST 标 `readonly=False`**，否则被静默放进只读召回、破坏铁律。
+导航 / 判断 / 重组决策权交给 LLM：由 LLM 决定选哪个工具、哪个种子、哪种模式、哪两个节点找路径、**对哪几个节点归纳 / 仲裁 / 拆分 / 合并**。`generalize` / `arbitrate` 是**只读**语义判断工具（调 MCS 的 LLM 插件、不改图、不触发写 / 守门 / 裂变）；`learn` / `split` / `merge` / `link_cross_universe` 是**写图**工具——`ToolSpec.readonly=False`，自动排除出只读召回（`/recall` 白名单），保"召回 MUST NOT 写图"铁律。**新增写图工具 MUST 标 `readonly=False`**，否则被静默放进只读召回、破坏铁律。
 
 `split` / `merge` 主 LLM 只给 `node_id(s) + focus`，拆分 / 合并方案由专用 purpose（`split` / `merge`）产出、`MemoryStore` 执行（同 `generalize` / `arbitrate` 模式，唯一区别是改图）。
 
-#### Scenario: 默认暴露全部 9 工具
+#### Scenario: 默认暴露全部 12 工具
 
 - **WHEN** 构造 agent 时未指定 `ToolsetConfig`（或缺省）
-- **THEN** 暴露给 LLM 的工具 schemas MUST 为全部 9 个内置工具（learn / search / associate / reason / recall / generalize / arbitrate / split / merge）
+- **THEN** 暴露给 LLM 的工具 schemas MUST 为全部 12 个内置工具（learn / search / associate / reason / recall / timeline / generalize / arbitrate / split / merge / get_cross_universe_edges / link_cross_universe）
 
 #### Scenario: 分发到 MemoryStore 原语
 
 - **WHEN** LLM 调用任一已启用工具
-- **THEN** MUST 经 dispatch 转发到对应 `MemoryStore` 原语（learn / search / associate / find_path / recall / generalize / arbitrate / split_concept / merge_concepts）
+- **THEN** MUST 经 dispatch 转发到对应 `MemoryStore` 原语（learn / search / associate / find_path / recall / timeline / generalize / arbitrate / split_concept / merge_concepts / get_cross_universe_edges / link_cross_universe）
 
 #### Scenario: 写图工具标 readonly=False
 
-- **WHEN** 审查 `BUILTIN_TOOLS` 中 `learn` / `split` / `merge` 的 `ToolSpec`
-- **THEN** 三者 `readonly` MUST 为 `False`
-- **AND** `READONLY_TOOL_NAMES` MUST NOT 含 `learn` / `split` / `merge`（只读召回白名单排除它们）
+- **WHEN** 审查 `BUILTIN_TOOLS` 中 `learn` / `split` / `merge` / `link_cross_universe` 的 `ToolSpec`
+- **THEN** 四者 `readonly` MUST 为 `False`
+- **AND** `READONLY_TOOL_NAMES` MUST NOT 含 `learn` / `split` / `merge` / `link_cross_universe`（只读召回白名单排除它们）
 
 #### Scenario: 禁用工具不暴露给 LLM
 

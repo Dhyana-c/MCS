@@ -364,6 +364,36 @@ def test_finish_stripped_and_traced():
     assert traces[0].used_refs == ["#1", "[id:A1]"]
 
 
+def test_lenient_used_extraction_without_marker_line():
+    """无规范 USED: 行时，宽松提取终止回复中的 [id:...]（按出现序去重）。"""
+    memory = Mem()
+    traces: list[ChatTrace] = []
+    llm, _ = _make_llm(
+        [
+            _assistant(tool_calls=[_tc("1", "search", '{"query": "A"}')]),
+            _assistant(content="答案是 X，依据 [id:a1] 与 [id:b2]（[id:a1] 为主）。\nFINISH"),
+        ]
+    )
+    reply = _agent(memory, llm, on_trace=traces.append).chat("问")
+    assert reply.startswith("答案是 X")
+    assert traces[0].used_refs == ["[id:a1]", "[id:b2]"]  # 出现序、去重
+    assert traces[0].termination == "finish"
+
+
+def test_explicit_used_wins_over_prose_ids():
+    """有规范 USED: 行时显式声明优先——正文散落的 id 不掺入（保模型的相关性排序）。"""
+    memory = Mem()
+    traces: list[ChatTrace] = []
+    llm, _ = _make_llm(
+        [
+            _assistant(tool_calls=[_tc("1", "search", '{"query": "A"}')]),
+            _assistant(content="答案提到 [id:noise]。\nFINISH\nUSED: [id:b2] [id:a1]"),
+        ]
+    )
+    _agent(memory, llm, on_trace=traces.append).chat("问")
+    assert traces[0].used_refs == ["[id:b2]", "[id:a1]"]  # 仅 USED 行、保声明序
+
+
 def test_implicit_accepted_without_marker():
     """无标记且无工具调用：宽松接受为最终答复，终止类型 implicit。"""
     memory = Mem()

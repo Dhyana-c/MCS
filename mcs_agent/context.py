@@ -223,11 +223,16 @@ class SessionContext:
         """解析最终答复：返回（剥离管理标记后的答复, 终止类型, USED 引用列表）。
 
         FINISH 命中 → ``finish``；否则 ``implicit``（宽松接受，不为格式合规浪费轮次）。
+        引用提取两级：规范 ``USED:`` 行优先（模型按相关性排过序的显式声明，不掺入
+        散落提及）；无规范行时**宽松提取**终止回复中出现的全部 ``[id:...]``（按出现序
+        去重）——答案里引用的 id 就是它用到的证据，把格式采纳率变成实际上限。
         """
         finished = bool(_FINISH_RE.search(content))
         used: list[str] = []
         for m in _USED_RE.finditer(content):
             used.extend(_REF_RE.findall(m.group(1)))
+        if not used:
+            used = [f"[id:{i}]" for i in dict.fromkeys(_ID_RE.findall(content))]
         clean = _MARKER_LINE_RE.sub("", content).strip()
         return clean, ("finish" if finished else "implicit"), used
 
