@@ -1,7 +1,8 @@
 """记忆 agent 的 ReAct loop。
 
 agent 自有 LLM（独立于 MCS 的 read_llm），经 tool calling 调工具（learn / search /
-associate / reason / recall / generalize / arbitrate）。**导航 / 判断决策权交给 LLM**：LLM 决定查什么、用哪个种子、
+associate / reason / recall / timeline / generalize / arbitrate / split / merge /
+get_cross_universe_edges / link_cross_universe）。**导航 / 判断决策权交给 LLM**：LLM 决定查什么、用哪个种子、
 用哪种扩展模式、选哪两个节点找路径。LLM 后端实现 ``AgentLLMInterface``（裸 callable
 经 ``CallableAgentLLM`` 自动适配，保既有注入式测试零改动）。
 

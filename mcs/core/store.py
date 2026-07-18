@@ -160,7 +160,8 @@ class StoreInterface(ABC):
         互斥边恒为事实 ↔ 事实；跨 universe 互斥边构造上不产生，双向过滤纯属防御。
 
         Phase 2 按 priority 降序、limit 截断 top-K；Phase 1 priority 未用，
-        返回全部（limit 仅作可选上限）。
+        返回全部（limit 仅作可选上限），返回顺序未定义（依赖底层集合迭代序、
+        非稳定排序），调用方不应假设顺序。
         """
         ...
 
