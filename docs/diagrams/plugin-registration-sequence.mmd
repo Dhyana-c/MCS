@@ -1,0 +1,45 @@
+sequenceDiagram
+    autonumber
+    participant CFG as MCSConfig
+    participant BLD as MCSBuilder
+    participant GPC as get_plugin_class
+    participant PM as PluginManager
+
+    Note over CFG: 声明三列表（规则色）<br/>shared_plugins / write_plugins / read_plugins
+    CFG->>BLD: build()<br/>传入三列表 + plugin_configs
+
+    Note over BLD,PM: 遍历 shared + write → write_manager<br/>遍历 shared + read → read_manager（共享实例横跨两侧）
+
+    loop 每个插件名 name
+        BLD->>GPC: get_plugin_class(name)
+
+        alt ① 内置注册表命中（规则色）
+            Note over GPC: get_phase1_plugin_registry() 命中
+            GPC-->>BLD: 返回插件类
+
+        else ② 无冒号且未知名（跳过，不抛）
+            Note over GPC: name 不含 ":" 且注册表未命中
+            GPC-->>BLD: 返回 None
+            Note over BLD: 跳过该名 · 不抛异常
+
+        else ③ 含冒号 "module:attr"（LLM/守门色）
+            Note over GPC: importlib 解析 module:attr
+            alt 解析失败 或 非 Plugin 子类
+                GPC-->>BLD: 抛异常（MUST 抛）
+                Note over BLD: 用户配置错误 · 不静默
+            else 解析成功且为 Plugin 子类
+                GPC-->>BLD: 返回插件类
+            end
+        end
+    end
+
+    BLD->>BLD: 实例化插件类<br/>运行期注册名 = get_name()
+
+    BLD->>PM: register(plugin)<br/>按 PluginType（get_types 多接口逐一）+ get_priority 索引成链
+    Note over PM: 同类型按 priority 降序排列<br/>共享插件同实例登记两侧（write_manager / read_manager）
+
+    BLD->>PM: initialize(context)
+    Note over PM: 一次性准备（守门色）<br/>访问 graph / config · 如 IndexInterface.build<br/>shutdown 时每实例只调一次
+
+    PM-->>BLD: 注册完成
+    BLD-->>CFG: 返回 MCS 实例（双 PluginManager 就绪）

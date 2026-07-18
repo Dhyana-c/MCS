@@ -44,6 +44,8 @@
 > `STORAGE_SCHEMA_EXT`，覆写 `get_types()` 返回 `{NODE_EXTENSION, STORAGE_SCHEMA_EXT}`，`PluginManager`
 > 按每个类型都索引到它。
 
+![插件类继承：Plugin(ABC) → 各 *PluginInterface(ABC) → 具体实现；多接口插件 SourceTracking 同时实现 NODE_EXTENSION + STORAGE_SCHEMA_EXT，get_types() 返回两者](diagrams/plugin-class-diagram.png)
+
 ## 双 PluginManager 与执行链
 
 `MCS` 持两套 `PluginManager`：`write_manager`（写入侧）与 `read_manager`（读取侧）。`PluginManager`
@@ -74,6 +76,8 @@ config = MCSConfig(
 
 第 3 条让你无需改核心即可挂第三方插件——配置里写 `"my_pkg.exts:MyPlugin"`，对应 `plugin_configs` 的键
 也用**整条 import-path 字符串**（运行期注册名是其 `get_name()` 返回值）。详见 [configuration.md](configuration.md)。
+
+![插件注册解析时序：MCSConfig 三列表 → MCSBuilder.build() → get_plugin_class 三步查找(内置注册表 / 无:跳过 / module:attr 解析) → PluginManager 按 PluginType+priority 索引 → initialize](diagrams/plugin-registration-sequence.png)
 
 ## 生命周期
 

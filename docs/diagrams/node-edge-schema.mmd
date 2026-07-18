@@ -1,0 +1,60 @@
+classDiagram
+    direction LR
+
+    class Node {
+        id : 身份主键
+        name : 名 / 标题
+        content : 摘要 / 命题说法
+        node_class : 概念 / 事实 / 事件 / source
+        universe : 世界归属(默认 __reality__)
+        extensions : 软字段(hub 标记 / 纪年 / 出处)
+    }
+    class Edge {
+        id : 边身份主键
+        source_id : 源节点 id
+        target_id : 目标节点 id
+        type : 关联 / 互斥
+        priority : 派生值(默认 0.0)
+        extensions : 元信息(置信度 / 时间)
+    }
+
+    class Concept {
+        角色 : 概念
+        产生 : LLM 语义抽取
+        进核心聚类 : 是
+    }
+    class Fact {
+        角色 : 事实(命题)
+        产生 : LLM 语义抽取
+        谓词 : 落 content(不做 label 边)
+        互斥 : 事实 —互斥— 事实
+        进核心聚类 : 是(只重组不合并)
+    }
+    class Event {
+        角色 : 事件
+        产生 : 现实=规则 / 作品=LLM
+        进核心聚类 : 否(事件层)
+    }
+    class Source {
+        角色 : source
+        产生 : 规则切分分类
+        进核心聚类 : 否(叶子)
+    }
+
+    Node <|-- Concept
+    Node <|-- Fact
+    Node <|-- Event
+    Node <|-- Source
+
+    Edge --> Node : source_id / target_id
+    Fact ..> Fact : 互斥(两端可达)
+    Concept ..> Concept : 关联(基础边)
+
+    note "node_class × universe 二维归属轴:对全部类含事件生效;跨 universe 不合并 / 不互斥;hub 标记落 extensions(无算法含义)"
+
+    style Node fill:#FFFFFF,stroke:#333,stroke-width:2px,color:#000
+    style Edge fill:#FFFFFF,stroke:#333,stroke-width:2px,color:#000
+    style Concept fill:#90EE90,stroke:#333,color:#003300
+    style Fact fill:#87CEEB,stroke:#333,color:#001a66
+    style Event fill:#FFD700,stroke:#333,color:#000
+    style Source fill:#E6E6FA,stroke:#333,color:#4b0082

@@ -10,6 +10,8 @@
 > `mcs_mem.create_app` 组装、挂同一 app（基础路由复用 `mcs_agent.register_base_routes`）。下文
 > 「个人记忆」各节（捕获 / 整合 / 日记 / 管理看板）属 `mcs_mem`。
 
+![包依赖分层：mcs_mem → mcs_agent → mcs 单向依赖；mcs_mem 提供 碎片/整合/日记/看板 四片 + create_app 组装，复用 mcs_agent.register_base_routes 挂同一 app](diagrams/pkg-deps-layering.png)
+
 ## 架构
 
 ![记忆 Agent 架构：前端 → FastAPI → MemoryAgent(ReAct loop，自有 LLM 独立于 MCS read_llm) → MemoryStore(单 worker 线程) → MCS；/graph/expand 旁路直转只读视图](diagrams/agent-arch.png)
@@ -267,6 +269,8 @@ python -m mcs_mem                          # 记忆应用（基础 + 碎片/整�
 捕获端点挂在 `mcs_agent` 的 FastAPI app 上（与 `/chat` 同居），**不依赖 agent / MCS**——即使注入 fake agent（无 memory），`/note` 等仍正常工作（纯文件 IO 旁路）。
 
 ## 个人记忆——整合入图
+
+![整合入图时序：ConsolidationScheduler cron 00:30 触发昨天 → 读当天 MD → 逐行解析 → 去噪(LLMDenoiser 在 worker 外 / 无 LLM 全保留) → 逐条 ingest_structured(一碎片一事件) → 单日 done 锁定](diagrams/mem-consolidation-pipeline-sequence.png)
 
 整合管线把碎片去噪后逐条 ingest 入图：读当天 MD → 逐行解析 → 去噪（Consolidator 应用层前置过滤）→ 逐条 `ingest_structured` 入图（一碎片一事件、时间忠实）。
 

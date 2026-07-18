@@ -46,6 +46,8 @@ max_rounds: 5
 
 ## 字段叠加规则
 
+![配置加载与字段叠加：from_file 读 YAML → preset 工厂铺底 → 四类字段叠加(标量覆盖 / 列表替换 / plugin_configs 深合并 / prompt_overrides 合并) → ${VAR} 插值(fail-fast) → MCSConfig](diagrams/config-loading-overlay.png)
+
 | 字段类型 | 规则 |
 |---------|------|
 | 标量（`token_budget` / `max_rounds` / `max_accumulated_nodes` / `auto_persist` / `mode`） | 直接覆盖 |

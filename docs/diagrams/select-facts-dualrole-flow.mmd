@@ -1,0 +1,36 @@
+flowchart TD
+    SEED(["种子节点<br/>核心 BFS 沿 关联 边"]) --> SF
+    SF["select_facts · LLM 双角色筛选<br/>邻域命题 / 邻居 → 两套口径分流"] --> SPLIT{"双角色输出<br/>{result, frontier}"}
+
+    SPLIT -->|"result<br/>严口径 · 与查询有关"| ACC
+    SPLIT -->|"frontier<br/>宽口径 · 可能有关"| FRT
+
+    subgraph ACC_AREA["积累区 accumulated（进 LLM · 吃 T 预算）"]
+        direction TB
+        ACC["本轮 result 精筛命题 / 邻居<br/>进 LLM 上下文"]
+        ACC2["逐轮累积 · 去重沉淀"]
+        ACC --> ACC2
+        ACC2 --> ANS["最终答案子图<br/>Subgraph 输出"]
+    end
+
+    subgraph FRT_AREA["BFS frontier 队列（不进 LLM · 不吃 T）"]
+        direction TB
+        FRT["本轮 frontier 宽召回端点<br/>只存 id"]
+        FRT2["驱动多跳探索<br/>下一跳沿 关联 边继续"]
+        FRT --> FRT2
+        FRT2 -. 用完即弃 · 不进返回集 .-> GONE["本轮探索完毕即丢弃<br/>不回流 accumulated"]
+    end
+
+    FRT2 -->|"下一跳端点"| SF
+
+    classDef seed fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef fact fill:#87CEEB,stroke:#333,color:#001a66
+    classDef concept fill:#90EE90,stroke:#333,color:#003300
+    classDef sink fill:#D3D3D3,stroke:#333,color:#333
+
+    class SEED seed
+    class SF,SPLIT llm
+    class ACC,ACC2,ANS fact
+    class FRT,FRT2 concept
+    class GONE sink

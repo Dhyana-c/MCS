@@ -1,0 +1,63 @@
+stateDiagram-v2
+    [*] --> Pending : 新建节点（可能重复）
+
+    state Pending <<choice>>
+    Pending --> Merged_C : 命中时机即合并
+    Pending --> Pending : 一次没并上 · 留存待后续时机
+
+    state Merged_C #FFD700 : 创建时（写入 ②③）<br/>检索对齐 · 不经 LLM<br/>同名复用 / 同义合并
+
+    Merged_C --> Guard : 合并产物过守门
+
+    state Pending2 <<choice>>
+    Pending --> Pending2 : 之后被触及
+
+    state Merged_R #FFD700 : 被触及（read-repair）<br/>再写到附近 / 读取碰到<br/>同名字面当场 · 同义搭 LLM 顺带判
+
+    Pending2 --> Merged_R : 工作集冒出重名 / 同义
+    Pending2 --> Pending : 高频近乎免费 · 但非全召
+
+    Merged_R --> Guard : 合并产物过守门
+
+    state Pending3 <<choice>>
+    Pending --> Pending3 : 该节点裂变
+
+    state Merged_G #90EE90 : 聚类时（守门 ⑤「合并同义」）<br/>同邻域一起聚类 · 仅概念<br/>事实只重组不合并
+
+    Pending3 --> Merged_G : 两重复落入同一邻域
+    Pending3 --> Pending : 邻域不含重复
+
+    Merged_G --> Guard : 重组产物过守门
+
+    state Pending4 <<choice>>
+    Pending --> Pending4 : 既没被触及也没聚类
+
+    state Merged_B #E6E6FA : 后台维护（可选扩展）<br/>周期扫描 embedding / 别名相近<br/>长尾残留 · 最终兜底
+
+    Pending4 --> Merged_B : 命中相近节点
+    Pending4 --> Pending : 仍留存 · 待下次扫描
+
+    Merged_B --> Guard : 合并产物过守门
+
+    state Guard #90EE90 : 守门把关<br/>并完邻域 ≤ T 廉价通过<br/>超 T / 需消歧 → 挂起交写/维护
+
+    Guard --> [*] : 廉价通过 · 收敛完成
+    Guard --> Pending : 挂起 · 不在读路径同步聚类
+
+    note right of Pending
+        收敛由读写共同触发、且不止一次机会
+        一次没并上，后续还能并
+        最终兜底是后台维护
+    end note
+
+    note right of Merged_R
+        读取也算一次机会（read-repair）
+        重名靠字面零成本识别
+        同义搭 ③ 已在看这些节点的 LLM 顺带判
+    end note
+
+    note right of Merged_B
+        纯靠读写触发的冷门重复会长期残留
+        周期性维护扫描保证一定收敛
+        有后台算力成本
+    end note

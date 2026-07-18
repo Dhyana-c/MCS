@@ -14,6 +14,8 @@
 
 目标:解耦"探索召回口径"(宽)与"进 LLM 输出口径"(严),`accumulated` 不被宽召回绑架。
 
+![select_facts 双角色分流：result(严口径) → accumulated 积累区(进 LLM·吃 T·返回集)；frontier(宽口径) → BFS 队列(不进 LLM·不吃 T·探索·用完即弃)；解耦宽召回与严口径](diagrams/select-facts-dualrole-flow.png)
+
 ## 2. 核心模型差异
 
 | 维度 | deepseek-chat | GLM-5.1 |

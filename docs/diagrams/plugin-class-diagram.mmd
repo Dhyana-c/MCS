@@ -1,0 +1,76 @@
+classDiagram
+    direction TB
+
+    class Plugin {
+        <<ABC · 根基类>>
+        +get_name() str
+        +get_type() PluginType
+        +get_types() set~PluginType~
+        +get_priority() int
+        +execute(**kwargs) Any
+        +initialize(context)
+        +shutdown()
+    }
+
+    class EntryPluginInterface {
+        <<ABC · ENTRY>>
+        +locate(query, ctx) list~Node~
+        +exclusive
+    }
+
+    class TrimPluginInterface {
+        <<ABC · TRIM>>
+        +trim(...)
+    }
+
+    class LLMInterface {
+        <<ABC · LLM>>
+        +call(purpose, nodes_in?, free_args?) Any
+    }
+
+    class NodeExtensionInterface {
+        <<ABC · NODE_EXTENSION>>
+        +schema / default
+        +serialize / deserialize
+        +render(node, purpose)
+    }
+
+    class StorageSchemaExtensionInterface {
+        <<ABC · STORAGE_SCHEMA_EXT>>
+        +node_columns()
+        +auxiliary_tables()
+    }
+
+    class AliasEntry
+    class HubFallback
+    class PriorityTrim
+    class DeepSeekLLM
+    class SourceTracking {
+        <<多接口: NODE_EXTENSION + STORAGE_SCHEMA_EXT>>
+    }
+
+    Plugin <|-- EntryPluginInterface
+    Plugin <|-- TrimPluginInterface
+    Plugin <|-- LLMInterface
+    Plugin <|-- NodeExtensionInterface
+    Plugin <|-- StorageSchemaExtensionInterface
+
+    EntryPluginInterface <|-- AliasEntry
+    EntryPluginInterface <|-- HubFallback
+    TrimPluginInterface <|-- PriorityTrim
+    LLMInterface <|-- DeepSeekLLM
+
+    NodeExtensionInterface <|-- SourceTracking
+    StorageSchemaExtensionInterface <|-- SourceTracking
+
+    style Plugin fill:#E6E6FA,stroke:#333,color:#4b0082
+    style EntryPluginInterface fill:#87CEEB,stroke:#333,color:#001a66
+    style TrimPluginInterface fill:#87CEEB,stroke:#333,color:#001a66
+    style LLMInterface fill:#87CEEB,stroke:#333,color:#001a66
+    style NodeExtensionInterface fill:#87CEEB,stroke:#333,color:#001a66
+    style StorageSchemaExtensionInterface fill:#87CEEB,stroke:#333,color:#001a66
+    style AliasEntry fill:#90EE90,stroke:#333,color:#003300
+    style HubFallback fill:#90EE90,stroke:#333,color:#003300
+    style PriorityTrim fill:#90EE90,stroke:#333,color:#003300
+    style DeepSeekLLM fill:#FFD700,stroke:#333,color:#000
+    style SourceTracking fill:#FFD700,stroke:#333,color:#000

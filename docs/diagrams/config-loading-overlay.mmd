@@ -1,0 +1,37 @@
+flowchart TD
+    START(["from_file(path)"]) --> R1
+    R1["① 读 YAML<br/>PyYAML 解析为 dict"] --> D1
+    D1{"文件含 preset?"}
+    D1 -->|是| P1
+    P1["② preset 工厂铺底<br/>默认插件集 + 默认 LLM 配置<br/>write_llm / read_llm 仅作工厂参数消费"] --> OVR
+    D1 -->|否 · 原始字段直接用| OVR
+
+    OVR["③ 字段叠加<br/>（见下四规则分叉）"]
+
+    subgraph RULES["字段叠加四规则"]
+        direction TB
+        R_SC["标量<br/>token_budget / max_rounds /<br/>max_accumulated_nodes / auto_persist / mode<br/>→ 直接覆盖"]
+        R_PL["shared_plugins / write_plugins / read_plugins<br/>→ 显式给出则整体替换<br/>未给出则保留 preset 的"]
+        R_PC["plugin_configs<br/>→ 按插件名两层深合并<br/>preset 的 model 与文件的 api_key 共存"]
+        R_PO["prompt_overrides<br/>→ 按 purpose 合并<br/>parser 为 import-path 串解析为 Callable"]
+    end
+
+    OVR --> RULES
+    RULES --> ENV
+
+    ENV["④ 环境变量插值<br/>所有字符串里 ${VAR} 从 os.environ 展开<br/>仅 ${ 才是 env 专用 · 不影响 prompt 模板 {material}"] --> D2
+    D2{"${VAR} 缺失?"}
+    D2 -->|是 · fail-fast| ERR(["报错并指出缺哪个变量<br/>不静默用空值代入"])
+    D2 -->|否| OUT(["返回 MCSConfig<br/>与手写形状一致"])
+
+    classDef rule fill:#E6E6FA,stroke:#333,color:#4b0082
+    classDef llm fill:#FFD700,stroke:#333,color:#000
+    classDef gate fill:#90EE90,stroke:#333,color:#003300
+    classDef fact fill:#87CEEB,stroke:#333,color:#001a66
+    classDef err fill:#FFB6C1,stroke:#333,color:#660000
+
+    class R1,P1 rule
+    class ENV llm
+    class OUT gate
+    class OVR,RULES,R_SC,R_PL,R_PC,R_PO fact
+    class ERR err
