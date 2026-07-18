@@ -1,0 +1,29 @@
+flowchart TB
+    subgraph CORE["核心图 · 有界（任意节点活跃视图 ≤ T）"]
+        direction TB
+        C1["概念 Concept"]
+        C2["概念"]
+        F1["事实 / 命题 Fact<br/>谓词落 content"]
+        F2["事实 Fact"]
+        C1 -->|关联| F1
+        C1 -->|关联| C2
+        F1 <-->|互斥| F2
+    end
+
+    subgraph EVT["事件层 · 时间倒序 · 不聚类 · 不进活跃视图"]
+        E1["事件 Event<br/>universe = work<br/>LLM 抽取"]
+        E2["摄入事件<br/>universe = __reality__<br/>规则产生"]
+    end
+
+    SRC["source<br/>规则入库 · 不经 LLM"] -->|关联| F1
+    E1 -->|单向背书| C1
+    E2 -. 核心 get_relations 不反查 .-> F1
+
+    classDef concept fill:#90EE90,stroke:#333,color:#003300
+    classDef fact fill:#87CEEB,stroke:#333,color:#001a66
+    classDef event fill:#FFD700,stroke:#333,color:#000
+    classDef source fill:#E6E6FA,stroke:#333,color:#4b0082
+    class C1,C2 concept
+    class F1,F2 fact
+    class E1,E2 event
+    class SRC source

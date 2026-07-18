@@ -66,5 +66,5 @@ mcs.yaml
 .claude/skills/design-doc-mermaid/
 .claude/skills/mermaid/
 
-# 文档配图渲染临时产物（mermaid 源 / 渲染图 / 浏览器配置，不入库）
-docs/diagrams/
+# 文档配图渲染：浏览器配置含本机路径不入库（渲染图 / mermaid 源入库）
+docs/diagrams/puppeteer.json
