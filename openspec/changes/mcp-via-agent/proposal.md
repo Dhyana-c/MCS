@@ -10,11 +10,11 @@
 - **LLM 复用 MCS yaml**：从 `MCSConfig.plugin_configs` 反推 `LLMConfig`（识别 `{deepseek,ollama,claude}_llm` 键），**不新增配置文件、不要求 `AGENT_LLM_*` env**。无识别键 / 多 LLM 歧义 / provider 不在 agent 支持集 → 启动期清晰早失败并以非零码退出。
 - **shutdown 路径**：进程退出（含异常路径）MUST 调 `agent.memory.shutdown()`（worker 线程内关 MCS + `executor.shutdown`），`main` 同步 finally 调；注册 `SIGTERM`→`KeyboardInterrupt`（POSIX）保证 finally 在强制退出下可达。
 - **BREAKING — `query` 返回值语义变更**：从 `render_query_result` 的结构化节点/边渲染文本 → agent ReAct 多步探索后的**自然语言答复**（含 `[id:...]` 存根引用）。`ingest` 返回格式不变（`format_ingest_status` 渲染纯函数下沉到 `MemoryStore.learn` 委托，文本逐字一致）。
-- **顺手修核心 bug**：`AgentBuilder.build` 步骤 3/4 失败时兜底 `memory.shutdown()`，防已建 `MemoryStore`（持 MCS + worker + SQLite 连接）无引用靠 GC 泄漏——核心代码必须绝对正确（多 agent 审计 M3，~5 行 try/finally）。
+- **顺手修核心 bug（3 处资源泄漏）**：① `AgentBuilder.build` 步骤 3/4 失败兜底 `memory.shutdown()`；② `MemoryStore.__init__` 的 `_submit(build_fn)` 失败兜底 `executor.shutdown`（坏 yaml / 坏 sqlite path——构造失败最高频路径）；③ `OpenAIAgentLLM` / `AnthropicAgentLLM._get_client` 加 `threading.Lock` 防 double-init（治本、惠及所有调用方）。三处均零行为变化，核心代码必须绝对正确。
 - **import 切换 + 依赖边界**：`mcs_mcp` 不再 import `mcs.query` / `mcs.ingest` / `mcs.presets` / `mcs.rendering`，改 import `mcs_agent.{builder,loop,llms}`；**严禁** import `mcs_agent.app`（会拉 fastapi/pydantic/uvicorn，mcp stdio 不需要）。`mcs_mcp → mcs_agent` 是公开 API 边界；`mcs_agent` 内部调 `mcs.core`（如 `memory.learn`→`mcs.ingest`）是实现细节、非 `mcs_mcp` 直接依赖。
 - **测试**：`test_mcp_server.py` 重写——`MCPServer.from_agent` 类方法注入 `FakeMemoryAgent` 测透传 / 异常隔离 / 早失败（A 类：mcs_mcp 层单测，agent 是 collaborator）；`CallableAgentLLM` + 真实 `MemoryStore` + `FakeMCS` 测 ReAct loop 的 max_turns 兜底 / 降级 / 异常隔离（B 类：走真实 loop，符合不 mock 铁律）；新增构造期早失败测试（无 `_llm` / 多 `_llm` / provider 不支持）。
 - **docs**：`docs/mcp-server.md` / `README.md` 同步——query 语义、LLM 复用配置说明、串行由 `MemoryStore` 单 worker 保证、max_turns 与 MCP 客户端超时提示。
-- **spec**：修订 `mcp-server` capability（4 条 requirement 改写 + 3 条新增），逐 Scenario before→after 对照。
+- **spec**：修订 `mcp-server` capability（**5 条改写 + 4 条新增 + 1 条移除**），逐 Scenario before→after 对照。
 
 ## Capabilities
 
@@ -28,9 +28,9 @@
 
 ## Impact
 
-- **代码**：`mcs_mcp/server.py`（主体重写，含新增 `_llm_config_from_mcs` 反推函数、`MCPServer.from_agent` 测试注入类方法）；`mcs_agent/builder.py`（一处 try/finally 兜底 build 失败清理 `MemoryStore`——核心 bug 修复）；`tests/test_mcp_server.py`（重写）。
+- **代码**：`mcs_mcp/server.py`（主体重写，含新增 `_llm_config_from_mcs` 反推函数、`MCPServer.from_agent` 测试注入类方法）；`mcs_agent/builder.py` + `mcs_agent/memory.py`（两处构造期失败兜底，清理 `MemoryStore`/executor——核心 bug 修复）；`mcs_agent/llms/{openai,anthropic}.py`（`_get_client` 加锁防 double-init）；`tests/test_mcp_server.py`（重写）。
 - **配置**：**零新增**——仍只读一个 MCS yaml（`MCS_CONFIG` / `--config`）；YAML 的 `plugin_configs` MUST 含 `{deepseek|ollama|claude}_llm` 之一段（否则 mcs_mcp 启动早失败并提示）。
-- **接口契约**：`mcs_mcp` 重写后依赖 `mcs_agent` 的 `create_agent` / `MemoryAgent.chat` / `MemoryAgent.memory` / `MemoryStore.{learn,shutdown}` / `AGENT_LLM_REGISTRY` / `PROVIDER_TO_MCS_LLM`——同 `mcs-core` 发行物内部依赖、非跨仓（`mcs-mem-extract-and-publish` 的跨包稳定契约清单不涉及，mcs_mcp 与 mcs_agent 同发行物）。
+- **接口契约**：`mcs_mcp` 重写后依赖 `mcs_agent` 的 `create_agent` / `MemoryAgent.chat` / `MemoryAgent.memory` / `MemoryStore.{learn,shutdown}` / `AGENT_LLM_REGISTRY`——同 `mcs-core` 发行物内部依赖、非跨仓（`mcs-mem-extract-and-publish` 的跨包稳定契约清单不涉及，mcs_mcp 与 mcs_agent 同发行物）。
 - **破坏性**：`query` 工具返回值从结构化渲染文本 → agent 自然语言答复（migration note 供未来追溯；当前无人用）。
 - **依赖**：`mcs_mcp` 依赖 `mcs_agent`（随 `mcs-core` 发行）；MUST NOT 间接依赖 fastapi（严禁 import `mcs_agent.app`）；`mcp` / `PyYAML` 仍为可选 `[mcp]` extra。
 - **文档**：`docs/mcp-server.md`、`README.md` 同步。

@@ -76,14 +76,23 @@ def _llm_config_from_mcs(mcs_config: MCSConfig) -> dict:
     if len(candidates) == 1:
         key = candidates[0]
     else:
-        # 歧义：按 write_llm 消歧（write_llm 是完整插件名，必在 candidates 内才取）
+        # 歧义：按 write_llm 消歧。write_llm 是 MCSConfig 主写 LLM（必填、read_llm 可选默认同 write_llm），
+        # 是用户最显式指定的 LLM；agent 的 learn 经 MCS 写管线用 write_llm，chat 用同一 LLM 保持写读
+        # 一致——故选 write 而非 read 作消歧锚点。write_llm 是完整插件名（如 deepseek_llm），必在 candidates 内才取。
         wl = mcs_config.write_llm
         key = wl if wl in candidates else None
         if key is None:
             raise _McpConfigError(
-                f"MCS yaml 配了多个 LLM 插件 {candidates} 且 write_llm={wl!r} 无法消歧；"
-                "请仅保留一个 *_llm 段"
+                f"MCS yaml 配了多个 agent 可用 LLM {candidates}，且 write_llm={wl!r} 不在其中——"
+                f"无法判断 agent chat 该用哪个。请把 write_llm 指向 {sorted(AGENT_LLM_REGISTRY)} 之一"
             )
+    # 单候选但与 write_llm 不一致（write_llm 指向不支持的 provider，如 write=glm_llm + read=deepseek_llm）：
+    # 静默取唯一支持的候选（agent 必须 tool-calling 支持），log warning 提示 agent chat 与 write 管线 LLM 不同
+    if mcs_config.write_llm != key:
+        logger.warning(
+            "agent chat LLM 取 %s（唯一支持的候选），与 write_llm=%s 不同；"
+            "agent 需 tool-calling 支持的 provider，write 管线可用其他", key, mcs_config.write_llm,
+        )
     provider = key[:-4]
     cfg = pc[key] or {}
     model = cfg.get("model")
@@ -107,7 +116,8 @@ def _llm_config_from_mcs(mcs_config: MCSConfig) -> dict:
 
 **早失败边界**（在 `mcs_mcp` 入口显式报、转非零退出码，**MUST NOT** 让 `AgentBuilder` 抛裸 `ValueError`、**MUST NOT** 静默取第一个 LLM 防止 silent pick wrong LLM）：
 - **无 `*_llm` 插件**（`plugin_configs` 仅 `sqlite_storage` 等）→ 清晰报错 + `return 1`。
-- **多 `*_llm` 歧义**（如 `write_llm=ollama_llm` + `read_llm=deepseek_llm`）→ 按 `write_llm` 消歧；`write_llm` 不在候选内则报错列名 + `return 1`。
+- **多 `*_llm` 歧义**（如 `write_llm=ollama_llm` + `read_llm=deepseek_llm`）→ 按 `write_llm` 消歧（理由见伪码注释：write_llm 是必填主写 LLM、agent learn 经写管线对齐）；`write_llm` 不在候选内（指向不支持的 provider + 多个支持候选并存）→ 报错并指引「把 write_llm 指向 agent 支持集之一」+ `return 1`（write/read 分离是合法配置，正确指引是改 write_llm 指向、而非「仅保留一个」）。
+- **单候选但与 `write_llm` 不一致**（`write_llm` 指向不支持的 provider 如 `glm_llm`，另有一个支持候选）→ **静默取唯一支持候选**（agent 必须 tool-calling 支持）+ `log warning` 提示 agent chat LLM 与 write 管线 LLM 不同。这是有意行为（候选唯一、无歧义，非 silent pick wrong LLM），但须让用户知晓。
 - **缺 model 字段** → 报错 + `return 1`。
 - **claude 无 `auth_token`/`api_key` / deepseek `api_key` 空**（`DEEPSEEK_API_KEY` 未设）→ 反推**不早失败**、首次 chat 才 401。与现有 LLM 插件惰性失败风格一致（仅 warn 不强失败，不破坏 builder 不校验 key 非空的既有契约）。
 
@@ -128,7 +138,7 @@ def _llm_config_from_mcs(mcs_config: MCSConfig) -> dict:
 **退出信号矩阵**（`FastMCP.run` 经 `anyio.run` 包裹，需论证 finally 必达）：
 - (a) **EOF**（stdio 关闭，Claude Desktop 关进程）→ `run_stdio_async` return → `run` return → `main` finally → shutdown ✅
 - (b) **SIGINT**（Ctrl-C）→ `KeyboardInterrupt` → `except: pass` → finally shutdown ✅
-- (c) **SIGTERM**（POSIX `kill -15`）→ Python 默认转 `SystemExit` → finally 仍跑，但 `worker.shutdown(wait=True)` 可能被二次信号中断 → **最小缓解**：`main` 注册 `signal.signal(signal.SIGTERM, lambda *_: _raise KeyboardInterrupt)`（POSIX；Windows 无 SIGTERM，`try/except (ValueError, OSError)` 包注册 no-op），把 SIGTERM 转成 KeyboardInterrupt 让 main 优雅走 `except`+finally。
+- (c) **SIGTERM**（POSIX `kill -15`）→ Python 默认转 `SystemExit` → finally 仍跑，但 `worker.shutdown(wait=True)` 可能被二次信号中断 → **最小缓解**：`main` 注册 `signal.signal(signal.SIGTERM, ...)` 把 SIGTERM 转成 `KeyboardInterrupt` 让 main 优雅走 `except`+finally（Windows 上 `signal.SIGTERM` 有定义、可注册但不会被原生发送——注册用 `try/except (ValueError, OSError)` 包，无害防御）。
 
 **finally 必达论证**：`FastMCP.run` 经 `anyio.run` 包裹，`anyio` 对 `KeyboardInterrupt` / `SystemExit` **不包装**为 `CancelledError`、直接 propagate 出 `run`；EOF 路径 `run_stdio_async` 正常 return。两类路径 unwind 后 `main` 的 `finally: server.shutdown()`（Python `finally` 在 `BaseException` 下也执行）必达。残留风险仅「SIGTERM 后 `worker.shutdown(wait=True)` 被二次信号中断」——tasks 5.3 实机验证三条退出路径后无 `.db-wal` 残留 / `db locked`。
 
@@ -136,34 +146,57 @@ def _llm_config_from_mcs(mcs_config: MCSConfig) -> dict:
 - 依赖进程自然退出（Python atexit 顺序不可靠、`ThreadPoolExecutor` worker 在 atexit 才 join、SQLite 可能未 close 致 WAL 残留 / `db locked` / 下次启动锁）。
 - 在 async 生命周期钩子里 `await` 同步 shutdown 而不 offload（卡事件循环）。
 
-### D6 — 顺手修 `AgentBuilder.build` 资源泄漏（核心代码绝对正确，闭合审计 M3）
+### D6 — 构造期资源泄漏兜底：`builder.build` + `MemoryStore.__init__`（核心代码绝对正确）
 
-`AgentBuilder.build` 步骤 2 已建 `MemoryStore`（持 MCS + worker 线程 + SQLite 连接），若步骤 3/4（构造 backend / `MemoryAgent`）失败，`MemoryStore` 无引用靠 GC——SQLite `check_same_thread` 连接在 worker 线程外 GC 时机不可控、可能抛 `ProgrammingError`（通常被忽略）、worker 线程残留。这是**确定性 bug**，非「超范围」可豁免（项目铁律「核心代码所有 bug 都要修」）。`mcs_mcp` 在 `_build_agent` 拿不到 builder 内部 `MemoryStore` 引用，无法在 mcs_mcp 层补救——**责任唯一落点是 builder**。
+走 agent 后 MCS 实例归 `MemoryStore` 持有、其构造在 `MemoryStore` worker 线程内。**两处**构造期失败会泄漏 worker 线程 + executor + SQLite 连接（无引用靠 GC，时机不可控、`check_same_thread` 连接在 worker 线程外 GC 可能抛 `ProgrammingError`、worker 残留至 atexit）：
 
-**修复**（~5 行，限 `mcs_agent/builder.py`，零行为变化——成功路径不触发、失败路径多了确定性清理）：
+1. **`AgentBuilder.build` 步骤 3/4 失败**（构造 backend / `MemoryAgent`）：步骤 2 已建 `MemoryStore`（持 MCS + worker）无引用。审计 M3。
+2. **`MemoryStore.__init__` 的 `_submit(build_fn)` 失败**（坏 yaml / 坏 sqlite path / build_fn 在 worker 内抛——**恰恰是构造失败最高频的场景**）：executor 和已起 worker 线程无人 shutdown。对 `mcs_agent.app` 等长活调用方是每次失败构造泄一个线程。
+
+两处都是确定性 bug，非「超范围」可豁免（项目铁律「核心代码所有 bug 都要修」）。`mcs_mcp` 拿不到 builder / MemoryStore 内部引用，无法在 mcs_mcp 层补救——**责任唯一落点是 `mcs_agent`**。
+
+**修复**（零行为变化——成功路径不触发、失败路径多了确定性清理）：
 
 ```python
-def build(self) -> MemoryAgent:
-    cfg = self.config
-    # 步骤 0 前置校验（不变）...
-    build_fn = self._build_fn(cfg)
-    memory = MemoryStore(build_fn)                       # 步骤 2：MCS 在 worker 内 build
-    try:
-        # 步骤 3 llm_backend + 步骤 4 return MemoryAgent（不变）...
-        return MemoryAgent(memory, llm_backend, ...)
-    except Exception:
-        try:
-            memory.shutdown()                            # 兜底：关 MCS + executor
-        except Exception:
-            logger.warning("memory shutdown during failed build raised", exc_info=True)
-        raise
+# mcs_agent/builder.py — build()
+build_fn = self._build_fn(cfg)
+memory = MemoryStore(build_fn)                       # 步骤 2
+try:
+    # 步骤 3 llm_backend + 步骤 4 return MemoryAgent（不变）...
+    return MemoryAgent(memory, llm_backend, ...)
+except Exception:
+    try: memory.shutdown()                           # 兜底：关 MCS + executor
+    except Exception: logger.warning("memory shutdown during failed build raised", exc_info=True)
+    raise
+
+# mcs_agent/memory.py — __init__
+self._executor = ThreadPoolExecutor(max_workers=1, ...)
+try:
+    self._mcs = self._submit(build_fn)               # build_fn 在 worker 内跑，可能抛
+except Exception:
+    self._executor.shutdown(wait=False)              # 兜底：放掉 worker + executor
+    raise
 ```
 
-### D7 — 构造期预热 client（防 double-init，闭合审计 M4）
+> `MemoryStore.shutdown` 要求 `self._mcs` 已赋值；`__init__` 失败路径 `self._mcs` 未建成，故用 `executor.shutdown(wait=False)`（不调 `mcs.shutdown`）。
 
-`OpenAIAgentLLM` / `AnthropicAgentLLM._get_client` 的 `if self._client is None` 无锁，首次并发 chat 可能 double-init client（两线程各见 None 各自构造、后者覆盖前者），丢一个 httpx 连接池——极端情况下被 GC 的 client 关底层 socket 可能影响在用连接。`mcs_mcp` 启动后首两次 query 几乎必然在数百 ms 内并发。
+### D7 — adapter `_get_client` 加锁（治本，闭合审计 M4）
 
-**缓解**：`MCPServer.__init__` 成功构 agent 后，构造期单线程预热一次 client（`backend = self._agent.llm; if hasattr(backend, "_get_client"): backend._get_client()`）。构造期单线程、零并发风险、之后并发都见非 None。`hasattr` 守护 `CallableAgentLLM`（测试）等无 `_get_client` 的后端。若实现时发现 `AgentLLMInterface` 暴露更规范的预热入口则用之；否则 `hasattr` 路径安全。
+`OpenAIAgentLLM` / `AnthropicAgentLLM._get_client` 的 `if self._client is None` 无锁，首次并发 chat 可能 double-init client（两线程各见 None 各自构造、后者覆盖前者），丢一个 httpx 连接池——极端情况下被 GC 的 client 关底层 socket 可能影响在用连接。这影响**所有**调用方（`mcs_agent.app` 等），不只 `mcs_mcp`。
+
+**治本修复**（落点 `mcs_agent/llms/{openai, anthropic}.py`，~3 行/文件）——`_get_client` 用 `threading.Lock` 保护首次构造：
+
+```python
+def _get_client(self):
+    with self._client_lock:                          # __init__ 建 self._client_lock = threading.Lock()
+        if self._client is None:
+            self._client = self._build_client()
+        return self._client
+```
+
+零行为变化（锁只串行化首次构造、之后无竞争），惠及所有调用方，不依赖私有方法、不在 `mcs_mcp` 引入预热副作用。`CallableAgentLLM` 无 `_get_client`、无需改。
+
+> 否决「`mcs_mcp` 构造期预热 `_get_client`」方案：只护 `mcs_mcp` 一个实例、依赖私有方法、且把 SDK import 从首次 chat 提前到启动期（openai/anthropic 未装 → 启动失败而非首查失败）——adapter 加锁治本且零副作用，SDK 仍惰性 import、早失败落在「真实使用」处。
 
 ### D8 — 测试注入：`MCPServer.from_agent` 类方法（闭合审计 M5）
 
@@ -197,7 +230,7 @@ def build(self) -> MemoryAgent:
 
 - **[构造期 build 失败资源泄漏]** → D6 修复（builder try/finally 兜底 `memory.shutdown()`）。
 - **[SIGTERM 下 shutdown 可能被二次信号中断]** → D5 注册 SIGTERM→KeyboardInterrupt；`MemoryStore.shutdown` 的 `executor.shutdown(wait=True)` 在极端二次信号下仍可能未完成，但已大幅降低概率，记为残留。
-- **[double-init client 连接池泄漏]** → D7 构造期预热；`hasattr` 守护无 `_get_client` 后端。
+- **[double-init client 连接池泄漏]** → D7 adapter `_get_client` 加 `threading.Lock`（治本、惠及所有调用方）；`CallableAgentLLM` 无 `_get_client` 不改。
 - **[query 返回 agent 自由文本，破坏结构化客户端]** → 当前无人用；spec / docs 记录 migration note。
 - **[LLM 不支持 tool-calling 的静默降级]** → agent.chat 内 LLM 不返 `tool_calls` 时首轮终结（`termination='implicit'`），query 退化成「LLM 单轮直答」（无图检索），是降级非错误。docs 提示用户选支持 function-calling 的模型（deepseek-chat / claude-3-5-sonnet 等支持）。
 - **[`max_turns=8` 默认对 MCP 单问偏大]** → 最坏分钟级 query 可能被 MCP 客户端超时杀掉；docs 提示客户端超时 ≥120s，用户可调。
@@ -213,5 +246,5 @@ def build(self) -> MemoryAgent:
 ## Open Questions
 
 设计阶段已闭合全部审计 blocker / major。残留实现期核实项（不阻塞）：
-- D7 预热：`AgentLLMInterface` 是否有比 `_get_client` 更规范的预热入口——实现时核实，`hasattr` 路径兜底安全。
+- D7 adapter 加锁：`_get_client` 加 `threading.Lock` 后，确认 `OpenAIAgentLLM` / `AnthropicAgentLLM` 的 `__init__` 建 `self._client_lock` 不破坏现有构造（零行为变化，全量测试验）；`CallableAgentLLM` 无 `_get_client` 不受影响。
 - D6 builder 修复是否影响其他 `AgentBuilder.build` 调用方——零行为变化（成功路径不触发），全量测试验证。

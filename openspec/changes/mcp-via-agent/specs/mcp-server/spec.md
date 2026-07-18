@@ -2,7 +2,7 @@
 
 ### Requirement: 后端为 mcs_agent
 
-`mcs_mcp` 的工具后端 SHALL 全部经 `mcs_agent` 构造体系构建的 `MemoryAgent`：`query` → `agent.chat`、`ingest` → `agent.memory.learn`。`mcs_mcp` SHALL 仅 import `mcs_agent.{builder, loop, llms}`（公开 API 边界）；MUST NOT 直接 import `mcs.query` / `mcs.ingest` / `mcs.presets.Phase1Builder` / `mcs.rendering`（`render_query_result` / `format_ingest_status`）。（`mcs_agent` 内部调 `mcs.core`——如 `memory.learn` → `mcs.ingest`——是实现细节、非 `mcs_mcp` 直接依赖。）`mcs_agent.app` 的禁 import（避免拉 fastapi）见「MCP 为可选依赖、stdio 传输与入口」requirement。
+`mcs_mcp` 的工具后端 SHALL 全部经 `mcs_agent` 构造体系构建的 `MemoryAgent`：`query` → `agent.chat`、`ingest` → `agent.memory.learn`。`mcs_mcp` 的直接 import SHALL 限于 `mcs_agent.{builder, loop, llms}`（公开 API 边界）+ `mcs.entities.config.MCSConfig`（反推 `LLMConfig` 必需）；MUST NOT 直接 import `mcs.query` / `mcs.ingest` / `mcs.presets.Phase1Builder` / `mcs.rendering`（`render_query_result` / `format_ingest_status`）。（`mcs_agent` 内部调 `mcs.core`——如 `memory.learn` → `mcs.ingest`——是实现细节、非 `mcs_mcp` 直接依赖。）`mcs_agent.app` 的禁 import（避免拉 fastapi）见「MCP 为可选依赖、stdio 传输与入口」requirement。
 
 #### Scenario: MCPServer 持有 MemoryAgent
 
@@ -13,6 +13,7 @@
 
 - **WHEN** 审查 `mcs_mcp/server.py` 顶层 import
 - **THEN** MUST NOT 出现 `from mcs.presets` / `from mcs.rendering` / `from mcs.core.mcs` / `mcs.query` / `mcs.ingest`
+- **AND** 对 `mcs` 的直接 import 仅限 `from mcs.entities.config import MCSConfig`（反推必需）
 - **AND** MUST NOT 出现 `from mcs_agent.app`（避免拉 fastapi / pydantic / uvicorn）
 
 ---
