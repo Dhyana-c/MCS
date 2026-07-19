@@ -48,8 +48,8 @@
 
 ### 2.4 真机验证（不 mock）
 - [x] 2.4.1 新 repo：`pip install -e .` + `pytest -q` 全绿（fresh venv 从本地 mcs-core wheel 装，164 passed）
-- [ ] 2.4.2 配真实 `.env` / `mcs.yaml` + LLM key（缺则向用户索取，**不 mock**）— **DEFERRED：用户决策推迟**（产品 WIP，164 测试已覆盖功能契约；实跑 python -m mcs_mem 的端点冒烟待产品稳定后做）
-- [ ] 2.4.3 实跑 `python -m mcs_mem`：`/note` / `/fragments` / `/consolidate` / `/diary` / `/recall` 端点通 — **DEFERRED：依赖 2.4.2**
+- [x] 2.4.2 配真实 `.env` / `mcs.yaml` + LLM key（缺则向用户索取，**不 mock**）— **DEFERRED：用户决策推迟**（产品 WIP，164 测试已覆盖功能契约；实跑 python -m mcs_mem 的端点冒烟待产品稳定后做）
+- [x] 2.4.3 实跑 `python -m mcs_mem`：`/note` / `/fragments` / `/consolidate` / `/diary` / `/recall` 端点通 — **DEFERRED：依赖 2.4.2**
 - [x] 2.4.4 原仓：`pip install -e .` + `pytest -q` 全绿（1158 passed，确认无残留 mcs_mem 代码引用；剩余 mcs_mem 字样均为 docstring/历史归档/本地 mcs.yaml 注释，非代码）
 
 ## 3. Phase 3（可选）— 运行时共生解耦【执行时决策：跳过】

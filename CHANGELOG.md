@@ -4,7 +4,7 @@
 
 ## 2026-07-19
 
-- **[mcs-mem-extract-and-publish](openspec/changes/mcs-mem-extract-and-publish/)** — 发布底层 `mcs-core==0.1.0` 到 PyPI（分发名 `mcs-core`、import 名 `mcs`/`mcs_agent`/`mcs_mcp` 不变、entry `mcs-mcp`/`mcs-agent`）；拆 `mcs_mem` 到独立 repo [mcs-mem](https://github.com/Dhyana-c/mcs-mem)（private）+ 7 测试 + demo + 5 mem spec + `docs/memory-agent.md` mcs_mem 节 + 2 mcs_mem 图随迁；原仓清理 `mcs_mem/` + 7 测试 + demo + 5 spec + 2 图。TestPyPI 跳过（本地全验证覆盖；用户执行时决策）。
+- **[mcs-mem-extract-and-publish](openspec/changes/archive/2026-07-19-mcs-mem-extract-and-publish/)** — 发布底层 `mcs-core==0.1.0` 到 PyPI（分发名 `mcs-core`、import 名 `mcs`/`mcs_agent`/`mcs_mcp` 不变、entry `mcs-mcp`/`mcs-agent`）；拆 `mcs_mem` 到独立 repo [mcs-mem](https://github.com/Dhyana-c/mcs-mem)（private）+ 7 测试 + demo + 5 mem spec + `docs/memory-agent.md` mcs_mem 节 + 2 mcs_mem 图随迁；原仓清理 `mcs_mem/` + 7 测试 + demo + 5 spec + 2 图。TestPyPI 跳过（本地全验证覆盖；用户执行时决策）。
 
 ## 2026-06-25
 
