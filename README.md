@@ -162,7 +162,7 @@ mcs-mcp                          # 或 python -m mcs_mcp
 }
 ```
 
-> 工具调用慢（多轮 LLM）、调用串行（MCS 非线程安全）。详见 [MCP Server 文档](docs/mcp-server.md)。
+> `query` 经 agent 多步探索（多轮 LLM、耗时较长）、调用经 `MemoryStore` 单 worker 串行保证 SQLite 线程亲和。详见 [MCP Server 文档](docs/mcp-server.md)。
 
 ## 文档
 
