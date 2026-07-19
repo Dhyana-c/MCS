@@ -307,7 +307,66 @@ def test_search_unknown_mode():
 # === associate ===
 
 
+def test_associate_default_neighbors_zero_pipeline():
+    """默认 neighbors：一跳邻居纯图读（含 [id:]），MUST NOT 触发查询管线。"""
+    store = FakeStore()
+    store.add_node(_n("c1", "种子"))
+    store.add_node(_n("c2", "邻居甲"))
+    store.add_node(_n("c3", "邻居乙"))
+    store.add_edge("c1", "c2")
+    store.add_edge("c3", "c1")  # 反向边也可达（get_relations 双向）
+    ms, mcs = _make(store, FakeQueryEngine())
+    try:
+        out = ms.associate("c1")  # 不传 mode → neighbors
+        assert "[id:c2]" in out and "[id:c3]" in out
+        assert "关联邻居" in out
+        assert mcs.last_query_existing_context is None  # 零管线（spec scenario）
+    finally:
+        ms.shutdown()
+
+
+def test_associate_neighbors_mutex_listed_first():
+    store = FakeStore()
+    for nid, name in [("f1", "种子事实"), ("f2", "互斥事实"), ("c2", "普通邻居")]:
+        store.add_node(_n(nid, name))
+    store.add_edge("f1", "c2")
+    store.facts.append(Edge(source_id="f1", target_id="f2", type="互斥"))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        out = ms.associate("f1")
+        assert "互斥的事实" in out
+        assert out.index("[id:f2]") < out.index("[id:c2]")  # 互斥前置
+    finally:
+        ms.shutdown()
+
+
+def test_associate_neighbors_limit_truncation():
+    store = FakeStore()
+    store.add_node(_n("hub", "热点"))
+    for i in range(8):
+        store.add_node(_n(f"n{i}", f"邻{i}"))
+        store.add_edge("hub", f"n{i}")
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        out = ms.associate("hub", limit=3)
+        assert sum(1 for i in range(8) if f"[id:n{i}]" in out) == 3  # 恰 3 个
+        assert "共 8 个邻居" in out and "下钻" in out  # 总数 + 下钻提示
+    finally:
+        ms.shutdown()
+
+
+def test_associate_neighbors_isolated_seed():
+    store = FakeStore()
+    store.add_node(_n("lone", "孤儿"))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        assert "没有关联/互斥邻居" in ms.associate("lone")
+    finally:
+        ms.shutdown()
+
+
 def test_associate_mcs_uses_existing_context():
+    """mode=mcs 保留旧全管线行为（spec scenario：与 change 前逐字一致）。"""
     store = FakeStore()
     store.add_node(_n("c1", "种子"))
     ms, mcs = _make(store, FakeQueryEngine())
@@ -323,19 +382,19 @@ def test_associate_mcs_uses_existing_context():
 def test_associate_seed_missing():
     ms, _ = _make(FakeStore(), FakeQueryEngine())
     try:
-        out = ms.associate("nope", "mcs")
-        assert "error" in out and "不存在" in out
+        assert "不存在" in ms.associate("nope")          # neighbors 路径
+        assert "不存在" in ms.associate("nope", "mcs")   # mcs 路径
     finally:
         ms.shutdown()
 
 
-def test_associate_hot_random_unimplemented():
+def test_associate_unknown_mode_hint():
     store = FakeStore()
     store.add_node(_n("c1", "x"))
     ms, _ = _make(store, FakeQueryEngine())
     try:
-        assert "未实现" in ms.associate("c1", "hot")
-        assert "未实现" in ms.associate("c1", "random")
+        out = ms.associate("c1", "hot")
+        assert "未实现" in out and "neighbors" in out
     finally:
         ms.shutdown()
 

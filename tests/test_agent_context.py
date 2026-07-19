@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from mcs_agent.context import CONTEXT_MANAGEMENT_PROMPT
-from mcs_agent.loop import MemoryAgent
+from mcs_agent.loop import LANGUAGE_FOLLOW_PROMPT, MemoryAgent
 from mcs_agent.trace import ChatTrace
 
 
@@ -33,7 +33,7 @@ class Mem:
         pad = "描" * 120
         return f"[memory] 种子：1. [id:{query}1] {query}甲 — {pad} 2. [id:{query}2] {query}乙"
 
-    def associate(self, seed_id: str, mode: str = "mcs") -> str:
+    def associate(self, seed_id: str, mode: str = "neighbors", limit: int = 60) -> str:
         self.associate_calls.append(seed_id)
         pad = "述" * 120
         return f"[memory] 扩展：1. [id:{seed_id}] 回看 — {pad} 2. [id:x9] 新节点"
@@ -318,7 +318,10 @@ def test_fallback_chain_emergency_fold_then_evict():
     )
     # 预算 = 底座 + 500：每条结果 ~900 字符、存根 ~340。turn1 紧急折叠 #1 后放得下；
     # turn2 两条存根 ~680 + assistants 仍超 → 逐出 #1 → 放得下（不死锁）
-    base = len(f"S\n\n# 当前记忆图主题\n(尚未生成)\n\n{CONTEXT_MANAGEMENT_PROMPT}") + len("问")
+    base = len(
+        f"S\n\n{LANGUAGE_FOLLOW_PROMPT}\n\n# 当前记忆图主题\n(尚未生成)"
+        f"\n\n{CONTEXT_MANAGEMENT_PROMPT}"
+    ) + len("问")
     agent = _agent(memory, llm, budget=base + 500, on_trace=traces.append)
     assert agent.chat("问") == "ok"  # 正常收尾——MUST NOT 死锁
     tools = _tool_msgs(sent[2])

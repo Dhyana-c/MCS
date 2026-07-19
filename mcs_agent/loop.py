@@ -29,7 +29,14 @@ from mcs_agent.trace import ChatTrace, LLMCallTrace, ToolCallTrace
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["MemoryAgent", "DEFAULT_SYSTEM_PROMPT", "MEMORY_TOOLS"]
+__all__ = ["MemoryAgent", "DEFAULT_SYSTEM_PROMPT", "LANGUAGE_FOLLOW_PROMPT", "MEMORY_TOOLS"]
+
+
+LANGUAGE_FOLLOW_PROMPT = (
+    "# 回答语言\n"
+    "始终用**用户消息的语言**回答（英文问全程英文答、中文问中文答）；"
+    "记忆图节点内容与用户语言不一致时，引用其信息须**转成用户的语言**转述，不要原文照搬。"
+)
 
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -264,12 +271,20 @@ class MemoryAgent:
             return ""
 
     def _build_system(self, summary: str) -> str:
-        """拼接 system prompt + 「当前记忆图主题」段；摘要超标截断、空则占位。"""
+        """拼接 system prompt + 语言跟随规则 + 「当前记忆图主题」段。
+
+        语言跟随追加在**任意** system_prompt（含调用方自定义）之后——记忆图节点
+        语言可能与用户语言不一致（如中文抽取产物 vs 英文提问），回答语言以用户为准。
+        摘要超标截断、空则占位。
+        """
         text = (summary or "").strip()
         if len(text) > self.summary_budget:
             text = text[: self.summary_budget]
         theme = text if text else "(尚未生成)"
-        return f"{self.system_prompt}\n\n# 当前记忆图主题\n{theme}"
+        return (
+            f"{self.system_prompt}\n\n{LANGUAGE_FOLLOW_PROMPT}"
+            f"\n\n# 当前记忆图主题\n{theme}"
+        )
 
     def _dispatch(self, tool_call: dict) -> tuple[str, ToolCallTrace | None]:
         """执行单个工具调用，返回 (结果文本, ToolCallTrace | None)。

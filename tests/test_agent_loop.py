@@ -31,7 +31,7 @@ class FakeMemory:
         self.search_calls.append((query, mode))
         return f"[memory] 种子（{mode}）：1. [id:c1] {query}"
 
-    def associate(self, seed_id: str, mode: str = "mcs") -> str:
+    def associate(self, seed_id: str, mode: str = "neighbors", limit: int = 60) -> str:
         self.associate_calls.append((seed_id, mode))
         return f"[memory] 从 {seed_id} 扩展：2. [id:c2] 相关"
 
@@ -170,7 +170,7 @@ def test_tool_exception_isolated():
         def learn(self, t):
             raise RuntimeError("boom")
 
-        def associate(self, s, mode="mcs"):
+        def associate(self, s, mode="neighbors", limit=60):
             raise RuntimeError("boom")
 
         def find_path(self, s, t, max_hops=6):
@@ -286,3 +286,15 @@ def test_system_prompt_has_routing_sections():
     assert "何时直接回答" in sys
     assert "何时探索记忆图" in sys
     assert "假装记得本轮之前" in sys  # 过渡态诚实约束（不要假装记得上文）
+
+
+def test_language_follow_appended_to_any_system_prompt():
+    """语言跟随规则追加在任意 system_prompt 之后（含自定义——bench 覆盖 prompt 也吃到）。"""
+    sys = _capture_system(_SummaryMemory(""))
+    assert "# 回答语言" in sys  # 默认 prompt
+    agent = MemoryAgent(_SummaryMemory(""), lambda m, t: {"content": "ok"},
+                        system_prompt="自定义角色")
+    custom = agent._build_system("")
+    assert custom.startswith("自定义角色")
+    assert "# 回答语言" in custom  # 自定义 prompt 同样追加
+    assert custom.index("自定义角色") < custom.index("# 回答语言") < custom.index("# 当前记忆图主题")

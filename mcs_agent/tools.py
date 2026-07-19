@@ -48,7 +48,12 @@ def _search(memory: Any, args: dict) -> str:
 
 
 def _associate(memory: Any, args: dict) -> str:
-    return memory.associate(args.get("seed_id", ""), args.get("mode", "mcs"))
+    # limit 从合并 args 取（支持 ToolsetConfig.params 覆盖）；缺省 60（同 MemoryStore.associate）
+    return memory.associate(
+        args.get("seed_id", ""),
+        args.get("mode", "neighbors"),
+        limit=args.get("limit", 60),
+    )
 
 
 def _reason(memory: Any, args: dict) -> str:
@@ -190,9 +195,11 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
             "function": {
                 "name": "associate",
                 "description": (
-                    "从指定种子节点出发做联想扩展（BFS），返回扩展子图（含 id）。"
-                    "mode=mcs 用 MCS 事实 BFS（主力，已实现）；"
-                    "mode=hot 热点排序（未实现）；mode=random 随机截断（未实现）。"
+                    "查看种子节点的一跳邻居（关联/互斥端点，含 id），零成本、即时返回；"
+                    "多跳探索靠对邻居 id 继续 associate（每步可控）。"
+                    # mode=mcs（框架全管线 BFS）不进 enum：LLM 可见即会被选用、成本
+                    # 一次≈15 次内部 LLM 调用（LoCoMo v5 实测）；显式调用方经
+                    # ToolsetConfig.params / 代码路径仍可用。
                 ),
                 "parameters": {
                     "type": "object",
@@ -201,10 +208,9 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
                             "type": "string",
                             "description": "种子节点 id（由 search 返回的 [id:...]）",
                         },
-                        "mode": {
-                            "type": "string",
-                            "enum": ["mcs", "hot", "random"],
-                            "description": "扩展模式，默认 mcs",
+                        "limit": {
+                            "type": "integer",
+                            "description": "邻居显示上限，默认 60",
                         },
                     },
                     "required": ["seed_id"],
