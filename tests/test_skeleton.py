@@ -75,7 +75,6 @@ ALL_MODULES = [
     "mcs.presets.phase1",
     # prompts (9 purposes + registry)
     "mcs.prompts",
-    "mcs.prompts.arbitrate",
     "mcs.prompts.decide_directions",
     "mcs.prompts.decide_hub",
     "mcs.prompts.extract_concepts",
@@ -207,18 +206,15 @@ def test_node_has_only_minimal_core_fields() -> None:
     assert "hub" not in field_names
 
 
-def test_query_context_has_4_lifecycle_fields() -> None:
-    """QueryContext：system_prompt / user_input / intermediate / result_set + metadata + selected_edges。"""
+def test_query_context_slimmed_for_navigation() -> None:
+    """QueryContext 瘦身：system_prompt / user_input / metadata / universe（读查询编排退役后仅留导航字段）。"""
     from mcs.core.query_engine import QueryContext
 
     field_names = {f.name for f in fields(QueryContext)}
     expected = {
         "system_prompt",
         "user_input",
-        "intermediate",
-        "result_set",
         "metadata",
-        "selected_edges",
         "universe",
     }
     assert field_names == expected, (
@@ -316,8 +312,8 @@ def test_context_renderer_get_summary_fallback() -> None:
 def test_default_prompts_registry_complete() -> None:
     """DEFAULT_PROMPTS 注册了全部默认目的。
 
-    含 select_nodes / select_nodes_batch、读侧 select_facts、
-    写侧 select_facts_write（读写事实筛选解耦，见 read-write-select-prompt-split）。
+    含 select_nodes / select_nodes_batch、写侧 select_facts_write（读侧 select_facts /
+    arbitrate 已随读查询编排退役，见 retire-framework-query-pipeline）。
     新增默认 purpose 时 MUST 同步本集合。
     """
     from mcs.prompts import DEFAULT_PROMPTS
@@ -328,14 +324,12 @@ def test_default_prompts_registry_complete() -> None:
         "decide_directions",
         "decide_hub",
         "navigate_hub",
-        "arbitrate",
         "synthesize",
         "gen_aliases",
         "gen_summary",
         "gen_graph_summary",
         "select_nodes",
         "select_nodes_batch",
-        "select_facts",
         "select_facts_write",
         "generalize",
         "adjudicate",

@@ -58,7 +58,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "- search：搜索入口种子（默认在现实世界 __reality__ 内；查作品世界时显式传 universe）。"
     "mode=keyword 按用户输入字面匹配（主力，已实现）；"
     "mode=direct 返回顶层 hub（无明确关键词时用，已实现）；mode=vector 未实现。\n"
-    "- associate：从种子联想扩展（BFS）。mode=mcs 已实现（主力）；hot、random 未实现。\n"
+    "- associate：从种子联想扩展——一跳邻居（关联/互斥端点，含 id），零成本、即时；多跳靠对邻居 id 继续 associate。\n"
     "- reason：在两个已知节点间找连通路径（允许失败）。\n"
     "- recall：回忆最近发生的事件（按时间倒排），回答「最近记了什么/最近有什么」。\n"
     "- timeline：组装某世界的叙事时间线（该世界事件层按时间**升序**，只读），回答"

@@ -31,8 +31,8 @@ class FakeMemory:
         self.search_calls.append((query, mode))
         return f"[memory] 种子（{mode}）：1. [id:c1] {query}"
 
-    def associate(self, seed_id: str, mode: str = "neighbors", limit: int = 60) -> str:
-        self.associate_calls.append((seed_id, mode))
+    def associate(self, seed_id: str, limit: int = 60) -> str:
+        self.associate_calls.append(seed_id)
         return f"[memory] 从 {seed_id} 扩展：2. [id:c2] 相关"
 
     def find_path(self, source_id: str, target_id: str, max_hops: int = 6) -> str:
@@ -113,14 +113,14 @@ def test_multi_step_search_associate():
     replies = iter(
         [
             _assistant(tool_calls=[_tc("1", "search", '{"query": "量子力学"}')]),
-            _assistant(tool_calls=[_tc("2", "associate", '{"seed_id": "c1", "mode": "mcs"}')]),
+            _assistant(tool_calls=[_tc("2", "associate", '{"seed_id": "c1"}')]),
             _assistant(content="综合来看……"),
         ]
     )
     agent = MemoryAgent(memory, lambda m, t: next(replies), max_turns=6)
     assert agent.chat("讲讲量子力学") == "综合来看……"
     assert memory.search_calls == [("量子力学", "keyword")]
-    assert memory.associate_calls == [("c1", "mcs")]
+    assert memory.associate_calls == ["c1"]
 
 
 def test_reason_find_path():

@@ -10,7 +10,6 @@ from __future__ import annotations
 from mcs.interfaces.llm import PromptBundle
 from mcs.prompts import (
     adjudicate,
-    arbitrate,
     decide_directions,
     decide_hub,
     extract_concepts,
@@ -65,11 +64,6 @@ DEFAULT_PROMPTS: dict[str, PromptBundle] = {
         template=navigate_hub.USER_TEMPLATE,
         parse=navigate_hub.parse,
     ),
-    "arbitrate": PromptBundle(
-        system=arbitrate.SYSTEM_PROMPT,
-        template=arbitrate.USER_TEMPLATE,
-        parse=arbitrate.parse,
-    ),
     "synthesize": PromptBundle(
         system=synthesize.SYSTEM_PROMPT,
         template=synthesize.USER_TEMPLATE,
@@ -99,11 +93,6 @@ DEFAULT_PROMPTS: dict[str, PromptBundle] = {
         system=select_nodes.SYSTEM_PROMPT,
         template=select_nodes.BATCH_USER_TEMPLATE,
         parse=select_nodes.parse,
-    ),
-    "select_facts": PromptBundle(
-        system=select_facts.SYSTEM_PROMPT,
-        template=select_facts.USER_TEMPLATE,
-        parse=select_facts.parse,
     ),
     "select_facts_write": PromptBundle(
         system=select_facts.WRITE_SYSTEM_PROMPT,

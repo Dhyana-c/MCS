@@ -92,25 +92,6 @@ def _build_write_pipeline(store, mock_llm, *extra_plugins):
     )
 
 
-# === 4.1 query() 走 select_facts ===
-
-
-def test_query_uses_select_facts(seeded_graph, mock_llm):
-    """query() 的事实筛选 MUST 使用 purpose='select_facts'。"""
-    mock_llm.set_response("select_nodes", [])
-    mock_llm.set_response("select_facts", [])
-    engine = make_query_engine(
-        seeded_graph, mock_llm, _StaticEntry(["dl"], seeded_graph)
-    )
-    engine.query("什么是深度学习？")
-
-    fact_purposes = _fact_select_purposes(mock_llm)
-    assert fact_purposes, "query() 未触发任何 select_facts* 调用（测试可能空转）"
-    assert all(p == "select_facts" for p in fact_purposes), (
-        f"Expected all select_facts, got {fact_purposes}"
-    )
-
-
 # === 4.2 query_nodes() 走 select_facts_write ===
 
 
@@ -157,15 +138,11 @@ def test_select_facts_write_parse_is_same_function():
 
 
 def test_select_facts_write_bundle_fields():
-    """select_facts_write bundle 的 system 和 template 非空且与读侧不同。"""
+    """select_facts_write bundle 的 system 和 template 非空（写侧窄召回；读侧 select_facts 已退役）。"""
     write_bundle = DEFAULT_PROMPTS["select_facts_write"]
-    read_bundle = DEFAULT_PROMPTS["select_facts"]
     assert isinstance(write_bundle, PromptBundle)
     assert write_bundle.system
     assert write_bundle.template
-    # 写侧 prompt 与读侧不同（窄召回 vs 宽召回）
-    assert write_bundle.system != read_bundle.system
-    assert write_bundle.template != read_bundle.template
 
 
 # === 4.4 parse 边界一致性 ===
@@ -215,37 +192,6 @@ def test_parse_object_non_int_raises():
     """对象内非整数元素抛 LLMParseError。"""
     with pytest.raises(LLMParseError):
         select_facts.parse('{"result": [1, "two"], "frontier": []}')
-
-
-# === 4.5 覆盖正交 ===
-
-
-def test_override_select_facts_does_not_affect_write():
-    """覆盖 select_facts 不影响 select_facts_write。"""
-    original_write = DEFAULT_PROMPTS["select_facts_write"]
-
-    override = PromptBundle(
-        system="override", template="override", parse=select_facts.parse
-    )
-    llm = MockLLM()
-    llm.register_prompt("select_facts", override)
-
-    # select_facts_write 不受影响
-    assert llm.get_prompt("select_facts_write").system == original_write.system
-
-
-def test_override_select_facts_write_does_not_affect_read():
-    """覆盖 select_facts_write 不影响 select_facts。"""
-    original_read = DEFAULT_PROMPTS["select_facts"]
-
-    override = PromptBundle(
-        system="override", template="override", parse=select_facts.parse
-    )
-    llm = MockLLM()
-    llm.register_prompt("select_facts_write", override)
-
-    # select_facts 不受影响
-    assert llm.get_prompt("select_facts").system == original_read.system
 
 
 # === 4.6 write_pipeline 阶段② 集成 ===

@@ -97,10 +97,6 @@ token_budget: 8000
         # ingest：mock 默认返回空抽取，管线应完整跑完不抛
         wctx = mcs.ingest("一段用于集成测试的文本，内容不重要。")
         assert hasattr(wctx, "concepts")
-
-        # query：返回 Subgraph（或 postprocess 转 str），不应抛 / 不触达真实 API
-        result = mcs.query("测试查询")
-        assert result is not None
     finally:
         mcs.shutdown()
 

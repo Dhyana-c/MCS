@@ -24,7 +24,6 @@ from bench.golden_cage.data import filter_queries, load
 from bench.golden_cage.metrics import aggregate_metrics, retrieved_docs
 from bench.multihop_rag.builder import _make_mcs
 from bench.plugins.doc_rerank import doc_rerank
-from mcs.rendering import render_query_result
 from mcs_agent.llm import make_openai_llm_call
 from mcs_agent.loop import MemoryAgent
 from mcs_agent.memory import _SEED_ROOT, MemoryStore, _render_nodes
@@ -90,24 +89,10 @@ class CapturingMemory(MemoryStore):
                              "nodes": list(nodes)})
         return text
 
-    def _do_associate(self, seed_id: str, mode: str) -> str:
-        mcs = self._mcs
-        if mode != "mcs":
-            text = super()._do_associate(seed_id, mode)
-            self.records.append({"tool": "associate", "args": {"seed_id": seed_id, "mode": mode},
-                                 "nodes": []})
-            return text
-        node = mcs.store.get_node(seed_id)
-        if node is None:
-            text = f"[error] 种子节点不存在：{seed_id}"
-            self.records.append({"tool": "associate", "args": {"seed_id": seed_id, "mode": mode},
-                                 "nodes": []})
-            return text
-        result = mcs.query("", existing_context=[node], universe=node.universe)
-        nodes = list(getattr(result, "nodes", []) or [])
-        text = render_query_result(result, mcs.read_manager)
-        self.records.append({"tool": "associate", "args": {"seed_id": seed_id, "mode": mode},
-                             "nodes": nodes})
+    def _do_associate(self, seed_id: str, limit: int) -> str:
+        text = super()._do_associate(seed_id, limit)
+        self.records.append({"tool": "associate", "args": {"seed_id": seed_id},
+                             "nodes": []})
         return text
 
     def touched_nodes(self) -> list[Any]:

@@ -5,9 +5,9 @@
 "reason": "..."}``。
 
 命名消歧（见 design D9）：本 ``adjudicate`` purpose 仅由 agent 的 ``arbitrate``
-工具使用，与查询管线 ``LLMArbitrationPlugin`` 的 ``arbitrate`` purpose 同名不同域
-（后者只返 ``list[str]``、不吃事件、语义是「按 query 选自洽子集」）。故新增
-``adjudicate``、零侵入共享的 ``arbitrate`` purpose。
+工具使用。原查询管线 ``LLMArbitrationPlugin`` 的 ``arbitrate`` purpose（同名不同域、
+只返 ``list[str]``、不吃事件、语义是「按 query 选自洽子集」）已随读查询编排退役删除
+（见 ``retire-framework-query-pipeline``），故本 ``adjudicate`` 现为唯一存活的仲裁 purpose。
 
 幻觉 id 过滤**不在**本 ``parse`` 做（``parse`` 不知传入事实 id 集合，只解析结构），
 落在 ``MemoryStore._do_arbitrate`` 层（只保留传入事实 id）。

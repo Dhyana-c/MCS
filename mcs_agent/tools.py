@@ -51,7 +51,6 @@ def _associate(memory: Any, args: dict) -> str:
     # limit 从合并 args 取（支持 ToolsetConfig.params 覆盖）；缺省 60（同 MemoryStore.associate）
     return memory.associate(
         args.get("seed_id", ""),
-        args.get("mode", "neighbors"),
         limit=args.get("limit", 60),
     )
 
@@ -197,9 +196,6 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
                 "description": (
                     "查看种子节点的一跳邻居（关联/互斥端点，含 id），零成本、即时返回；"
                     "多跳探索靠对邻居 id 继续 associate（每步可控）。"
-                    # mode=mcs（框架全管线 BFS）不进 enum：LLM 可见即会被选用、成本
-                    # 一次≈15 次内部 LLM 调用（LoCoMo v5 实测）；显式调用方经
-                    # ToolsetConfig.params / 代码路径仍可用。
                 ),
                 "parameters": {
                     "type": "object",

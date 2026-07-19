@@ -1,14 +1,12 @@
 """mcs.rendering 公开纯函数测试（result-rendering capability）。
 
-覆盖 ``render_query_result``（str 透传 / Subgraph 经 ContextRenderer.render_facts /
-非 str 兜底）与 ``format_ingest_status``（概念 / 节点计数 + persisted、空字段安全、
-不含边计数）。逻辑逐字迁自原 MCP server 私有函数，行为不变。
+覆盖 ``format_ingest_status``（概念 / 节点计数 + persisted、空字段安全、不含边计数）。
+原 ``render_query_result`` 已随读查询编排退役删除（见 retire-framework-query-pipeline）。
 """
 
 from __future__ import annotations
 
-from mcs.entities.graph import EDGE_ASSOC, Edge, Node, Subgraph
-from mcs.rendering import format_ingest_status, render_query_result
+from mcs.rendering import format_ingest_status
 
 
 _UNSET = object()
@@ -24,35 +22,6 @@ class _FakeWriteContext:
         self.changed = [object(), object()] if changed is _UNSET else changed
         self.concepts = [object()] if concepts is _UNSET else concepts
         self.persisted = persisted
-
-
-# === render_query_result ===
-
-
-def test_render_str_passthrough():
-    assert render_query_result("plain text", None) == "plain text"
-
-
-def test_render_subgraph_renders_nodes_and_content():
-    n = Node(id="a", name="深度学习", content="一种方法")
-    out = render_query_result(Subgraph(focus_id="a", nodes=[n]), None)
-    assert "深度学习" in out
-    assert "一种方法" in out
-
-
-def test_render_subgraph_with_relation_edges():
-    """Subgraph 含关系边（关联边）时端点出现在渲染文本中。"""
-    a = Node(id="a", name="小明", content="")
-    b = Node(id="b", name="苹果", content="")
-    e = Edge(id="e1", source_id="a", target_id="b", type=EDGE_ASSOC)
-    out = render_query_result(
-        Subgraph(focus_id="a", nodes=[a, b], edges=[e]), None
-    )
-    assert "小明" in out and "苹果" in out
-
-
-def test_render_other_falls_back_to_str():
-    assert render_query_result(12345, None) == "12345"
 
 
 # === format_ingest_status ===

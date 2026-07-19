@@ -45,7 +45,7 @@ from mcs.entities.graph import (
     Edge,
     Node,
 )
-from mcs.rendering import format_ingest_status, render_query_result
+from mcs.rendering import format_ingest_status
 from mcs.utils.timestamps import event_sort_key
 
 if TYPE_CHECKING:
@@ -293,20 +293,12 @@ class MemoryStore:
 
     # === associate（联想扩展，阶段③ 封装） ===
 
-    def _do_associate(self, seed_id: str, mode: str, limit: int) -> str:
+    def _do_associate(self, seed_id: str, limit: int) -> str:
         mcs = self._mcs
         node = mcs.store.get_node(seed_id)
         if node is None:
             return f"[error] 种子节点不存在：{seed_id}"
-        if mode == "mcs":
-            # 重管线（显式模式）：一次调用 = 一整条框架 BFS 查询（内含逐层 select_facts
-            # LLM 筛选，LoCoMo 实测每次 ~15 次 LLM 调用）——仅明确要框架级语义游走时用。
-            # existing_context 跳过种子定位；universe 从种子继承（P7）
-            result = mcs.query("", existing_context=[node], universe=node.universe)
-            return render_query_result(result, mcs.read_manager)
-        if mode != "neighbors":
-            return f"[未实现] associate 的 {mode} 模式暂不可用，请用 neighbors 或 mcs"
-        # neighbors（默认）：一跳邻居纯图读、零 LLM——相关性判断归 agent 的多轮探索，
+        # neighbors：一跳邻居纯图读、零 LLM——相关性判断归 agent 的多轮探索，
         # 工具内不再嵌套 BFS / 筛选（双重游走）。载重双类过滤由 get_relations 保证
         # （同 universe 事件边核心侧单向、跨 universe 双向）。
         mutex_ids: list[str] = []
@@ -339,15 +331,14 @@ class MemoryStore:
             )
         return "\n".join(parts)
 
-    def associate(self, seed_id: str, mode: str = "neighbors", limit: int = 60) -> str:
-        """从种子联想扩展。
+    def associate(self, seed_id: str, limit: int = 60) -> str:
+        """从种子联想扩展（一跳邻居纯图读、零 LLM）。
 
-        - ``neighbors``（默认）：一跳邻居纯图读（``get_relations``），零 LLM；互斥
-          邻居单列在前；``limit`` 截断（超出标注总数与下钻方式）。
-        - ``mcs``：旧全管线 BFS（``mcs.query(existing_context)`` + ``render_query_result``），
-          成本高，仅显式要框架级语义游走时用。
+        互斥邻居单列在前；``limit`` 截断（超出标注总数与下钻方式）。
+        原 ``mode="mcs"``（框架全管线 BFS）已随读查询编排退役（见
+        ``retire-framework-query-pipeline``）。
         """
-        return self._submit(self._do_associate, seed_id, mode, limit)
+        return self._submit(self._do_associate, seed_id, limit)
 
     # === find_path（路径搜索，reason 工具） ===
 

@@ -1,25 +1,26 @@
-"""查询引擎 - 从 MCS 读取的 5 阶段管道。
+"""图导航 + 遍历原语 —— 供写管线 ingest 关联定位与记忆 agent 导航复用。
 
-5 个阶段按顺序执行，参见 openspec/specs/query-pipeline/spec.md：
+本模块**不再提供读查询编排**（5 阶段 query 管线已退役——查询职责归记忆 agent 的
+search/associate/reason 分步游走，见 openspec change `retire-framework-query-pipeline`）。
+保留下列图底座原语：
 
-    ① 前置插件链      (PostprocessPlugin chain, 可选)
-    ② 种子定位        (EntryPlugin chain + TrimPlugin)
-    ③ 语义理解 Loop   (事实 BFS + visited + max_rounds + token_budget)
-    ④ 仲裁            (ArbitrationPlugin, ≤1)
-    ⑤ 后置处理链      (PostprocessPlugin chain)
+- ``locate_seeds`` / ``_locate_seeds``：种子定位（ENTRY + TRIM 插件链），供 agent
+  ``search`` 与写管线 ``query_nodes`` 复用。
+- ``_traverse``：批量事实 BFS 遍历（双角色 select_facts + token 预算 + visited），
+  供写管线 ``query_nodes`` 关联定位使用。
+- ``query_nodes``：写管线阶段② 专用轻量遍历（限深、``select_facts_write``、无 ④⑤）。
+- ``get_related_events`` / ``narrative_timeline`` / ``token_budget``：agent 导航原语。
 
-默认返回值为 ``Subgraph``（``nodes`` + 选中事实边 ``edges``）。
-后置插件 MAY 将其转换为自然语言字符串。
+参见 openspec/specs/lightweight-query/spec.md。
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from mcs.core.content_merge import merge_content
-from mcs.entities.graph import REALITY_UNIVERSE
 from mcs.prompts.select_facts import SelectFactsResult, coerce_select_result
 
 if TYPE_CHECKING:
@@ -34,24 +35,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class QueryContext:
-    """贯穿一次 query() 调用的状态。
+    """贯穿一次图导航 / 遍历调用的轻量上下文（locate_seeds / query_nodes / _traverse）。
 
-    规范中的 4 个生命周期字段：
+    读查询编排退役后，QueryContext 仅保留导航所需字段（ENTRY/TRIM 插件经 ``ctx``
+    读取 ``user_input`` / ``universe``）。``accumulated`` / ``visited`` / ``frontier``
+    为 ``_traverse`` 内部局部状态、非本类字段。
 
-    - ``system_prompt``: 用户配置的（领域 + 角色），不变量
-    - ``user_input``: 原始查询字符串，不变量
-    - ``intermediate``: 在阶段 ③ Loop 中 ``accumulated``
-    - ``result_set``: 阶段 ④ 后的最终选定节点集
-
-    参见 openspec/specs/query-pipeline/spec.md "QueryContext 含四个状态字段"。
+    参见 openspec/specs/lightweight-query/spec.md "QueryContext 为导航 / 遍历的轻量上下文"。
     """
 
     system_prompt: str = ""
     user_input: str = ""
-    intermediate: list[Node] = field(default_factory=list)
-    result_set: list[Node] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
-    selected_edges: list[Edge] = field(default_factory=list)
     universe: str | None = None
 
 
@@ -90,65 +85,17 @@ class QueryEngine:
 
     # === 公共 API ===
 
-    def query(
-            self,
-            text: str,
-            existing_context: list[Node] | None = None,
-            universe: str = REALITY_UNIVERSE,
-    ) -> Any:
-        """执行 5 阶段读取管道。
-
-        返回最后一个后处理插件的输出；如果没有后处理插件转换类型，
-        则返回 ``Subgraph``（nodes + 选中事实边 edges）。
-
-        ``universe``：查询限该 universe 内（种子定位 / BFS 不跨 universe，P7）；
-        默认现实世界。
-        """
-        from mcs.entities.graph import Subgraph
-
-        ctx = QueryContext(
-            system_prompt=self.system_prompt,
-            user_input=text,
-            universe=universe,
-        )
-
-        # 阶段 ①: 前置插件链（可选；应用于查询文本）
-        processed_text = self._run_preprocess(text, ctx)
-
-        # 阶段 ②: 种子定位（如果提供了 existing_context 则跳过）
-        if existing_context is not None:
-            seeds = list(existing_context)
-        else:
-            seeds = self._locate_seeds(processed_text, ctx)
-
-        # 阶段 ③: 语义理解 Loop（事实 BFS）
-        ctx.intermediate, ctx.selected_edges = self._traverse(
-            seeds, processed_text, ctx
-        )
-
-        # 阶段 ④: 仲裁
-        ctx.result_set = self._arbitrate(ctx.intermediate, processed_text, ctx)
-
-        # 阶段 ⑤: 后置处理链
-        # 先组装 Subgraph，再交给后置插件
-        subgraph = Subgraph(
-            focus_id=ctx.result_set[0].id if ctx.result_set else "",
-            nodes=list(ctx.result_set),
-            edges=_filter_edges_by_nodes(ctx.selected_edges, ctx.result_set),
-        )
-        return self._run_postprocess(subgraph, ctx)
-
     def query_nodes(
             self,
             text: str,
             max_rounds: int = 1,
-            skip_postprocess: bool = True,
             universe: str | None = None,
     ) -> list[Node]:
-        """轻量查询模式：仅执行 ①②③ 阶段，返回 List[Node]。
+        """写管线阶段② 关联定位专用图遍历：种子定位 → 限深 BFS，返回 List[Node]。
 
-        供写管线阶段②关联定位使用，跳过仲裁和后处理链。
-        默认 max_rounds=1 限制遍历深度，skip_postprocess=True 跳过 ④⑤。
+        执行 ② 种子定位（ENTRY + TRIM 链）→ ③ 遍历（限 ``max_rounds`` 轮、
+        ``select_purpose="select_facts_write"`` 窄召回）；**无 ④ 仲裁 / ⑤ 后处理**
+        （读查询编排已退役——见 ``retire-framework-query-pipeline``）。
 
         ``universe`` 非空时，种子定位 / BFS 限该 universe 内（ingest 期关联定位 MUST
         universe 限域，防 judge_relations 看到跨 universe 候选乱连边 / 误判互斥）；
@@ -160,28 +107,18 @@ class QueryEngine:
             universe=universe,
         )
 
-        # 阶段 ①: 前置插件链
+        # ① 前置透传（QUERY_PREPROCESS 已退役，恒返回原文；保留调用与 locate_seeds 对称）
         processed_text = self._run_preprocess(text, ctx)
 
-        # 阶段 ②: 种子定位
+        # ② 种子定位
         seeds = self._locate_seeds(processed_text, ctx)
 
-        # 阶段 ③: 遍历（限深 max_rounds，经参数透传，不修改实例态）
-        ctx.intermediate, _ = self._traverse(
+        # ③ 遍历（限深 max_rounds，窄召回 select_facts_write）
+        accumulated, _ = self._traverse(
             seeds, processed_text, ctx, select_purpose="select_facts_write",
             max_rounds=max_rounds,
         )
-
-        # 跳过 ④⑤，直接返回 result_set
-        if skip_postprocess:
-            return list(ctx.intermediate)
-
-        # 阶段 ④: 仲裁
-        ctx.result_set = self._arbitrate(ctx.intermediate, processed_text, ctx)
-
-        # 阶段 ⑤: 后置处理链
-        result = self._run_postprocess_nodes(ctx.result_set, ctx)
-        return result if isinstance(result, list) else ctx.result_set
+        return list(accumulated)
 
     def locate_seeds(self, query: str, universe: str | None = None) -> list[Node]:
         """公共薄方法：种子定位（阶段②），供外部（如 ``mcs_agent.search``）复用。
@@ -257,20 +194,12 @@ class QueryEngine:
     # === 阶段辅助方法 ===
 
     def _run_preprocess(self, text: str, ctx: QueryContext) -> str:
-        """阶段 ①：将文本作为输入的串行 QueryPreprocessPlugin 链。
+        """前置文本透传（QUERY_PREPROCESS 插件类型已随读查询编排退役）。
 
-        注意：读取管道预处理插件接收字符串并返回（可能转换的）字符串。
-        不修改文本的插件应返回未更改的文本。
+        保留方法签名供 ``locate_seeds`` / ``query_nodes`` 调用、行为不变（原本 presets
+        零注册、纯 no-op）。恒返回原文本。
         """
-        from mcs.core.plugin import PluginType
-
-        plugins = self.plugin_manager.get_all(PluginType.QUERY_PREPROCESS)
-        if not plugins:
-            return text
-        result: Any = text
-        for plugin in plugins:
-            result = plugin.preprocess(result, ctx)
-        return result if isinstance(result, str) else text
+        return text
 
     def _locate_seeds(self, query: str, ctx: QueryContext) -> list[Node]:
         """阶段 ②：运行所有 EntryPlugins（按优先级排序），合并，裁剪。
@@ -766,75 +695,6 @@ class QueryEngine:
         except Exception:
             logger.warning("read-repair 持久化失败（脏标记已留，下次 flush 收敛）", exc_info=True)
 
-    def _arbitrate(
-            self,
-            accumulated: list[Node],
-            query: str,
-            ctx: QueryContext,
-    ) -> list[Node]:
-        """阶段 ④：≤1 个 ArbitrationPlugin；默认为直通。"""
-        from mcs.core.plugin import PluginType
-
-        plugin = self.plugin_manager.get(PluginType.ARBITRATION)
-        if plugin is None:
-            return list(accumulated)
-        result = plugin.arbitrate(accumulated, query, ctx)
-        if not isinstance(result, list):
-            raise TypeError(
-                f"Arbitration plugin {plugin.get_name()!r} returned non-list "
-                f"({type(result).__name__}); arbitration must return List[Node]"
-            )
-        return result
-
-    def _run_postprocess(self, subgraph: Any, ctx: QueryContext) -> Any:
-        """阶段 ⑤：针对 Subgraph 的串行 PostprocessPlugin 链。
-
-        后置插件接收 Subgraph 并可转换为自然语言或其他格式。
-        兼容旧插件：期望 ``List[Node]`` 的插件经兼容层接收 ``subgraph.nodes``，
-        返回的 ``List[Node]`` 自动重建为 ``Subgraph``。
-        无后置插件时返回原始 Subgraph。
-        """
-        from mcs.core.plugin import PluginType
-        from mcs.entities.graph import Node, Subgraph
-
-        plugins = self.plugin_manager.get_all(PluginType.POSTPROCESS)
-        if not plugins:
-            return subgraph
-        result: Any = subgraph
-        for plugin in plugins:
-            if isinstance(result, Subgraph):
-                # 兼容层：传 nodes 给旧插件，若返回 list[Node] 则重建 Subgraph
-                processed = plugin.process(result.nodes, ctx)
-                if isinstance(processed, list) and (
-                    not processed or isinstance(processed[0], Node)
-                ):
-                    result = Subgraph(
-                        focus_id=result.focus_id,
-                        nodes=processed,
-                        edges=_filter_edges_by_nodes(result.edges, processed),
-                    )
-                else:
-                    # 插件返回了其他类型（如 str），直接作为最终结果
-                    result = processed
-            else:
-                result = plugin.process(result, ctx)
-        return result
-
-    def _run_postprocess_nodes(
-            self, nodes: list[Node], ctx: QueryContext
-    ) -> list[Node]:
-        """阶段 ⑤ 的旧版：针对 List[Node] 的后处理链（query_nodes 兼容）。"""
-        from mcs.core.plugin import PluginType
-
-        plugins = self.plugin_manager.get_all(PluginType.POSTPROCESS)
-        if not plugins:
-            return nodes
-        result: Any = nodes
-        for plugin in plugins:
-            result = plugin.process(result, ctx)
-        return result if isinstance(result, list) else nodes
-
-
 def _summarize_for_prompt(nodes: list[Node], max_nodes: int = 50) -> str:
     """已累积节点的紧凑上下文：**仅 name**、且只取**最近 max_nodes 个**。
 
@@ -854,11 +714,3 @@ def _summarize_for_prompt(nodes: list[Node], max_nodes: int = 50) -> str:
     if len(nodes) > len(recent):
         return f"(已收集 {len(nodes)} 项，列最近 {len(recent)} 项) {names}"
     return names
-
-
-def _filter_edges_by_nodes(
-        edges: list[Edge], nodes: list[Node]
-) -> list[Edge]:
-    """过滤事实边：仅保留两端都在 nodes 中的边。"""
-    node_ids = {n.id for n in nodes}
-    return [e for e in edges if e.source_id in node_ids and e.target_id in node_ids]

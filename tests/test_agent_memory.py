@@ -365,36 +365,10 @@ def test_associate_neighbors_isolated_seed():
         ms.shutdown()
 
 
-def test_associate_mcs_uses_existing_context():
-    """mode=mcs 保留旧全管线行为（spec scenario：与 change 前逐字一致）。"""
-    store = FakeStore()
-    store.add_node(_n("c1", "种子"))
-    ms, mcs = _make(store, FakeQueryEngine())
-    try:
-        out = ms.associate("c1", "mcs")
-        assert mcs.last_query_existing_context is not None
-        assert "种子" in str(mcs.last_query_existing_context)
-        assert "raw-subgraph-for:" in out
-    finally:
-        ms.shutdown()
-
-
 def test_associate_seed_missing():
     ms, _ = _make(FakeStore(), FakeQueryEngine())
     try:
-        assert "不存在" in ms.associate("nope")          # neighbors 路径
-        assert "不存在" in ms.associate("nope", "mcs")   # mcs 路径
-    finally:
-        ms.shutdown()
-
-
-def test_associate_unknown_mode_hint():
-    store = FakeStore()
-    store.add_node(_n("c1", "x"))
-    ms, _ = _make(store, FakeQueryEngine())
-    try:
-        out = ms.associate("c1", "hot")
-        assert "未实现" in out and "neighbors" in out
+        assert "不存在" in ms.associate("nope")          # neighbors 路径（mode=mcs 已退役）
     finally:
         ms.shutdown()
 
@@ -1155,18 +1129,6 @@ def test_search_direct_passes_universe_to_root_children():
     try:
         ms.search("x", "direct", universe="三国演义")
         assert ("__seed_root__", "三国演义") in store.hierarchy_calls
-    finally:
-        ms.shutdown()
-
-
-def test_associate_inherits_universe_from_seed():
-    """associate 从种子节点继承 universe，传给 mcs.query（P7 种子继承路径）。"""
-    store = FakeStore()
-    store.add_node(Node(id="c1", name="曹操", content="演义", universe="三国演义"))
-    ms, mcs = _make(store, FakeQueryEngine())
-    try:
-        ms.associate("c1", "mcs")
-        assert mcs.last_query_universe == "三国演义"
     finally:
         ms.shutdown()
 

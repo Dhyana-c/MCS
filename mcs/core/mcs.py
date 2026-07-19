@@ -62,24 +62,6 @@ class MCS:
         """
         return self.write_pipeline.ingest(data, **metadata)
 
-    def query(
-        self,
-        text: str,
-        existing_context: list | None = None,
-        universe: str | None = None,
-    ) -> Any:
-        """执行查询管线。默认返回 ``Subgraph``（nodes + 选中事实边 edges），
-        后处理插件可将其转换为其他类型（如自然语言字符串）。
-
-        ``universe``：查询限定的 universe（P7 单 universe 封闭）；``None`` 沿用
-        ``QueryEngine`` 默认（现实世界 ``__reality__``）。
-        """
-        if universe is None:
-            return self.query_engine.query(text, existing_context=existing_context)
-        return self.query_engine.query(
-            text, existing_context=existing_context, universe=universe
-        )
-
     def run_compaction(self, changed_nodes: list[Any]) -> None:
         """public 守门入口：转发 ``write_pipeline.run_compaction``，供外部图手术
         （如 agent 层 ``split`` / ``merge`` 工具）改图后过守门、保核心不变量。
@@ -179,7 +161,11 @@ class MCS:
     # === 可视化 ===
 
     def show(self) -> str:
-        """以 Markdown 流程图展示双管线的插件注册与处理流程。"""
+        """以 Markdown 流程图展示写管线 + 读侧插件清单。
+
+        读查询编排已退役（见 ``retire-framework-query-pipeline``）——不再有 Reader Pipeline
+        5 阶段 mermaid；``read_manager`` 仍列出（ENTRY/TRIM/INDEX/LLM 等导航/遍历插件可观测）。
+        """
         lines = []
 
         # Writer Pipeline
@@ -201,17 +187,8 @@ class MCS:
         else:
             lines.append("**Plugins:** (none)\n")
 
-        # Reader Pipeline
-        lines.append("## Reader Pipeline\n")
-        lines.append("```mermaid")
-        lines.append("flowchart TD")
-        lines.append("    A[① Preprocess] --> B[② Seed Locating]")
-        lines.append("    B --> C[③ Traverse Loop]")
-        lines.append("    C --> D[④ Arbitration]")
-        lines.append("    D --> E[⑤ Postprocess]")
-        lines.append("```\n")
-
-        # Reader plugins
+        # Read plugins（read_manager 仍持有 ENTRY/TRIM/INDEX/LLM 等导航/遍历插件）
+        lines.append("## Read Plugins\n")
         read_plugins = self._format_plugins(self.read_manager)
         if read_plugins:
             lines.append(f"**Plugins:** {', '.join(read_plugins)}\n")

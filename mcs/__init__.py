@@ -18,7 +18,6 @@
 
     # 使用
     mcs.ingest("深度学习是机器学习的一个子领域...")
-    nodes = mcs.query("什么是深度学习？")
     mcs.shutdown()
 
 MCS 实例由 Builder 一次性构建完成，无需调用 initialize()。
