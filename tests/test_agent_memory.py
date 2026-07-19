@@ -1,7 +1,7 @@
 """MemoryStore 5 原语测试：FakeMCS（带 store / query_engine），不依赖真实 MCS / LLM。
 
-覆盖：search（keyword / direct / vector / 未知模式）、associate（mcs / hot / random /
-seed 不存在）、find_path（连通 / 不连通 / 节点不存在 / 同节点 / 经事实边）、
+覆盖：search（keyword / direct / vector / 未知模式）、associate（neighbors 一跳 /
+互斥前置 / seed 不存在 / limit 截断）、find_path（连通 / 不连通 / 节点不存在 / 同节点 / 经事实边）、
 recall（时间倒排 / limit·T 双截断 / 单条超 T / 空图 / 无 timestamp / 确定性次序）、
 learn（状态摘要）。另含 locate_seeds 委托等价性。
 """
@@ -207,9 +207,9 @@ class FakeMCS:
         self.store = store
         self.query_engine = qe
         self.read_manager = _FakeReadManager(llm_plugin)
+        # associate（neighbors）MUST NOT 触发查询管线——此字段作回归守卫：若有人
+        # 重新给 associate 接上 mcs.query，下面的 query 桩会被调用并置非 None。
         self.last_query_existing_context: list | None = None
-        # 记录 query 的 universe 入参（5.13 associate 从种子继承断言用）
-        self.last_query_universe: str | None = None
 
     def ingest(self, text_or_input) -> _FakeWriteCtx:
         """支持 str 和 IngestInput 两种入参，IngestInput 时设置 event_node 含 timestamp。"""
@@ -225,9 +225,10 @@ class FakeMCS:
             )
         return ctx
 
-    def query(self, text: str, existing_context: list | None = None, universe: str | None = None) -> str:
+    def query(self, text: str, existing_context: list | None = None) -> str:
+        # 桩：生产侧 MCS.query 已退役（retire-framework-query-pipeline）；仅 associate
+        # 零管线回归守卫用——被调用即置 last_query_existing_context。
         self.last_query_existing_context = existing_context
-        self.last_query_universe = universe
         return f"raw-subgraph-for:{text}"
 
     def shutdown(self) -> None:
@@ -317,7 +318,7 @@ def test_associate_default_neighbors_zero_pipeline():
     store.add_edge("c3", "c1")  # 反向边也可达（get_relations 双向）
     ms, mcs = _make(store, FakeQueryEngine())
     try:
-        out = ms.associate("c1")  # 不传 mode → neighbors
+        out = ms.associate("c1")  # 默认 neighbors 一跳
         assert "[id:c2]" in out and "[id:c3]" in out
         assert "关联邻居" in out
         assert mcs.last_query_existing_context is None  # 零管线（spec scenario）
@@ -368,7 +369,7 @@ def test_associate_neighbors_isolated_seed():
 def test_associate_seed_missing():
     ms, _ = _make(FakeStore(), FakeQueryEngine())
     try:
-        assert "不存在" in ms.associate("nope")          # neighbors 路径（mode=mcs 已退役）
+        assert "不存在" in ms.associate("nope")          # neighbors 路径（mcs 模式已退役）
     finally:
         ms.shutdown()
 

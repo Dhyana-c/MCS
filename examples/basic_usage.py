@@ -208,21 +208,13 @@ def main() -> None:
         names = [n.name for n in ctx.changed]
         print(f"  '{text[:30]}…' → changed: {names}")
 
-    print(f"\n-- Querying: {QUERY!r} --")
-    result = mcs.query(QUERY)
-    if hasattr(result, "nodes"):
-        # Subgraph 返回值
-        print(f"Returned {len(result.nodes)} memory nodes ({len(result.edges)} fact edges):")
-        for n in result.nodes:
-            print(f"  - {n.name} (id={n.id}): {n.content[:60]}…")
-        for e in result.edges:
-            print(f"  - relation: {e.source_id} — {e.target_id} (type={e.type})")
-    elif isinstance(result, list):
-        print(f"Returned {len(result)} memory nodes:")
-        for n in result:
-            print(f"  - {n.name} (id={n.id}): {n.content[:60]}…")
-    else:
-        print(f"Returned: {result!r}")
+    print(f"\n-- Locating seeds: {QUERY!r} --")
+    # 读查询由记忆 agent 驱动（见 mcs_agent）；框架侧最低层入口是 locate_seeds
+    # （jieba 切词 + 字面匹配名 / 别名），返回种子节点 List[Node]，供 agent / 写管线复用。
+    nodes = mcs.query_engine.locate_seeds(QUERY) or []
+    print(f"Returned {len(nodes)} seed nodes:")
+    for n in nodes:
+        print(f"  - {n.name} (id={n.id}): {n.content[:60]}…")
 
     mcs.shutdown()
 

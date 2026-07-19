@@ -64,9 +64,9 @@
 
 - [x] T5.1 删纯 query 管线测试：`test_pipeline_query.py`（主体）、`test_rerank.py`、`test_separate_accumulate_frontier.py` 中 query 专属部分。
 - [x] T5.2 改写存活测试：`test_rw_select_prompt_split.py`（保留 select_facts_write 路径、删 select_facts 读路径）、`test_mcs_api.py`（删 query 用例、留 ingest）、`test_builder_token_counter.py` 等。
-- [ ] T5.3 `test_agent_memory.py`：删 `mode=mcs` 相关测试（line 369/374/386/1168 等）。
+- [x] T5.3 `test_agent_memory.py`：清 mode=mcs 残留——docstring 去 mcs/hot/random、FakeMCS 去死字段 `last_query_universe`、`query` 桩签名简化、过时 mode 注释更新（mode=mcs 测试函数 Phase 1 已删；保留 `last_query_existing_context` 作零管线回归守卫）。
 - [x] T5.3b `test_plugin_chains.py`：删 QUERY_PREPROCESS 测试（line 16 import、159-197 注册/发现/与 WRITE_PREPROCESS 独立性——随类型删）。
-- [ ] T5.4 examples：`basic_usage.py` / `wiki_example.py` 删 `mcs.query()` 段或改为 agent 调用示例。
+- [x] T5.4 examples：`basic_usage.py` / `wiki_example.py` 的 `mcs.query()` 段改 `mcs.query_engine.locate_seeds()`（框架最低层读入口；wiki_example 去 `existing_context` 多轮、改两独立 locate_seeds + 注明多轮延续归 agent）；`examples/README.md` 同步。
 - [x] T5.5 全量回归：`.venv\Scripts\python.exe -m pytest -q` 全绿；`openspec validate retire-framework-query-pipeline` 通过；人工核对 CLAUDE.md 与代码一致。
 
 ## Phase 6 — 归档

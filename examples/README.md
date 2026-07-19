@@ -38,14 +38,18 @@ mock mode and only override for ad-hoc runs.
 
 ## basic_usage.py
 
-Three `ingest()` calls + one `query()`. Demonstrates that `query()`
-returns `List[Node]` (memory) by default.
+Three `ingest()` calls + one `locate_seeds()` call. Demonstrates the
+framework's lowest-level read entry: `query_engine.locate_seeds(query)`
+(jieba 切词 + 字面匹配名 / 别名) returns seed nodes `List[Node]`. Full
+read queries are agent-driven (see `mcs_agent`) — the framework no longer
+exposes `mcs.query()`.
 
 ## wiki_example.py
 
 Three document chunks ingested with `doc_id` / `chunk_id` metadata, then
-a two-turn query showing how to pass the first turn's result back as
-`existing_context` to continue the thread on the second turn.
+two independent `locate_seeds()` calls. Multi-turn conversation continuity
+(previously via `existing_context`) is now handled by the agent's own
+working set — the framework read primitive is stateless per call.
 
 ## Mode / variable summary
 
