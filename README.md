@@ -12,12 +12,19 @@ MCS 不假设外部知识天然就近——它靠**核心不变量 + 守门 + �
 
 ### 安装
 
+PyPI 发行物为 **`mcs-core`**（含图引擎 `mcs` + agent loop `mcs_agent` + MCP server `mcs_mcp`）：
+
 ```bash
+pip install mcs-core            # 从 PyPI 安装
+# 开发（克隆本仓后）：
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # macOS / Linux
 pip install -e ".[dev]"
 ```
+
+> 个人记忆应用（碎片 / 整合 / 日记 / 召回 / 管理看板）是独立产品 **`mcs-mem`**（依赖 `mcs-core`）：
+> `pip install mcs-mem`，详见 https://github.com/Dhyana-c/mcs-mem。
 
 ### 基本用法
 

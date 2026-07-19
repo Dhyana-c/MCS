@@ -48,7 +48,7 @@ mcs-agent = "mcs_agent.app:run"
 
 [tool.setuptools.packages.find]
 include = ["mcs*", "mcs_mcp*", "mcs_agent*"]
-exclude = ["tests*", "examples*", "mcs_mem*"]
+exclude = ["tests*", "examples*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

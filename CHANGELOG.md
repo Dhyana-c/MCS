@@ -2,6 +2,10 @@
 
 > 所有归档 change 的按时间倒序索引。每个条目链接到对应的 `openspec/changes/archive/` 目录。
 
+## 2026-07-19
+
+- **[mcs-mem-extract-and-publish](openspec/changes/mcs-mem-extract-and-publish/)** — 发布底层 `mcs-core==0.1.0` 到 PyPI（分发名 `mcs-core`、import 名 `mcs`/`mcs_agent`/`mcs_mcp` 不变、entry `mcs-mcp`/`mcs-agent`）；拆 `mcs_mem` 到独立 repo [mcs-mem](https://github.com/Dhyana-c/mcs-mem)（private）+ 7 测试 + demo + 5 mem spec + `docs/memory-agent.md` mcs_mem 节 + 2 mcs_mem 图随迁；原仓清理 `mcs_mem/` + 7 测试 + demo + 5 spec + 2 图。TestPyPI 跳过（本地全验证覆盖；用户执行时决策）。
+
 ## 2026-06-25
 
 - **[model-aware-token-estimation](openspec/changes/archive/2026-06-25-model-aware-token-estimation/)** — 模型感知 token 估算：`LLMInterface` 新增 `count_tokens` / `context_window_size`；DeepSeek/Ollama 用 tiktoken 本地精确计数（Ollama 走 ollama 族系数），Claude 运行时用 claude 族校准式（不调 API，避免 O(邻域) 网络调用与 429 降级破坏口径一致性，API 仅离线校准）；`TokenBudget` counter 改由 write_llm 注入、兜底统一为 `CalibratedEstimator("unknown")` ×1.7；`knowledge_graph()` 按上下文窗口自动算 T（保守上限 8000）。待跟进：7.4 校准系数实测验证

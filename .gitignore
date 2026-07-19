@@ -64,10 +64,6 @@ bench/*/config/llm*.json
 _debug_*.py
 _run_*.py
 
-# mcs_mem demo 测试数据 + 临时启动脚本（mcs_mem_demo* 覆盖 demo 与 demo_data）
-mcs_mem_demo*/
-_run_mem_demo.py
-
 # 本地运行配置实例（密钥经 ${VAR} 走环境变量；配置本身每环境不同、不入库）
 mcs.yaml
 

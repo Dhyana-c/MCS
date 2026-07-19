@@ -2,11 +2,12 @@
 
 - ``create_app(agent)``：接受任意带 ``chat(user_message) -> str`` 的 agent，挂 ``/chat``、
   ``/health``、``/graph/expand`` 基础路由 + 静态前端（``static/index.html``、``graph.html``）。
-  仅基础 agent 能力——个人记忆功能（碎片 / 整合 / 日记 / 召回 / 管理看板）由独立包 ``mcs_mem``
-  扩展（``mcs_mem.create_app`` 自建 app、复用本模块的 ``register_base_routes``）。
-- ``register_base_routes(app, agent)``：基础路由注册，供 ``create_app`` 与 ``mcs_mem`` 复用。
+  仅基础 agent 能力——个人记忆应用（碎片 / 整合 / 日记 / 召回 / 管理看板）由独立 PyPI 包 / repo
+  ``mcs-mem`` 扩展（``mcs_mem.create_app`` 自建 app、复用本模块的 ``register_base_routes``，
+  详见 https://github.com/Dhyana-c/mcs-mem）。
+- ``register_base_routes(app, agent)``：基础路由注册，供 ``create_app`` 与下游扩展 app（如 ``mcs_mem``）复用。
 - ``build_agent_from_env()``：从环境变量构建生产 ``MemoryAgent``（经 ``AgentBuilder``）。
-- ``run()``：起 uvicorn（基础 agent app；记忆应用入口在 ``mcs_mem.run``）。
+- ``run()``：起 uvicorn（基础 agent app）。
 """
 
 from __future__ import annotations
@@ -60,7 +61,7 @@ class _AgentProto(Protocol):
 def register_base_routes(app: FastAPI, agent: _AgentProto) -> None:
     """注册基础路由（``/chat`` / ``/health`` / ``/graph/expand``）。
 
-    供 ``create_app`` 与 ``mcs_mem.create_app`` 复用，避免基础路由重复定义。
+    供 ``create_app`` 与下游扩展 app（如独立 repo ``mcs-mem`` 的 ``mcs_mem.create_app``）复用，避免基础路由重复定义。
     MUST 在 StaticFiles mount ``/`` **之前**调用——否则兜底 mount 会拦截这些 API 路由。
     """
 
@@ -93,8 +94,8 @@ def register_base_routes(app: FastAPI, agent: _AgentProto) -> None:
 def create_app(agent: _AgentProto) -> FastAPI:
     """构建基础 FastAPI app：``/chat``、``/health``、``/graph/expand`` + 静态前端兜底。
 
-    仅基础 agent 能力。个人记忆功能由 ``mcs_mem.create_app`` 在此基础上扩展
-    （``mcs_mem`` → ``mcs_agent`` 单向依赖；本模块不 import ``mcs_mem``）。
+    仅基础 agent 能力。个人记忆应用由独立 repo / PyPI 包 ``mcs-mem`` 的 ``mcs_mem.create_app`` 在此基础上扩展
+    （``mcs_mem`` → ``mcs_agent`` 单向依赖；本模块不 import ``mcs_mem``，详见 https://github.com/Dhyana-c/mcs-mem）。
     """
     app = FastAPI(title="MCS Memory Agent")
     app.state.agent = agent
@@ -157,7 +158,7 @@ def build_agent_from_env() -> MemoryAgent:
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
-    """构建 agent 并启动 uvicorn（基础 agent app；记忆应用入口见 ``mcs_mem.run``）。"""
+    """构建 agent 并启动 uvicorn（基础 agent app；记忆应用入口在独立 repo ``mcs-mem``：``mcs_mem.run``）。"""
     import uvicorn
 
     agent = build_agent_from_env()
