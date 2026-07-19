@@ -4,6 +4,7 @@
 
 ## 2026-07-19
 
+- **[retire-framework-query-pipeline](openspec/changes/archive/2026-07-19-retire-framework-query-pipeline/)** — 退役框架读查询固定管线（`QueryEngine.query()` / `MCS.query()` 的 5 阶段编排）；读查询改由记忆 agent 驱动（`mcs_agent` 的 search/associate/reason/generalize/arbitrate/timeline 分步游走图底座——agent 的分步探索本身就是 BFS，无需再搬一套固定管线）。框架保留**图导航 + 遍历原语**（`locate_seeds` / `_traverse` / `query_nodes` / `get_related_events` / `narrative_timeline`）供 agent 与写管线复用。删 `PluginType.ARBITRATION`/`POSTPROCESS`/`QUERY_PREPROCESS` + 3 接口 + `RerankPlugin` + `render_query_result` + `associate(mode="mcs")`；bench 框架基线轨（runner/eval/query/test/3 诊断）删、agent 评测轨留。10 份 spec delta（8 走 archive apply + query-pipeline/query-rerank 整目录删——全退役无存活 requirement，`openspec archive` 不支持空 spec 故手动删）。顺带修 2 个 beta 漏洞（plugin-protocol/preprocess-plugin delta 标题错配）+ Phase 2 landmine（builder `rerank=True` 注册已删插件）。1084 测试绿。
 - **[mcs-mem-extract-and-publish](openspec/changes/archive/2026-07-19-mcs-mem-extract-and-publish/)** — 发布底层 `mcs-core==0.1.0` 到 PyPI（分发名 `mcs-core`、import 名 `mcs`/`mcs_agent`/`mcs_mcp` 不变、entry `mcs-mcp`/`mcs-agent`）；拆 `mcs_mem` 到独立 repo [mcs-mem](https://github.com/Dhyana-c/mcs-mem)（private）+ 7 测试 + demo + 5 mem spec + `docs/memory-agent.md` mcs_mem 节 + 2 mcs_mem 图随迁；原仓清理 `mcs_mem/` + 7 测试 + demo + 5 spec + 2 图。TestPyPI 跳过（本地全验证覆盖；用户执行时决策）。
 
 ## 2026-06-25

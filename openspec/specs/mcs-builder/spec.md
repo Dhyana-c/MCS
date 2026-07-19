@@ -133,34 +133,27 @@
 
 ### Requirement: MCS 类瘦门面设计
 
-`MCS` 类 SHALL 只暴露以下公共方法：
-- `ingest(text: str, **metadata) -> WriteContext`：执行写入管线
-- `query(text: str, existing_context: list | None = None) -> Any`：执行查询管线
-- `show() -> str`：以 Markdown 流程图展示双管线插件注册与处理流程
-- `register_plugin(plugin: Plugin, target: Literal["writer", "reader"]) -> None`：向指定管线注册插件
-- `register_shared_plugin(plugin: Plugin) -> None`：将同一插件实例注册到双管线
-- `unregister_plugin(name: str, target: Literal["writer", "reader"]) -> None`：从指定管线注销插件
-- `shutdown() -> None`：关闭所有插件和存储资源
+`MCS` 类 SHALL 只暴露**写管线 + 图原语只读入口**与定向插件管理：`ingest(data, **metadata)`（委托 `write_pipeline.ingest`）、`run_compaction(changed_nodes)`、`run_maintenance(force)`、`register_plugin` / `register_shared_plugin` / `unregister_plugin` / `get_plugin`、`show()`、`shutdown()`。**`query()` 方法删除**——读查询职责归记忆 agent，框架不再提供查询编排。`MCS` 仍持有 `query_engine`（图导航 + 遍历原语，供 `WritePipeline` 关联定位与 agent `MemoryStore` 复用），但其公共表面不再有 query 入口。
 
-MCS MUST NOT 持有 `MCSConfig` 实例，MUST NOT 有 `initialize()` 方法，MUST NOT 有 `persist_full()` 方法。
+`MCS MUST NOT 持有 MCSConfig、MUST NOT 有 initialize()、MUST NOT 有 persist_full()`。
 
 #### Scenario: MCS 构造不接受 Config
 
-- **WHEN** 检查 `MCS.__init__` 的参数签名
-- **THEN** MUST NOT 包含 `config: MCSConfig` 参数
-- **AND** MUST 接受 `write_pipeline`, `query_engine`, `store`, `write_manager`, `read_manager` 参数
+- **WHEN** 检查 `MCS.__init__` 参数签名
+- **THEN** MUST NOT 包含 `config: MCSConfig`
+- **AND** MUST 接受 `write_pipeline`, `query_engine`, `store`, `write_manager`, `read_manager`
 
 #### Scenario: ingest 调用写入管线
 
 - **WHEN** 调用 `mcs.ingest("some text")`
-- **THEN** MUST 委托给内部的 `write_pipeline.ingest()`
-- **AND** 返回 `WriteContext`
+- **THEN** MUST 委托 `write_pipeline.ingest()`，返回 `WriteContext`
 
-#### Scenario: query 调用查询管线
+#### Scenario: MCS 不暴露 query 入口
 
-- **WHEN** 调用 `mcs.query("some query")`
-- **THEN** MUST 委托给内部的 `query_engine.query()`
-- **AND** 返回 `List[Node]` 或后处理链的输出类型
+- **WHEN** 检查 `MCS` 公共方法
+- **THEN** MUST NOT 有 `query()` 方法；读查询 MUST 经记忆 agent 工具（`search`/`associate`/`reason`）驱动
+
+> 原 "Scenario: query 调用查询管线"（委托 `query_engine.query()`）REMOVED。
 
 ---
 
@@ -257,22 +250,14 @@ MCS MUST NOT 持有 `MCSConfig` 实例，MUST NOT 有 `initialize()` 方法，MU
 
 ### Requirement: show 方法以 Markdown 流程图展示双管线
 
-`show()` 方法 SHALL 返回 Markdown 格式字符串，包含 writer 和 reader 两条管线的处理阶段和已注册插件。
+`MCS.show()` SHALL 以 Markdown 展示**写管线**（① Preprocess → ② Related Nodes → ③ Extract → ④ Judge → ⑤ Apply → ⑥ Compaction → ⑦ Persist）与注册插件清单。**原 "Reader Pipeline" 5 阶段 mermaid 段 REMOVED**——读查询编排已退役，`QueryEngine` 不再有 ①-⑤ 管线可展示；`read_manager` 仍列出（供 ENTRY/TRIM/INDEX/LLM 等存活插件可观测）。
 
-#### Scenario: show 返回 Mermaid 流程图
+#### Scenario: 不展示 Reader Pipeline
 
-- **WHEN** 调用 `mcs.show()`
-- **THEN** 返回的字符串 MUST 包含 Mermaid `flowchart TD` 代码块
-- **AND** 包含 writer 管线的 7 个阶段
-- **AND** 包含 reader 管线的 5 个阶段
+- **WHEN** 调用 `MCS.show()`
+- **THEN** 输出 MUST 含 Writer Pipeline mermaid 段与双 manager 插件清单；MUST NOT 含 "Reader Pipeline" / 读查询 5 阶段段
 
-#### Scenario: show 列出各管线已注册插件
-
-- **WHEN** 调用 `mcs.show()`
-- **THEN** 返回的字符串 MUST 列出 write_manager 中注册的所有插件名称和类型
-- **AND** MUST 列出 read_manager 中注册的所有插件名称和类型
-
----
+> 其余 scenario 正文 impl 期核定。
 
 ### Requirement: MCS 类位于 mcs/core/mcs.py
 

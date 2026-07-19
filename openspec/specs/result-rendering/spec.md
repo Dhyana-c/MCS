@@ -5,24 +5,17 @@
 ## Requirements
 ### Requirement: 核心库提供共享结果渲染纯函数
 
-核心库 SHALL 在 `mcs/rendering.py` 提供两个**公开纯函数**，把 MCS 查询 / 写入结果转为人 / LLM 可读文本，供应用层（`mcs_mcp`、`mcs_agent`）复用。这两个函数 MUST NOT 依赖任何应用包或 mcp SDK，仅依赖 `mcs.core.context_renderer` 与 `mcs.entities.graph`（依赖方向 `rendering → core`，无环）。
+`mcs.rendering` SHALL 提供共享纯函数 `format_ingest_status`（写管线 `ingest` 状态 → LLM 可读文本，供 `MemoryStore.learn` 复用）。**`render_query_result` REMOVED**——其为 `mcs.query()` 结果（`Subgraph` / str）渲染的唯一消费者是 `associate(mode="mcs")`，随 mode 删除与读查询退役而失去调用者（级联删除）。`Subgraph` 实体本身**保留**（`store` 层仍用，见下）。
 
-#### Scenario: query 结果渲染
+#### Scenario: format_ingest_status 供 learn 复用
 
-- **WHEN** 调用 `render_query_result(result, plugin_manager)`
-- **THEN** `result` 为 `str`（postprocess 已转换）MUST 原样透传
-- **AND** `result` 为 `Subgraph` MUST 经 `ContextRenderer.render_facts(nodes, edges)` 渲染并返回文本（关系边 `主 — 宾`，无 `relation_model` 参数）
-- **AND** 其余类型 MUST 兜底 `str(result)`，MUST NOT 返回原始对象 / 内部结构
+- **WHEN** `MemoryStore.learn` 渲染 ingest 状态
+- **THEN** MUST 经 `format_ingest_status`
 
-#### Scenario: ingest 状态摘要
+#### Scenario: 不再提供 render_query_result
 
-- **WHEN** 调用 `format_ingest_status(wctx)`
-- **THEN** MUST 返回含抽取概念数（`len(wctx.concepts)`）、新增/合并节点数（`len(wctx.changed)`）、`persisted` 的简短字符串
-- **AND** MUST NOT 返回原始 `WriteContext`
-- **AND** MUST NOT 报边计数
+- **WHEN** 检查 `mcs.rendering` 公开符号
+- **THEN** MUST NOT 含 `render_query_result`（随读查询编排退役）
 
-#### Scenario: 公开 API 命名
+> 完整 requirement 正文 impl 期核定（剔除 render_query_result 分支，保留 format_ingest_status；`Subgraph` 实体保留因 `sqlite_store` / `in_memory` 的图视图方法仍返回它）。
 
-- **WHEN** 应用层引用这两个函数
-- **THEN** MUST 从 `mcs.rendering` 导入公开名 `render_query_result` / `format_ingest_status`
-- **AND** 函数 MUST NOT 以下划线私有命名暴露于应用包内

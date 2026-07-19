@@ -87,22 +87,6 @@ The system SHALL define `TrimPluginInterface` with abstract method `trim(nodes: 
 
 ---
 
-### Requirement: 提供 ArbitrationPluginInterface 用于读流程仲裁
-
-The system SHALL define `ArbitrationPluginInterface` with abstract method `arbitrate(accumulated: List[Node], query: str, ctx) -> List[Node]`. Each query pipeline configuration accepts AT MOST one instance.
-
-#### Scenario: 输入输出均为节点集合
-
-- **WHEN** 检查 ArbitrationPluginInterface 签名
-- **THEN** 输入 MUST 是 `List[Node]`；输出 MUST 也是 `List[Node]`
-
-#### Scenario: 配置多个仲裁插件报错
-
-- **WHEN** 用户配置中注册 ≥2 个 ArbitrationPlugin
-- **THEN** PluginManager 在初始化阶段 MUST 抛出配置错误
-
----
-
 ### Requirement: 提供 WritePreprocessPluginInterface 用于写入管线前置处理
 
 The system SHALL define `WritePreprocessPluginInterface` inheriting `Plugin`, with abstract method `preprocess(text: str, ctx: WriteContext) -> str`. This interface MUST be used for write pipeline stage ① (text preprocessing such as source tracking, summarization, text cleaning). `get_type()` MUST return `PluginType.WRITE_PREPROCESS`. WritePreprocessPlugin MUST NOT control pipeline flow (e.g. skip); idempotency checks SHALL be the caller's responsibility.
@@ -124,71 +108,14 @@ The system SHALL define `WritePreprocessPluginInterface` inheriting `Plugin`, wi
 
 ---
 
-### Requirement: 提供 QueryPreprocessPluginInterface 用于查询管线前置处理
-
-The system SHALL define `QueryPreprocessPluginInterface` inheriting `Plugin`, with abstract method `preprocess(text: str, ctx: QueryContext) -> str`. This interface MUST be used for query pipeline stage ① (query rewriting, synonym expansion, intent recognition). `get_type()` MUST return `PluginType.QUERY_PREPROCESS`.
-
-#### Scenario: 接口最小契约
-
-- **WHEN** 实现一个 QueryPreprocessPlugin
-- **THEN** 子类 MUST 提供 `preprocess` 方法；`preprocess` MUST 返回 `str`；`get_type()` MUST 返回 `PluginType.QUERY_PREPROCESS`
-
-#### Scenario: 链式调用语义
-
-- **WHEN** 配置多个 QueryPreprocessPlugin [P1, P2]
-- **THEN** 框架 MUST 调用 P1(text) → P2(P1输出)；返回 P2 的输出
-
-#### Scenario: 按类型查找查询前置插件
-
-- **WHEN** 调用 `plugin_manager.get_all(PluginType.QUERY_PREPROCESS)`
-- **THEN** 返回值 MUST 是所有注册的 QUERY_PREPROCESS 类型插件
-
----
-
 ### Requirement: 废弃 PreprocessPluginInterface
 
-`PreprocessPluginInterface` SHALL be deprecated in favor of `WritePreprocessPluginInterface` and `QueryPreprocessPluginInterface`. It SHALL remain as an alias for `WritePreprocessPluginInterface` with a `DeprecationWarning` on import. It SHALL be removed after one version.
+`PreprocessPluginInterface` 废弃后的迁移指向 SHALL 仅保留 `WritePreprocessPluginInterface`。原指向 `QueryPreprocessPluginInterface` REMOVED（随 `PluginType.QUERY_PREPROCESS` 删除）。
 
-#### Scenario: 废弃别名仍可用
+#### Scenario: 废弃指向不含 QueryPreprocess
 
-- **WHEN** 旧代码导入 `PreprocessPluginInterface`
-- **THEN** MUST 得到 `WritePreprocessPluginInterface` 的别名
-
-#### Scenario: 导入时发出警告
-
-- **WHEN** 导入 `PreprocessPluginInterface`
-- **THEN** MUST 发出 `DeprecationWarning`
-
-#### Scenario: PREPROCESS 枚举值指向 WRITE_PREPROCESS
-
-- **WHEN** 使用 `PluginType.PREPROCESS`
-- **THEN** MUST 等价于 `PluginType.WRITE_PREPROCESS`
-
----
-
-### Requirement: 提供 PostprocessPluginInterface 用于后置处理
-
-The system SHALL define `PostprocessPluginInterface` with abstract method `process(input: Any, ctx) -> Any`. The interface MUST NOT constrain input/output type beyond being chainable.
-
-#### Scenario: 输入输出类型自由
-
-- **WHEN** 实现 PostprocessPlugin
-- **THEN** 子类 MUST 能声明任意输入类型与任意输出类型；框架 MUST 不强制类型断言
-
-#### Scenario: 多个 PostprocessPlugin 可串联
-
-- **WHEN** 配置中注册多个 PostprocessPlugin
-- **THEN** 框架 MUST 按注册顺序串行调用；前一个的输出作为后一个的输入
-
-#### Scenario: PostprocessPlugin 不再有 position 属性
-
-- **WHEN** 检查 `PostprocessPluginInterface` 定义
-- **THEN** MUST NOT 存在 `position` 属性或 `@property def position(self) -> str` 方法
-
-#### Scenario: 管线不依赖 position 筛选
-
-- **WHEN** 检查 `QueryEngine` 和 `WritePipeline` 的 `_run_preprocess` 方法
-- **THEN** 代码 MUST NOT 包含 `getattr(p, "position", ...)` 相关逻辑
+- **WHEN** 检查 `PreprocessPluginInterface` 废弃说明
+- **THEN** MUST 仅指向 `WritePreprocessPluginInterface`；MUST NOT 提及 `QueryPreprocessPluginInterface`
 
 ---
 
@@ -285,6 +212,8 @@ For any plugin chain that supports priority (entry plugins, postprocess plugins)
 
 `PluginManager` SHALL register and look up plugins by `PluginType` enum (not by interface class object). 它 SHALL 按 `plugin.get_types()` 把插件登记到每个类型下，并对需要排序的类型按 `get_priority()` 降序返回。
 
+> retire-framework-query-pipeline 删除 `ArbitrationPlugin 单例强制` 逻辑——`PluginType.ARBITRATION` 已删，无仲裁插件可注册，单例检查随之失效。
+
 #### Scenario: 按类型查找
 
 - **WHEN** 调用 `plugin_manager.get_all(PluginType.ENTRY)`
@@ -296,10 +225,7 @@ For any plugin chain that supports priority (entry plugins, postprocess plugins)
 - **WHEN** 调用 `plugin_manager.get_by_name(name)`
 - **THEN** MUST 返回该名称的插件实例（无则 None）
 
-#### Scenario: ArbitrationPlugin 单例检查
-
-- **WHEN** 注册第二个 `get_types()` 含 `PluginType.ARBITRATION` 的插件
-- **THEN** PluginManager MUST 在 `register` 时抛 `ConfigurationError`
+> 原 "Scenario: ArbitrationPlugin 单例检查" REMOVED（`PluginType.ARBITRATION` 删除，无仲裁插件可注册，单例检查代码随之删除）。
 
 ### Requirement: Plugin 顶级基类定义于 core/plugin.py
 
@@ -329,12 +255,15 @@ The system SHALL define a top-level `Plugin` abstract base class in `mcs/core/pl
 
 The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting `str` and `Enum`, enumerating all plugin roles. PluginManager 与管线代码 SHALL 用它作为索引与查找键，取代旧的 interface 类对象。
 
+> retire-framework-query-pipeline 删除 `ARBITRATION` / `POSTPROCESS` / `QUERY_PREPROCESS` 三个枚举值（对应接口随读查询编排退役）。
+
 #### Scenario: PluginType 取值完整
 
 - **WHEN** 检查 `PluginType`
 - **THEN** MUST 继承 `str` 与 `Enum`
-- **AND** MUST 含取值 ENTRY、TRIM、ARBITRATION、WRITE_PREPROCESS、QUERY_PREPROCESS、POSTPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE
+- **AND** MUST 含取值 ENTRY、TRIM、WRITE_PREPROCESS、COMPACTION、INDEX、LLM、NODE_EXTENSION、EDGE_EXTENSION、STORAGE_SCHEMA_EXT、MAINTENANCE
 - **AND** MAY 含废弃值 PREPROCESS（指向 WRITE_PREPROCESS）
+- **AND** MUST NOT 含 `ARBITRATION` / `POSTPROCESS` / `QUERY_PREPROCESS`（随读查询编排退役删除）
 
 #### Scenario: 管线按 PluginType 查找
 
@@ -345,6 +274,7 @@ The system SHALL define a `PluginType` enum in `mcs/core/plugin.py`, inheriting 
 
 - **WHEN** 检查 `mcs/plugins/` 下的子目录名
 - **THEN** 每个子目录名 MUST 对应 `PluginType` 的一个小写枚举值（如 `entry` 对应 `ENTRY`）
+- **AND** MUST NOT 存在 `arbitration` / `postprocess`（含 rerank）/ `query_preprocess` 子目录（随类型删除；`postprocess/` 仅留 `summary.py`——SummaryPlugin 实为 NodeExtension，目录名保留属历史命名）
 
 ---
 
