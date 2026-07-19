@@ -18,8 +18,7 @@ class TrimPluginInterface(Plugin):
     """缩减节点列表，使其预估 token 数适应 budget。
 
     使用场景：
-      - 查询阶段 ② 种子裁剪（入口插件合并后）
-      - 查询阶段 ④ 作为 PriorityArbitration 的底层机制
+      - 种子裁剪（locate_seeds 入口插件合并后）
 
     TrimPlugin 采用链式语义（可注册多个实现，按优先级排序依次执行）。
     每个实现决定如何裁剪：按位置截断（PriorityTrimPlugin）、

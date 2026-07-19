@@ -38,14 +38,12 @@ ALL_MODULES = [
     "mcs.core.write_pipeline",
     # interfaces (5 new plugin chains + 6 carried over from skeleton)
     "mcs.interfaces",
-    "mcs.interfaces.arbitration_plugin",
     "mcs.interfaces.compaction_plugin",
     "mcs.interfaces.entry_plugin",
     "mcs.interfaces.index",
     "mcs.interfaces.llm",
     "mcs.interfaces.maintenance",
     "mcs.interfaces.node_extension",
-    "mcs.interfaces.postprocess_plugin",
     "mcs.interfaces.storage_schema_ext",
     "mcs.interfaces.trim_plugin",
     # plugins (按类型分组)
@@ -57,7 +55,6 @@ ALL_MODULES = [
     "mcs.plugins.trim.priority_trim",
     "mcs.plugins.trim.llm_seed_selector",
     "mcs.plugins.postprocess",
-    "mcs.plugins.postprocess.rerank",
     "mcs.plugins.postprocess.summary",
     "mcs.plugins.preprocess",
     "mcs.plugins.preprocess.source_tracking",
@@ -104,26 +101,22 @@ def test_module_importable(module_path: str) -> None:
 def test_abc_interfaces_not_instantiable() -> None:
     """带抽象方法的接口不能直接实例化。"""
     from mcs.core.store import StoreInterface
-    from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
     from mcs.interfaces.compaction_plugin import CompactionPluginInterface
     from mcs.interfaces.entry_plugin import EntryPluginInterface
     from mcs.interfaces.index import IndexInterface
     from mcs.interfaces.llm import LLMInterface
     from mcs.interfaces.maintenance import MaintenanceInterface
     from mcs.interfaces.node_extension import NodeExtensionInterface
-    from mcs.interfaces.postprocess_plugin import PostprocessPluginInterface
     from mcs.interfaces.storage_schema_ext import StorageSchemaExtensionInterface
     from mcs.interfaces.trim_plugin import TrimPluginInterface
 
     for interface_cls in [
-        ArbitrationPluginInterface,
         CompactionPluginInterface,
         EntryPluginInterface,
         IndexInterface,
         LLMInterface,
         MaintenanceInterface,
         NodeExtensionInterface,
-        PostprocessPluginInterface,
         StorageSchemaExtensionInterface,
         TrimPluginInterface,
         StoreInterface,
@@ -339,30 +332,6 @@ def test_default_prompts_registry_complete() -> None:
         "extract_work_events",
     }
     assert set(DEFAULT_PROMPTS.keys()) == expected_purposes
-
-
-def test_plugin_manager_arbitration_singleton() -> None:
-    """注册第二个 ArbitrationPlugin 必须抛出 ConfigurationError。"""
-    from mcs.core.errors import ConfigurationError
-    from mcs.core.plugin import PluginType
-    from mcs.core.plugin_manager import PluginManager
-    from mcs.interfaces.arbitration_plugin import ArbitrationPluginInterface
-
-    class FakeArb(ArbitrationPluginInterface):
-        def get_name(self) -> str:
-            return "fake_arb_1"
-
-        def arbitrate(self, accumulated, query, ctx):
-            return accumulated
-
-    class FakeArb2(FakeArb):
-        def get_name(self) -> str:
-            return "fake_arb_2"
-
-    pm = PluginManager()
-    pm.register(FakeArb())
-    with pytest.raises(ConfigurationError):
-        pm.register(FakeArb2())
 
 
 def test_plugin_manager_entry_plugin_priority_sort() -> None:

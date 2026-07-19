@@ -27,7 +27,7 @@ class _DummyPlugin(Plugin):
         return self._name
 
     def get_type(self) -> PluginType:
-        return PluginType.POSTPROCESS
+        return PluginType.MAINTENANCE
 
     def execute(self, **kwargs):
         return None
@@ -230,8 +230,8 @@ def test_show_lists_plugins(mock_llm):
 
     # 检查插件列表
     assert "mock_llm(llm)" in output
-    assert "writer_plugin(postprocess)" in output
-    assert "reader_plugin(postprocess)" in output
+    assert "writer_plugin(maintenance)" in output
+    assert "reader_plugin(maintenance)" in output
 
 
 def test_show_includes_all_stages(mock_llm):

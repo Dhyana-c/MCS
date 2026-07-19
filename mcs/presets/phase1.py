@@ -24,7 +24,6 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
       - `idempotency_check`, `fanout_reducer`, `summary_regen`, `graph_summary`（write）
       - `alias_index`, `alias_entry`, `hub_fallback`, `priority_trim`（read）
       - `deepseek_llm`, `claude_llm`, `ollama_llm`（LLM）
-      - `rerank`（opt-in，不入默认链）
 
     注意：`sqlite_storage` 不是插件，是 Store 配置项，不在此注册表中。
 
@@ -41,7 +40,6 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
     from mcs.plugins.maintenance.fanout_reducer import FanoutReducerPlugin
     from mcs.plugins.maintenance.graph_summary import GraphSummaryPlugin
     from mcs.plugins.maintenance.summary_regen import SummaryRegenPlugin
-    from mcs.plugins.postprocess.rerank import RerankPlugin
     from mcs.plugins.postprocess.summary import SummaryPlugin
     from mcs.plugins.preprocess.source_tracking import (
         IdempotencyCheckPlugin,
@@ -69,8 +67,6 @@ def get_phase1_plugin_registry() -> dict[str, type[Plugin]]:
         "deepseek_llm": DeepSeekLLMPlugin,
         "claude_llm": ClaudeLLMPlugin,
         "ollama_llm": OllamaLLMPlugin,
-        # opt-in
-        "rerank": RerankPlugin,
     }
 
 

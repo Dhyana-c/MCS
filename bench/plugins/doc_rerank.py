@@ -16,9 +16,27 @@ import os
 import re
 from typing import TYPE_CHECKING, Any
 
-# 复用节点级 reranker 的 tokenize（去停用词/小写），保证文档级与节点级**同口径**对比
-from mcs.plugins.postprocess.rerank import _tokenize
 from mcs.utils.tokenizer import ChineseTokenizer
+
+# 词法 token 化（原 ``mcs.plugins.postprocess.rerank._tokenize``，随 RerankPlugin 退役
+# 内联至此——doc_rerank 是其唯一残留消费者）。去停用词 / 小写，保证文档级与原节点级**同口径**。
+_STOPWORDS = {
+    "the", "a", "an", "of", "to", "in", "on", "for", "and", "or", "is", "are",
+    "was", "were", "be", "by", "with", "as", "at", "that", "this", "it", "its",
+    "from", "into", "what", "which", "who", "whom", "how", "when", "where",
+    "do", "does", "did", "has", "have", "had", "?",
+}
+
+
+def _tokenize(text: str | None, tokenizer: ChineseTokenizer) -> set[str]:
+    """小写、去停用词后的 token 集合。"""
+    if not text:
+        return set()
+    return {
+        tok.lower()
+        for tok in tokenizer.tokenize(text)
+        if tok and not tok.isspace() and tok.lower() not in _STOPWORDS
+    }
 
 if TYPE_CHECKING:
     from mcs.entities.graph import Node

@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from mcs.core.errors import ConfigurationError
 from mcs.core.plugin import Plugin, PluginType
 
 if TYPE_CHECKING:
@@ -48,20 +47,12 @@ class PluginManager:
 
         Raises:
             ValueError: 如果同名插件已注册。
-            ConfigurationError: 如果尝试注册第二个 ArbitrationPlugin。
         """
         name = plugin.get_name()
         if name in self._plugins:
             raise ValueError(f"Plugin {name!r} already registered")
 
         types = plugin.get_types()
-
-        # ArbitrationPlugin 单例强制执行
-        if PluginType.ARBITRATION in types and self._by_type.get(PluginType.ARBITRATION):
-            raise ConfigurationError(
-                f"只能注册一个 ArbitrationPlugin，已存在: "
-                f"{self._by_type[PluginType.ARBITRATION][0].get_name()}"
-            )
 
         self._plugins[name] = plugin
         for plugin_type in types:

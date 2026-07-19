@@ -16,17 +16,14 @@ class PluginType(str, Enum):
     - 支持字符串比较：PluginType.ENTRY == "entry"
     - 支持枚举语法：PluginType.ENTRY
 
-    注意：PREPROCESS 已废弃，请使用 WRITE_PREPROCESS 或 QUERY_PREPROCESS。
+    注意：PREPROCESS 已废弃，请使用 WRITE_PREPROCESS。
     """
 
     ENTRY = "entry"
     TRIM = "trim"
-    ARBITRATION = "arbitration"
-    POSTPROCESS = "postprocess"
 
-    # 前置处理类型（拆分后）
-    WRITE_PREPROCESS = "write_preprocess"  # 写入管线阶段 ①
-    QUERY_PREPROCESS = "query_preprocess"  # 查询管线阶段 ①
+    # 前置处理类型（写管线阶段 ①；QUERY_PREPROCESS 已随读查询编排退役）
+    WRITE_PREPROCESS = "write_preprocess"
 
     # 废弃别名（一个版本后移除）
     PREPROCESS = "write_preprocess"  # 兼容旧代码，指向 WRITE_PREPROCESS

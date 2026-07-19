@@ -19,7 +19,7 @@ PHASE1_SHARED_PLUGINS: list[str] = [
 ]
 
 PHASE1_WRITE_PLUGINS: list[str] = [
-    "idempotency_check",   # Postprocess (write_preprocess)
+    "idempotency_check",   # WritePreprocess（写管线阶段 ①）
     "fanout_reducer",      # Compaction
     "summary_regen",       # Compaction
     "graph_summary",       # Compaction（图级主题摘要，learn 后归纳顶层 hub；须在 fanout 后跑）

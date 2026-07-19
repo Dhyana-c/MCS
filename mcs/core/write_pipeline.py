@@ -4,7 +4,7 @@
 openspec/specs/write-pipeline/spec.md：
 
     ⓪ 规则入库           (建事件节点（整输入、timestamp）+ 可选 source 节点；不经 LLM)
-    ① 前置插件链         (PostprocessPlugin chain on text)
+    ① 前置插件链         (WritePreprocessPlugin chain on text)
     ② 关联节点定位       (复用查询管道)
     ③ 概念提取           (LLM: extract_concepts；仅 content)
     ④ 关系判定           (LLM: judge_relations → DecisionList)

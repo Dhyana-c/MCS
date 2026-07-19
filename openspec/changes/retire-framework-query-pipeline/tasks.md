@@ -24,14 +24,14 @@
 
 ## Phase 2 — 插件清理
 
-- [ ] T2.1 `mcs/core/plugin.py`：`PluginType` 枚举删 `ARBITRATION` / `POSTPROCESS` / `QUERY_PREPROCESS`。
-- [ ] T2.2 删接口：`mcs/interfaces/arbitration_plugin.py` / `postprocess_plugin.py` / `query_preprocess_plugin.py`；更新 `mcs/interfaces/__init__.py`。
-- [ ] T2.3 删实现：`mcs/plugins/postprocess/rerank.py`（含 `LexicalScorer`）+ `mcs/plugins/arbitration/`（空目录）。**保留 `summary.py`**（`SummaryPlugin` 是 NodeExtensionInterface 子类、管 summary 槽）+ `__init__.py` 保留 `SummaryPlugin` import（仅删 RerankPlugin import）。
-- [ ] T2.4 `mcs/core/plugin_manager.py`：删 ARBITRATION 单例强制逻辑（line 51-62 区域）。
-- [ ] T2.5 `mcs/core/query_engine.py`：删对上述 PluginType 的所有 `get_all`/`get` 引用（Phase 1 已删方法，此处清扫残留 import/分支）。
-- [ ] T2.6 `mcs/presets/phase1.py`：默认注册表删 `rerank` opt-in 条目（`summary` **保留**——NodeExtension）。
-- [ ] T2.7 修 stale docstring：`mcs/entities/config.py:22`（`# Postprocess (write_preprocess)` → `# WRITE_PREPROCESS`）、`mcs/interfaces/trim_plugin.py:21`（删"查询阶段 ④ 作为 PriorityArbitration 底层"——`_arbitrate` 从不调 TrimPlugin）、`mcs/core/write_pipeline.py:7`（PostprocessPlugin chain → WritePreprocessPlugin chain）。
-- [ ] T2.8 `mcs/core/errors.py:63`：更新 `ConfigurationError` docstring（移除"注册了多个 ArbitrationPlugin"）。
+- [x] T2.1 `mcs/core/plugin.py`：`PluginType` 枚举删 `ARBITRATION` / `POSTPROCESS` / `QUERY_PREPROCESS`。
+- [x] T2.2 删接口：`mcs/interfaces/arbitration_plugin.py` / `postprocess_plugin.py` / `query_preprocess_plugin.py`；更新 `mcs/interfaces/__init__.py`。
+- [x] T2.3 删实现：`mcs/plugins/postprocess/rerank.py`（含 `LexicalScorer`）+ `mcs/plugins/arbitration/`（空目录）。**保留 `summary.py`**（`SummaryPlugin` 是 NodeExtensionInterface 子类、管 summary 槽）+ `__init__.py` 保留 `SummaryPlugin` import（仅删 RerankPlugin import）。
+- [x] T2.4 `mcs/core/plugin_manager.py`：删 ARBITRATION 单例强制逻辑（line 51-62 区域）。
+- [x] T2.5 `mcs/core/query_engine.py`：删对上述 PluginType 的所有 `get_all`/`get` 引用（Phase 1 已删方法，此处清扫残留 import/分支）。
+- [x] T2.6 `mcs/presets/phase1.py`：默认注册表删 `rerank` opt-in 条目（`summary` **保留**——NodeExtension）。
+- [x] T2.7 修 stale docstring：`mcs/entities/config.py:22`（`# Postprocess (write_preprocess)` → `# WRITE_PREPROCESS`）、`mcs/interfaces/trim_plugin.py:21`（删"查询阶段 ④ 作为 PriorityArbitration 底层"——`_arbitrate` 从不调 TrimPlugin）、`mcs/core/write_pipeline.py:7`（PostprocessPlugin chain → WritePreprocessPlugin chain）。
+- [x] T2.8 `mcs/core/errors.py:63`：更新 `ConfigurationError` docstring（移除"注册了多个 ArbitrationPlugin"）。
 
 ## Phase 3 — benchmark 删框架基线轨（保留 agent 评测轨）
 
@@ -64,7 +64,7 @@
 - [x] T5.1 删纯 query 管线测试：`test_pipeline_query.py`（主体）、`test_rerank.py`、`test_separate_accumulate_frontier.py` 中 query 专属部分。
 - [x] T5.2 改写存活测试：`test_rw_select_prompt_split.py`（保留 select_facts_write 路径、删 select_facts 读路径）、`test_mcs_api.py`（删 query 用例、留 ingest）、`test_builder_token_counter.py` 等。
 - [ ] T5.3 `test_agent_memory.py`：删 `mode=mcs` 相关测试（line 369/374/386/1168 等）。
-- [ ] T5.3b `test_plugin_chains.py`：删 QUERY_PREPROCESS 测试（line 16 import、159-197 注册/发现/与 WRITE_PREPROCESS 独立性——随类型删）。
+- [x] T5.3b `test_plugin_chains.py`：删 QUERY_PREPROCESS 测试（line 16 import、159-197 注册/发现/与 WRITE_PREPROCESS 独立性——随类型删）。
 - [ ] T5.4 examples：`basic_usage.py` / `wiki_example.py` 删 `mcs.query()` 段或改为 agent 调用示例。
 - [x] T5.5 全量回归：`.venv\Scripts\python.exe -m pytest -q` 全绿；`openspec validate retire-framework-query-pipeline` 通过；人工核对 CLAUDE.md 与代码一致。
 

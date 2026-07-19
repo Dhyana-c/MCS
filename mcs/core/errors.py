@@ -60,4 +60,4 @@ class InvalidDecisionError(MCSError):
 
 
 class ConfigurationError(MCSError):
-    """当插件管理器发现无效配置时抛出（例如注册了多个 ArbitrationPlugin）。"""
+    """当插件管理器发现无效配置时抛出。"""
