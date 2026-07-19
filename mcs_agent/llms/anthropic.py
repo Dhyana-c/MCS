@@ -14,6 +14,7 @@ agent 内部消息 / 工具格式以 openai chat-completions 为 lingua franca�
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 from mcs_agent.llms.base import AgentLLMInterface, AssistantMessage
@@ -38,30 +39,33 @@ class AnthropicAgentLLM(AgentLLMInterface):
         self.base_url = base_url
         self.auth_token = auth_token
         self._client = None  # 惰性构造后缓存（避免每次 chat 重建）
+        self._client_lock = threading.Lock()  # 防 _get_client 首次并发 double-init（mcp-via-agent D7）
 
     def _get_client(self):  # type: ignore[no-untyped-def]
         """惰性 import + 构造并缓存 anthropic client。
 
         auth_token 优先（Bearer）、否则回退 api_key（x-api-key）——对齐 claude_llm。
         未装 anthropic 时清晰报错（不影响 openai-compat 后端）。
+        用 ``self._client_lock`` 保护首次构造，防并发 double-init（mcp-via-agent D7）。
         """
-        if self._client is None:
-            try:
-                import anthropic
-            except ImportError as exc:  # pragma: no cover - 环境依赖
-                raise ImportError(
-                    "AnthropicAgentLLM 需要 anthropic 包：pip install anthropic"
-                    "（或 mcs 的 claude extra）"
-                ) from exc
-            if self.auth_token:
-                self._client = anthropic.Anthropic(
-                    auth_token=self.auth_token, base_url=self.base_url
-                )
-            else:
-                self._client = anthropic.Anthropic(
-                    api_key=self.api_key, base_url=self.base_url
-                )
-        return self._client
+        with self._client_lock:
+            if self._client is None:
+                try:
+                    import anthropic
+                except ImportError as exc:  # pragma: no cover - 环境依赖
+                    raise ImportError(
+                        "AnthropicAgentLLM 需要 anthropic 包：pip install anthropic"
+                        "（或 mcs 的 claude extra）"
+                    ) from exc
+                if self.auth_token:
+                    self._client = anthropic.Anthropic(
+                        auth_token=self.auth_token, base_url=self.base_url
+                    )
+                else:
+                    self._client = anthropic.Anthropic(
+                        api_key=self.api_key, base_url=self.base_url
+                    )
+            return self._client
 
     def chat(self, messages: list[dict], tools: list[dict]) -> AssistantMessage:
         client = self._get_client()

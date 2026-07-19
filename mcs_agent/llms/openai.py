@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 from mcs_agent.llms.base import AgentLLMInterface, AssistantMessage
@@ -35,14 +36,19 @@ class OpenAIAgentLLM(AgentLLMInterface):
         self.api_key = api_key
         self.base_url = base_url
         self._client = None  # 惰性构造后缓存（避免每次 chat 重建 httpx 连接池）
+        self._client_lock = threading.Lock()  # 防 _get_client 首次并发 double-init（mcp-via-agent D7）
 
     def _get_client(self):  # type: ignore[no-untyped-def]
-        """惰性 import + 构造并缓存 openai client（未装 SDK 不影响本类构造）。"""
-        if self._client is None:
-            from openai import OpenAI  # 惰性 import
+        """惰性 import + 构造并缓存 openai client（未装 SDK 不影响本类构造）。
 
-            self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-        return self._client
+        用 ``self._client_lock`` 保护首次构造，防并发 double-init（mcp-via-agent D7）。
+        """
+        with self._client_lock:
+            if self._client is None:
+                from openai import OpenAI  # 惰性 import
+
+                self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+            return self._client
 
     def chat(self, messages: list[dict], tools: list[dict]) -> AssistantMessage:
         client = self._get_client()

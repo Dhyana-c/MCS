@@ -15,6 +15,7 @@ LLM 时用它（此时 agent chat LLM 仍取 ``llm``）。
 from __future__ import annotations
 
 import dataclasses
+import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -26,6 +27,8 @@ from mcs_agent.loop import DEFAULT_SYSTEM_PROMPT, MemoryAgent
 from mcs_agent.memory import MemoryStore
 from mcs_agent.tools import ToolsetConfig
 from mcs_agent.trace import ChatTrace
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "LLMConfig",
@@ -168,25 +171,33 @@ class AgentBuilder:
 
         # 步骤 2：memory（build_fn 在单 worker 线程内执行，SQLite 线程亲和不破）
         memory = MemoryStore(build_fn)
+        try:
+            # 步骤 3：llm_backend（llm 已校验非 None；callable 适配不在 builder，在 MemoryAgent.__init__）
+            llm = cfg.llm
+            base_url = llm.base_url or _PROVIDER_DEFAULT_BASE_URL.get(llm.provider)
+            backend_cls = AGENT_LLM_REGISTRY[llm.provider]
+            llm_backend: AgentLLMInterface = backend_cls(
+                llm.model, api_key=llm.api_key, base_url=base_url, auth_token=llm.auth_token
+            )
 
-        # 步骤 3：llm_backend（llm 已校验非 None；callable 适配不在 builder，在 MemoryAgent.__init__）
-        llm = cfg.llm
-        base_url = llm.base_url or _PROVIDER_DEFAULT_BASE_URL.get(llm.provider)
-        backend_cls = AGENT_LLM_REGISTRY[llm.provider]
-        llm_backend: AgentLLMInterface = backend_cls(
-            llm.model, api_key=llm.api_key, base_url=base_url, auth_token=llm.auth_token
-        )
-
-        # 步骤 4：return MemoryAgent
-        return MemoryAgent(
-            memory,
-            llm_backend,
-            tools=cfg.tools,
-            system_prompt=cfg.system_prompt,
-            max_turns=cfg.max_turns,
-            summary_budget=cfg.summary_budget,
-            on_trace=cfg.on_trace,
-        )
+            # 步骤 4：return MemoryAgent
+            return MemoryAgent(
+                memory,
+                llm_backend,
+                tools=cfg.tools,
+                system_prompt=cfg.system_prompt,
+                max_turns=cfg.max_turns,
+                summary_budget=cfg.summary_budget,
+                on_trace=cfg.on_trace,
+            )
+        except Exception:
+            # 兜底：步骤 3/4 失败时关已建的 MemoryStore（持 MCS+worker+SQLite），防 GC 泄漏
+            # （核心代码绝对正确，见 mcp-via-agent design D6）。
+            try:
+                memory.shutdown()
+            except Exception:
+                logger.warning("memory shutdown during failed build raised", exc_info=True)
+            raise
 
     @staticmethod
     def _with_db_path(mcs_config: MCSConfig, db_path: str | None) -> MCSConfig:

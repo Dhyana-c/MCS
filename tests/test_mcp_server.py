@@ -1,109 +1,94 @@
-"""mcp-server 测试（§1.2 / §2.3 / §3.4 / §4.3 / §5.2 / §6.4 / §8.1 / §8.2）。
+"""mcp-server 测试（后端走 mcs_agent）。
 
-工具处理函数（``MCPServer.run_query``/``run_ingest`` 与纯函数）不依赖 MCP 传输，单测在
-处理函数层面进行；``build_fastmcp`` + ``call_tool`` 做传输层 smoke（内存、无需真实 stdio）。
+工具处理函数（``MCPServer.run_query`` / ``run_ingest``）不依赖 MCP 传输，单测在处理函数
+层面进行：
+- **A 类**（mcs_mcp 层单测）：``MCPServer.from_agent`` 注入 ``_FakeAgent`` 测透传 / 异常隔离 /
+  shutdown——此时 mcs_mcp 是被测对象、agent 是 collaborator 替身（非「mock 启动服务」）。
+- **构造期早失败**：测 ``_llm_config_from_mcs`` 反推（无 LLM / provider 不支持 / 多歧义 / write_llm 消歧）。
+- **B 类**（真实 agent loop）：``CallableAgentLLM``（项目内置注入适配器）+ 真实 ``MemoryAgent`` +
+  最小 ``MemoryStore`` 测 implicit termination 链路（不 mock 掉 agent）。
+
+``build_fastmcp`` + ``call_tool`` / ``list_tools`` 做传输层 smoke（内存、无需真实 stdio）。
 """
 
 from __future__ import annotations
 
-import threading
-import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from mcs.entities.graph import Node, Subgraph
+from mcs.entities.config import MCSConfig
 from mcs_mcp.server import (
     MCPServer,
+    _McpConfigError,
+    _llm_config_from_mcs,
     build_fastmcp,
     main,
 )
 
-MOCK_CONFIG = """
-write_llm: mock_llm
-read_llm: mock_llm
-shared_plugins:
-  - tests.conftest:MockLLM
-  - summary
-write_plugins: []
-read_plugins:
-  - alias_index
-  - alias_entry
-  - hub_fallback
-  - priority_trim
-token_budget: 8000
-"""
+
+# ── A 类 collaborator 替身 ─────────────────────────────────────────────────
 
 
-def _write_config(tmp_path: Path, text: str = MOCK_CONFIG) -> str:
-    p = tmp_path / "mcs.yaml"
-    p.write_text(text, encoding="utf-8")
-    return str(p)
-
-
-class _FakeMCS:
-    """替身 MCS：记录调用线程、检测并发重入（验证串行化）、可控抛异常。"""
+class _FakeMemory:
+    """MemoryStore 替身：``learn`` 返固定串、``shutdown`` 记录调用。"""
 
     def __init__(
         self,
-        query_result: Any = None,
-        query_exc: Exception | None = None,
-        ingest_exc: Exception | None = None,
+        learn_reply: str = "已写入：1 个概念",
+        learn_exc: Exception | None = None,
     ) -> None:
-        self._query_result = query_result
-        self._query_exc = query_exc
-        self._ingest_exc = ingest_exc
-        self.read_manager = None
-        self.call_thread_ids: list[tuple[str, int]] = []
-        self._in_call = False
+        self.learn_reply = learn_reply
+        self.learn_exc = learn_exc
+        self.shutdown_calls = 0
+        self.learn_calls: list[str] = []
 
-    def _enter(self, kind: str) -> None:
-        self.call_thread_ids.append((kind, threading.get_ident()))
-        if self._in_call:
-            raise RuntimeError("REENTRANT: concurrent MCS access detected (serialization broken)")
-        self._in_call = True
-
-    def _exit(self) -> None:
-        self._in_call = False
-
-    def query(self, query: str) -> Any:
-        self._enter("query")
-        try:
-            if self._query_exc is not None:
-                raise self._query_exc
-            time.sleep(0.02)  # 拉宽窗口：若无串行化，并发必在此重叠
-            return self._query_result
-        finally:
-            self._exit()
-
-    def ingest(self, text: str) -> Any:
-        self._enter("ingest")
-        try:
-            if self._ingest_exc is not None:
-                raise self._ingest_exc
-            time.sleep(0.02)
-            return _FakeWriteContext()
-        finally:
-            self._exit()
+    def learn(self, text: str) -> str:
+        self.learn_calls.append(text)
+        if self.learn_exc is not None:
+            raise self.learn_exc
+        return self.learn_reply
 
     def shutdown(self) -> None:
-        pass
+        self.shutdown_calls += 1
 
 
-class _FakeWriteContext:
-    def __init__(self) -> None:
-        self.changed = [object(), object()]
-        self.concepts = [object()]
-        self.persisted = True
+class _FakeAgent:
+    """MemoryAgent 替身：``chat`` 返固定串、``memory`` 是 _FakeMemory。"""
+
+    def __init__(
+        self,
+        chat_reply: str = "agent reply",
+        chat_exc: Exception | None = None,
+        memory: _FakeMemory | None = None,
+    ) -> None:
+        self.chat_reply = chat_reply
+        self.chat_exc = chat_exc
+        self.memory = memory or _FakeMemory()
+        self.chat_calls: list[str] = []
+
+    def chat(self, query: str) -> str:
+        self.chat_calls.append(query)
+        if self.chat_exc is not None:
+            raise self.chat_exc
+        return self.chat_reply
 
 
-@pytest.fixture
-def server(tmp_path: Path) -> MCPServer:
-    """从 mock 配置 build 出真实 MCPServer（单 worker）；测试中可替换 _mcs。"""
-    s = MCPServer(_write_config(tmp_path))
-    yield s
-    s.shutdown()
+def _write_minimal_config(tmp_path: Path) -> str:
+    """含 deepseek_llm 的最小 yaml（供 main 解析；mcp 缺失分支不 build agent）。"""
+    p = tmp_path / "mcs.yaml"
+    p.write_text(
+        "write_llm: deepseek_llm\n"
+        "plugin_configs:\n"
+        "  sqlite_storage:\n"
+        "    path: ':memory:'\n"
+        "  deepseek_llm:\n"
+        "    api_key: dummy\n"
+        "    model: deepseek-chat\n",
+        encoding="utf-8",
+    )
+    return str(p)
 
 
 # ── §1.2 入口：缺配置 / 文件不存在 ──────────────────────────────────────────
@@ -120,8 +105,8 @@ def test_main_config_file_not_found(monkeypatch, tmp_path: Path):
 
 
 def test_main_resolves_config_from_env(monkeypatch, tmp_path: Path):
-    # 配置存在但 mcp 缺失 → 应走到 mcp 缺失分支（证明 MCS_CONFIG 被解析、文件被找到）
-    path = _write_config(tmp_path)
+    # 配置存在但 mcp 缺失 → 走 mcp 缺失分支（证明 MCS_CONFIG 被解析、文件被找到）
+    path = _write_minimal_config(tmp_path)
     monkeypatch.setenv("MCS_CONFIG", path)
 
     import builtins
@@ -139,80 +124,196 @@ def test_main_resolves_config_from_env(monkeypatch, tmp_path: Path):
     assert main([]) == 1  # mcp 缺失分支
 
 
-# ── §3.4 query 渲染 ─────────────────────────────────────────────────────────
+# ── A 类：query/ingest 委托 agent.chat / agent.memory.learn + 异常隔离 ──────
 
 
-def test_run_query_renders_via_handler(server: MCPServer):
-    server._mcs = _FakeMCS(
-        query_result=Subgraph(focus_id="a", nodes=[Node(id="a", name="节点X", content="内容Y")])
-    )
-    out = server.run_query("q")
-    assert "节点X" in out and "内容Y" in out
+def test_run_query_delegates_to_agent_chat():
+    agent = _FakeAgent(chat_reply="hello world")
+    server = MCPServer.from_agent(agent)
+    out = server.run_query("any query")
+    assert out == "hello world"  # 原样透传、不包装
+    assert agent.chat_calls == ["any query"]
 
 
-# ── §4.3 ingest 状态摘要 ────────────────────────────────────────────────────
+def test_run_ingest_delegates_to_memory_learn():
+    mem = _FakeMemory(learn_reply="已写入：3 个概念")
+    agent = _FakeAgent(memory=mem)
+    server = MCPServer.from_agent(agent)
+    out = server.run_ingest("some text")
+    assert out == "已写入：3 个概念"
+    assert mem.learn_calls == ["some text"]
 
 
-def test_run_ingest_returns_status_string(server: MCPServer):
-    server._mcs = _FakeMCS()
-    out = server.run_ingest("text")
-    assert isinstance(out, str)
-    assert "已写入" in out
+def test_run_query_does_not_wrap_agent_reply():
+    # agent 答复含特殊内容也原样透传（不截断/再渲染；含 [id:] 与 forced 字样也照传）
+    reply = "答复含 [id:abc] 与「达到最大轮次」字样"
+    agent = _FakeAgent(chat_reply=reply)
+    server = MCPServer.from_agent(agent)
+    assert server.run_query("q") == reply
 
 
-# ── §2.3 串行化 + 线程亲和 ──────────────────────────────────────────────────
-
-
-def test_concurrent_calls_serial_and_same_thread(server: MCPServer):
-    server._mcs = _FakeMCS(query_result=Subgraph(focus_id="a", nodes=[]))
-    errors: list[BaseException] = []
-
-    def caller() -> None:
-        try:
-            server.run_query("q")
-        except BaseException as e:  # noqa: BLE001 - 收集所有错误（含 REENTRANT）
-            errors.append(e)
-
-    threads = [threading.Thread(target=caller) for _ in range(5)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    # 无 REENTRANT：并发被单 worker 串行化、不交错
-    assert errors == []
-    # 全部 MCS 访问发生在同一（worker）线程
-    thread_ids = {tid for _, tid in server._mcs.call_thread_ids}  # type: ignore[union-attr]
-    assert len(thread_ids) == 1
-    assert server._worker_thread_id in thread_ids
-
-
-def test_build_and_calls_use_same_thread(server: MCPServer):
-    # build 与调用的线程一致（SQLite 线程亲和）
-    server._mcs = _FakeMCS(query_result=Subgraph(focus_id="a", nodes=[]))
-    server.run_query("q")
-    assert server._mcs.call_thread_ids[0][1] == server._worker_thread_id  # type: ignore[union-attr]
-
-
-# ── §5.2 错误隔离（经 FastMCP call_tool） ───────────────────────────────────
-
-
-async def test_tool_exception_isolated_and_server_survives(server: MCPServer):
-    # 第一次：内部抛异常 → 错误响应（不抛出）
-    server._mcs = _FakeMCS(query_exc=RuntimeError("boom inside query"))
+async def test_tool_exception_isolated_and_server_survives():
+    # 第一次：agent.chat 抛异常 → [error] 文本（不抛出）
+    agent = _FakeAgent(chat_exc=RuntimeError("boom inside chat"))
+    server = MCPServer.from_agent(agent)
     mcp_server = build_fastmcp(server)
 
     result = await mcp_server.call_tool("query", {"query": "x"})
     text = _content_text(result)
     assert "error" in text
-    assert "boom inside query" in text
+    assert "boom inside chat" in text
 
-    # 第二次：换回正常 → server 仍可服务下一次调用
-    server._mcs = _FakeMCS(
-        query_result=Subgraph(focus_id="a", nodes=[Node(id="a", name="恢复", content="ok")])
+    # 第二次：换正常 agent → server 仍可服务下一次调用
+    agent2 = _FakeAgent(chat_reply="recovered")
+    server2 = MCPServer.from_agent(agent2)
+    mcp_server2 = build_fastmcp(server2)
+    result2 = await mcp_server2.call_tool("query", {"query": "x"})
+    assert "recovered" in _content_text(result2)
+
+
+async def test_ingest_exception_isolated():
+    mem = _FakeMemory(learn_exc=RuntimeError("ingest boom"))
+    agent = _FakeAgent(memory=mem)
+    server = MCPServer.from_agent(agent)
+    mcp_server = build_fastmcp(server)
+    result = await mcp_server.call_tool("ingest", {"text": "t"})
+    text = _content_text(result)
+    assert "error" in text
+    assert "ingest boom" in text
+
+
+def test_shutdown_calls_memory_shutdown():
+    mem = _FakeMemory()
+    agent = _FakeAgent(memory=mem)
+    server = MCPServer.from_agent(agent)
+    server.shutdown()
+    # agent.memory.shutdown（非 agent.shutdown——MemoryAgent 无此方法）
+    assert mem.shutdown_calls == 1
+
+
+# ── 构造期早失败（_llm_config_from_mcs 反推） ─────────────────────────────
+
+
+def _cfg(plugin_configs: dict, write_llm: str = "", read_llm: str = "") -> MCSConfig:
+    return MCSConfig(
+        plugin_configs=dict(plugin_configs), write_llm=write_llm, read_llm=read_llm
     )
-    result2 = await mcp_server.call_tool("query", {"query": "x"})
-    assert "恢复" in _content_text(result2)
+
+
+def test_no_llm_plugin_early_fail():
+    with pytest.raises(_McpConfigError, match="未配 agent 可用"):
+        _llm_config_from_mcs(_cfg({"sqlite_storage": {"path": "x"}}))
+
+
+def test_unsupported_provider_early_fail():
+    # glm_llm provider 不在 AGENT_LLM_REGISTRY → 过滤后候选为空 → 同"无 agent 可用 LLM"
+    with pytest.raises(_McpConfigError, match="未配 agent 可用"):
+        _llm_config_from_mcs(_cfg({"glm_llm": {"model": "glm-4"}}, write_llm="glm_llm"))
+
+
+def test_multiple_llm_ambiguous_early_fail():
+    cfg = _cfg(
+        {"deepseek_llm": {"model": "d"}, "claude_llm": {"auth_token": "t", "model": "c"}},
+        write_llm="glm_llm",  # write_llm 不在候选 → 无法消歧
+    )
+    with pytest.raises(_McpConfigError, match="多个 agent 可用"):
+        _llm_config_from_mcs(cfg)
+
+
+def test_disambiguate_by_write_llm():
+    cfg = _cfg(
+        {"deepseek_llm": {"model": "d"}, "claude_llm": {"auth_token": "t", "model": "c"}},
+        write_llm="deepseek_llm",  # write_llm 在候选 → 取 deepseek
+    )
+    kwargs = _llm_config_from_mcs(cfg)
+    assert kwargs["llm_provider"] == "deepseek"
+    assert kwargs["llm_model"] == "d"
+
+
+def test_single_candidate_success_deepseek():
+    cfg = _cfg(
+        {"deepseek_llm": {"model": "deepseek-chat", "api_key": "k"}},
+        write_llm="deepseek_llm",
+    )
+    kwargs = _llm_config_from_mcs(cfg)
+    assert kwargs["llm_provider"] == "deepseek"
+    assert kwargs["llm_model"] == "deepseek-chat"
+    assert kwargs["llm_api_key"] == "k"
+    assert kwargs["llm_auth_token"] is None
+    assert kwargs["mcs_config"] is cfg  # 逃逸口透传
+
+
+def test_claude_auth_token_preferred():
+    cfg = _cfg(
+        {"claude_llm": {"auth_token": "tok", "api_key": "fallback", "model": "claude-3"}},
+        write_llm="claude_llm",
+    )
+    kwargs = _llm_config_from_mcs(cfg)
+    assert kwargs["llm_provider"] == "claude"
+    assert kwargs["llm_auth_token"] == "tok"
+    assert kwargs["llm_api_key"] == ""  # 有 auth_token 则 api_key 空
+
+
+def test_single_candidate_warns_on_write_llm_mismatch(caplog):
+    # write_llm 指向不支持的 provider（glm_llm），唯一支持候选 deepseek_llm → 取 deepseek + warn
+    cfg = _cfg({"deepseek_llm": {"model": "d"}}, write_llm="glm_llm")
+    with caplog.at_level("WARNING"):
+        kwargs = _llm_config_from_mcs(cfg)
+    assert kwargs["llm_provider"] == "deepseek"
+    assert any("write_llm" in r.message for r in caplog.records)
+
+
+def test_single_candidate_no_warn_when_write_llm_empty(caplog):
+    """write_llm 未设（默认 ''）+ 单候选 → 不误报 warning（合法配置；#1 修复防回归）。"""
+    cfg = MCSConfig(
+        plugin_configs={"deepseek_llm": {"model": "d", "api_key": "k"}},
+        write_llm="",
+        read_llm="",
+    )
+    with caplog.at_level("WARNING"):
+        kwargs = _llm_config_from_mcs(cfg)
+    assert kwargs["llm_provider"] == "deepseek"
+    assert not any("write_llm" in r.message for r in caplog.records)
+
+
+# ── B 类：真实 MemoryAgent + CallableAgentLLM 链路（不 mock agent loop） ────
+
+
+class _MinimalFakeStore:
+    def get_graph_meta(self, key: str) -> str:
+        return ""
+
+
+class _MinimalFakeMCS:
+    """仅支持 graph_summary 调用链的最小 MCS（implicit termination 不调其他原语）。"""
+
+    def __init__(self) -> None:
+        self.store = _MinimalFakeStore()
+
+    def shutdown(self) -> None:
+        pass
+
+
+def test_query_implicit_termination_via_real_loop():
+    """B 类：脚本化 LLM 首轮无 tool_calls → 真实 MemoryAgent 直接答复 → run_query 透传。
+
+    验证 mcs_mcp 走真实 agent loop（``CallableAgentLLM`` 注入、非 mock 掉 agent）。
+    memory 用最小 fake（implicit termination 不调 search/learn 等原语，仅需 graph_summary）。
+    """
+    from mcs_agent.loop import MemoryAgent
+    from mcs_agent.memory import MemoryStore
+
+    def llm_call(messages, tools):
+        return {"content": "real-agent final answer", "tool_calls": []}
+
+    memory = MemoryStore(build_fn=lambda: _MinimalFakeMCS())
+    try:
+        agent = MemoryAgent(memory, llm_call, max_turns=4)
+        server = MCPServer.from_agent(agent)
+        out = server.run_query("anything")
+        assert out == "real-agent final answer"
+    finally:
+        memory.shutdown()
 
 
 # ── §6.4 mcp 缺失（build_fastmcp 层） ───────────────────────────────────────
@@ -239,50 +340,26 @@ def test_build_fastmcp_missing_mcp_reports_hint(monkeypatch):
         build_fastmcp(server)  # type: ignore[arg-type]
 
 
-# ── §8.1 集成：真实 build + handler 跑通 query/ingest ────────────────────────
+# ── §8.2 传输层 smoke（内存 list_tools） ────────────────────────────────────
 
 
-def test_integration_handler_query_and_ingest(tmp_path: Path):
-    s = MCPServer(_write_config(tmp_path))
-    try:
-        # handler 层面跑通（不依赖真实 MCP 传输）；mock LLM 默认返回空抽取
-        q_out = s.run_query("任意查询")
-        assert isinstance(q_out, str)
-        i_out = s.run_ingest("一段用于集成测试的文本。")
-        assert isinstance(i_out, str)
-        assert "已写入" in i_out
-    finally:
-        s.shutdown()
-
-
-# ── §8.2 传输层 smoke（内存 call_tool / list_tools） ─────────────────────────
-
-
-async def test_smoke_list_tools_and_call(server: MCPServer):
-    server._mcs = _FakeMCS(
-        query_result=Subgraph(focus_id="a", nodes=[Node(id="a", name="N", content="C")])
-    )
+async def test_smoke_list_tools():
+    agent = _FakeAgent(chat_reply="ok")
+    server = MCPServer.from_agent(agent)
     mcp_server = build_fastmcp(server)
-
     tools = await mcp_server.list_tools()
     names = {t.name for t in tools}
     assert names == {"query", "ingest"}
 
-    q = await mcp_server.call_tool("query", {"query": "x"})
-    assert "N" in _content_text(q)
 
-    i = await mcp_server.call_tool("ingest", {"text": "t"})
-    assert "已写入" in _content_text(i)
-
-
-# ── §8.3 核心库不因 MCP / PyYAML 缺失受影响（隔离子进程） ────────────────────
+# ── import 洁净：不拉 fastapi（防误 import mcs_agent.app） ──────────────────
 
 
 def test_core_imports_unaffected_by_missing_mcp_and_yaml():
-    """mcp / pyyaml 缺失时，核心库（mcs / config / mcp 模块本身）导入 MUST 不受影响。
+    """mcp / pyyaml 缺失时核心库导入不受影响；``import mcs_mcp.server`` MUST NOT 间接拉
+    fastapi / pydantic / uvicorn（防误 ``import mcs_agent.app``）。
 
-    MCP 为可选依赖：mcp 模块惰性导入 mcp、config 惰性导入 yaml。用隔离子进程阻断二者、
-    强制重新导入验证（不污染本进程 sys.modules / 已加载类对象）。
+    隔离子进程阻断 mcp / yaml、强制重新导入验证（不污染本进程 sys.modules）。
     """
     import subprocess
     import sys
@@ -300,9 +377,11 @@ def test_core_imports_unaffected_by_missing_mcp_and_yaml():
         for m in list(sys.modules):
             if m == "mcp" or m.startswith("mcp.") or m == "yaml":
                 del sys.modules[m]
-        import mcs                   # 核心库
-        import mcs.entities.config   # config（yaml 惰性）
-        import mcs_mcp.server        # MCP 模块（mcp 惰性）
+        import mcs
+        import mcs.entities.config
+        import mcs_mcp.server
+        leaked = [m for m in ("fastapi", "pydantic", "uvicorn") if m in sys.modules]
+        assert not leaked, f"unexpected HTTP stack imported: {leaked}"
         print("OK")
         """
     )
@@ -311,6 +390,131 @@ def test_core_imports_unaffected_by_missing_mcp_and_yaml():
     )
     assert r.returncode == 0, f"stdout={r.stdout!r}\nstderr={r.stderr!r}"
     assert "OK" in r.stdout
+
+
+# ── 核心修复针对性测试（mcp-via-agent D6 / D7） ─────────────────────────────
+
+
+def test_memory_store_init_failure_shuts_down_executor(monkeypatch):
+    """``MemoryStore.__init__`` 的 build_fn 抛 → 异常传播 + ``executor.shutdown(wait=False)`` 被调。
+
+    防构造失败时 worker + executor 无引用靠 GC 泄漏（mcp-via-agent D6）。build_fn 在 worker
+    内抛是构造失败最高频路径（坏 yaml / 坏 sqlite path）。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from mcs_agent.memory import MemoryStore
+
+    shutdown_calls: list[dict] = []
+    orig_shutdown = ThreadPoolExecutor.shutdown
+
+    def tracking_shutdown(self, *args, **kwargs):
+        shutdown_calls.append({"args": args, "kwargs": kwargs})
+        return orig_shutdown(self, *args, **kwargs)
+
+    monkeypatch.setattr(ThreadPoolExecutor, "shutdown", tracking_shutdown)
+
+    def boom():
+        raise RuntimeError("build failed")
+
+    with pytest.raises(RuntimeError, match="build failed"):
+        MemoryStore(boom)
+    # 兜底调了 executor.shutdown(wait=False)——worker + executor 被释放
+    assert any(c["kwargs"].get("wait") is False for c in shutdown_calls)
+
+
+def test_builder_build_step3_failure_shuts_down_memory(monkeypatch, tmp_path):
+    """``AgentBuilder.build`` 步骤 3（构造 backend）抛 → ``memory.shutdown()`` 被调（防泄漏，D6）。
+
+    monkeypatch ``AGENT_LLM_REGISTRY`` 注入构造即抛的 backend 类，断言异常传播且已建的
+    MemoryStore 被 shutdown（不靠 GC）。
+    """
+    from mcs_agent import builder as builder_mod
+    from mcs_agent.builder import create_agent
+
+    class _BoomBackend:
+        def __init__(self, *a, **k):
+            raise RuntimeError("backend construction failed")
+
+    monkeypatch.setitem(builder_mod.AGENT_LLM_REGISTRY, "deepseek", _BoomBackend)
+
+    shutdown_calls = [0]
+    orig = builder_mod.MemoryStore.shutdown
+
+    def tracking_shutdown(self):
+        shutdown_calls[0] += 1
+        return orig(self)
+
+    monkeypatch.setattr(builder_mod.MemoryStore, "shutdown", tracking_shutdown)
+
+    with pytest.raises(RuntimeError, match="backend construction failed"):
+        create_agent(
+            db_path=str(tmp_path / "t.db"),
+            llm_provider="deepseek",
+            llm_model="m",
+            llm_api_key="k",
+        )
+    assert shutdown_calls[0] == 1  # 步骤 3 失败 → memory.shutdown 被调一次
+
+
+def test_openai_adapter_get_client_lock_prevents_double_init(monkeypatch):
+    """并发 ``_get_client`` → OpenAI client 只构造一次（D7 锁，防 double-init 连接池泄漏）。
+
+    8 线程经 Barrier 同时调 ``_get_client``，构造内 sleep 拉宽窗口——无锁必 double-init；
+    加锁后 ``construct_count == 1`` 且全线程拿同一实例。
+    """
+    import sys
+    import threading
+    import time
+    import types
+    from unittest.mock import MagicMock
+
+    from mcs_agent.llms.openai import OpenAIAgentLLM
+
+    construct_count = [0]
+    count_lock = threading.Lock()
+
+    class _FakeOpenAI:
+        def __init__(self, **kwargs):
+            with count_lock:
+                construct_count[0] += 1
+            time.sleep(0.05)  # 拉宽窗口：无锁则并发 double-init
+            self.chat = MagicMock()
+
+    fake_mod = types.ModuleType("openai")
+    fake_mod.OpenAI = _FakeOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+    backend = OpenAIAgentLLM("model", "key", base_url="http://x")
+    barrier = threading.Barrier(8)
+    results: list[Any] = []
+
+    def get():
+        barrier.wait()
+        results.append(backend._get_client())
+
+    threads = [threading.Thread(target=get) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert construct_count[0] == 1  # 锁保护：只构造一次
+    assert all(r is results[0] for r in results)  # 全同一实例
+
+
+# ── §1.2 main 的 _McpConfigError 捕获分支 ────────────────────────────────────
+
+
+def test_main_no_llm_plugin_returns_1(monkeypatch, tmp_path):
+    """无 ``*_llm`` 的 yaml → ``_llm_config_from_mcs`` 抛 ``_McpConfigError`` → main 捕获返 1。"""
+    p = tmp_path / "no_llm.yaml"
+    p.write_text(
+        "plugin_configs:\n  sqlite_storage:\n    path: ':memory:'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MCS_CONFIG", str(p))
+    assert main([]) == 1
 
 
 # ── 辅助 ────────────────────────────────────────────────────────────────────

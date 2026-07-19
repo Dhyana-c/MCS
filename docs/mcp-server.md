@@ -2,6 +2,9 @@
 
 > 把 MCS 作为 **MCP（Model Context Protocol）server** 暴露，让 Claude Desktop 等客户端
 > 把知识图谱当工具用：`query` 查询、`ingest` 摄入。传输用 **stdio**（本地标准）。
+>
+> 后端走 **mcs_agent**：`query` 经 agent ReAct 多步探索（search→associate→reason 等）返回
+> 自然语言答复（含 `[id:...]` 节点引用，**不再渲染结构化节点/边**）；`ingest` 经 `agent.memory.learn` 写图。
 
 ## 安装
 
@@ -15,6 +18,11 @@ pip install -e ".[mcp]"   # 安装 mcp 与 pyyaml（均为可选依赖）
 
 MCP server 启动需要一个 [YAML 配置文件](configuration.md)（与库 / Python 用法同一条配置链，
 含 preset 叠加、`${VAR}` 插值、import-path 插件、provenance 校验）。
+
+**agent LLM 复用 MCS yaml**：mcs_mcp 从 `plugin_configs` 反推 agent chat LLM（识别
+`{deepseek,ollama,claude}_llm` 键），**不新增 agent.yaml、不要求 `AGENT_LLM_*` env**。故 yaml 的
+`plugin_configs` MUST 含上述之一段（否则启动早失败并提示）。配多个 `*_llm` 时按 `write_llm` 消歧。
+> agent chat 需 tool-calling 能力的模型；deepseek-chat / claude-3-5-sonnet 等支持，选模型时留意。
 
 ```yaml
 # mcs.yaml
@@ -47,8 +55,8 @@ mcs-mcp --config /path/to/mcs.yaml
 
 | 工具 | 入参 | 返回 |
 |------|------|------|
-| `query` | `query: str` | 相关节点与关系边的**可读文本**（`Subgraph` 经 `render_facts` 渲染；若 postprocess 已转字符串则透传） |
-| `ingest` | `text: str` | **状态摘要**：抽取概念数 / 新增合并节点数 / 是否落盘（不报边计数、不回原始对象） |
+| `query` | `query: str` | agent ReAct 多步探索后的**自然语言答复文本**（含 `[id:...]` 节点引用；偶发返回 agent 降级文本如「达到最大轮次」属正常、非错误） |
+| `ingest` | `text: str` | **状态摘要**：抽取概念数 / 新增合并节点数 / 是否落盘（经 `agent.memory.learn`、不报边计数、不回原始对象） |
 
 > 仅这两个工具经 `@mcp_server.tool()` 注册（与 `mcp-server` spec「含且仅含 query 与 ingest」一致）。
 > 事件 / source 不再有独立工具——`ingest` 每次摄入即自动记一个时间轴事件（可选 source 切分），
@@ -79,10 +87,12 @@ Windows: `%APPDATA%\Claude\claude_desktop_config.json`）中加：
 
 ## 须知
 
-- **工具调用慢**：`query` / `ingest` 每次都是**多轮 LLM 调用**，不瞬时。客户端别配过短超时；
-  本期不强加超时 / 流式进度。
-- **调用串行**：MCS 非线程安全（共享内存图）+ SQLite 连接绑创建线程，故 MCS 的构造与全部调用
-  都经**同一个单 worker 线程**（`ThreadPoolExecutor(max_workers=1)`）。并发到达的工具调用被串行化
-  （`ingest` 与 `query` 不交错）；慢调用不阻塞 stdio 事件循环。
+- **工具调用慢**：`query` 是 agent ReAct 多步探索（多轮 LLM 调用、耗时较长，建议客户端超时 ≥120s）；
+  `ingest` 走 `memory.learn` 写图原语、不经 agent ReAct loop（仅 MCS 写管线的 LLM 抽取阶段用 LLM，
+  比 `query` 快但仍非瞬时）。本期不强加超时 / 流式进度。
+- **调用串行 / 线程亲和**：MCS 非线程安全（共享内存图）+ SQLite 连接绑创建线程，故 MCS 的构造与
+  全部调用都经 `MemoryStore` 自带的**同一个单 worker 线程**（`max_workers=1`）——并发到达的工具调用
+  在 MemoryStore 段被串行化（不交错），agent 的 LLM 调用段可并发；mcs_mcp 外层仅 `asyncio.to_thread`
+  桥，不阻塞 stdio 事件循环。
 - **单进程 / 单库**：stdio 单客户端。多租户 / 远程 / 并发多客户端不在本期范围（留后续）。
 - **配置受信**：沿用 [config-file-loading](configuration.md) 的受信输入约束。

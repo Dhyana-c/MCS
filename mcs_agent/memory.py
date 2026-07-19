@@ -233,7 +233,14 @@ class MemoryStore:
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mcs-agent-worker"
         )
-        self._mcs: MCS = self._submit(build_fn)
+        try:
+            self._mcs: MCS = self._submit(build_fn)
+        except Exception:
+            # 兜底：build_fn 在 worker 内抛（坏 yaml / 坏 sqlite path——构造失败最高频路径）时
+            # 放掉 worker + executor，防无引用靠 GC 泄漏（核心代码绝对正确，见 mcp-via-agent D6）。
+            # 不调 mcs.shutdown——MCS 未建成（self._mcs 未赋值）。
+            self._executor.shutdown(wait=False)
+            raise
 
     def _submit(self, fn: Callable[..., Any], *args: Any) -> Any:
         """把 fn 提交到单 worker 线程并阻塞等待结果（调用方线程不触碰 MCS）。"""
