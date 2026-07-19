@@ -1,0 +1,10 @@
+{
+  "llm": "deepseek",
+  "token_budget": 16000,
+  "query_max_turns": 8,
+  "qa_workers": 1,
+  "qa_context_budget": 200000,
+  "caption_variant": "moondream",
+  "output": "outputs/agent_run",
+  "db_dir": "outputs/graphs"
+}

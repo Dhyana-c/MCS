@@ -49,6 +49,11 @@ bench/*/outputs/
 # Bench data files (not committed)
 bench/*/data/*.json
 
+# LoCoMo 数据：clone 仓库（locomo_repo / locomo_v2）+ 预处理缓存（不入 git）
+bench/locomo/data/locomo_repo/
+bench/locomo/data/locomo_v2/
+bench/locomo/data/preprocessed/
+
 # Bench LLM endpoint config (contains credentials, not committed)
 bench/*/config/llm*.json
 
