@@ -65,8 +65,8 @@
   幻觉 id（只留传入事实 id）→ 渲染「采信 [id:X]（...），理由：...」。事件过多时按**轮转保底**截断 material
   至 ≤ T（每事实至少留 1 条、不削光某事实致证据失衡）。
 
-> **命名消歧**：`arbitrate` 工具内部走 purpose `adjudicate`，与查询管线 `LLMArbitrationPlugin` 的
-> `arbitrate` purpose 同名但**不同域、无关**（后者只返 `list[str]`、不吃事件）。
+> **命名消歧**：`arbitrate` 工具内部走 purpose `adjudicate`，与原查询管线 `LLMArbitrationPlugin`
+> 的 `arbitrate` purpose 同名但**不同域、无关**（后者只返 `list[str]`、不吃事件，且已随读查询编排退役删除）。
 
 两工具的 `node_ids` 由前序工具（`search`/`associate`）返回的 `[id:...]` 提供，返回文本也带 `[id:...]`
 供链式引用。裁决是**建议性只读结论**（非永久解决互斥），最终答复由 agent 综合判断。

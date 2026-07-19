@@ -14,7 +14,30 @@
 
 目标:解耦"探索召回口径"(宽)与"进 LLM 输出口径"(严),`accumulated` 不被宽召回绑架。
 
-![select_facts 双角色分流：result(严口径) → accumulated 积累区(进 LLM·吃 T·返回集)；frontier(宽口径) → BFS 队列(不进 LLM·不吃 T·探索·用完即弃)；解耦宽召回与严口径](diagrams/select-facts-dualrole-flow.png)
+select_facts_write 双角色分流：result(严口径) → accumulated 积累区(进 LLM·吃 T·返回集)；frontier(宽口径) → BFS 队列(不进 LLM·不吃 T·探索·用完即弃)；解耦宽召回与严口径（源 `diagrams/select-facts-dualrole-flow.mmd`）。
+
+```mermaid
+flowchart TD
+    SEED(["种子节点<br/>_traverse 沿 关联 边 BFS"]) --> SF
+    SF["select_facts_write · LLM 双角色筛选<br/>邻域命题 / 邻居 → 两套口径分流"] --> SPLIT{"双角色输出<br/>{result, frontier}"}
+    SPLIT -->|"result<br/>严口径 · 与查询有关"| ACC
+    SPLIT -->|"frontier<br/>宽口径 · 可能有关"| FRT
+    subgraph ACC_AREA["积累区 accumulated（进 LLM · 吃 T 预算）"]
+        direction TB
+        ACC["本轮 result 精筛命题 / 邻居<br/>进 LLM 上下文"]
+        ACC2["逐轮累积 · 去重沉淀"]
+        ACC --> ACC2
+        ACC2 --> ANS["返回集 accumulated<br/>List[Node]"]
+    end
+    subgraph FRT_AREA["BFS frontier 队列（不进 LLM · 不吃 T）"]
+        direction TB
+        FRT["本轮 frontier 宽召回端点<br/>只存 id"]
+        FRT2["驱动多跳探索<br/>下一跳沿 关联 边继续"]
+        FRT --> FRT2
+        FRT2 -. 用完即弃 · 不进返回集 .-> GONE["本轮探索完毕即丢弃<br/>不回流 accumulated"]
+    end
+    FRT2 -->|"下一跳端点"| SF
+```
 
 ## 2. 核心模型差异
 

@@ -44,7 +44,6 @@
 |------------|------|------|
 | unified-graph-schema | [spec](../openspec/specs/unified-graph-schema/spec.md) | 统一图模型机制契约 |
 | store-interface | [spec](../openspec/specs/store-interface/spec.md) | 统一存储接口 |
-| query-pipeline | [spec](../openspec/specs/query-pipeline/spec.md) | 读流程管线 |
 | write-pipeline | [spec](../openspec/specs/write-pipeline/spec.md) | 写流程管线 |
 | mcs-builder | [spec](../openspec/specs/mcs-builder/spec.md) | MCS 实例构建契约 |
 | plugin-protocol | [spec](../openspec/specs/plugin-protocol/spec.md) | 插件接口与链语义 |

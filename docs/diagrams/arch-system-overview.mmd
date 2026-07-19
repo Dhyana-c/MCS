@@ -11,19 +11,19 @@ flowchart TB
         direction TB
 
         subgraph FACADE["顶层瘦门面"]
-            MCS["MCS<br/>顶层门面 · ingest / query / 维护 / 插件注册"]
+            MCS["MCS<br/>顶层门面 · ingest / 维护 / 插件注册"]
         end
 
-        subgraph PIPES["双管线 · 门面分别委托"]
+        subgraph PIPES["写管线 + 图原语 · 门面委托"]
             direction LR
             WP["WritePipeline<br/>写入 ingest"]
-            QE["QueryEngine<br/>查询 query → Subgraph"]
+            QE["QueryEngine<br/>图导航 + 遍历原语<br/>locate_seeds / query_nodes / _traverse"]
         end
 
         subgraph MGRS["双 PluginManager · 分离注册"]
             direction LR
             WM["write_manager<br/>WRITE_PREPROCESS / TRIM / ..."]
-            RM["read_manager<br/>QUERY_PREPROCESS / POSTPROCESS / ..."]
+            RM["read_manager<br/>ENTRY / TRIM / ..."]
         end
 
         subgraph STORE["StoreInterface · 统一存储抽象"]
@@ -33,9 +33,9 @@ flowchart TB
         end
     end
 
-    %% ===== 门面 → 双管线 =====
+    %% ===== 门面 → 管线 / 图原语 =====
     MCS -->|"写 ingest"| WP
-    MCS -->|"读 query"| QE
+    MCS -->|"持 query_engine<br/>供 WP 关联定位 / agent 导航"| QE
 
     %% ===== 双管线 → 双 manager =====
     WP -. 注册 / 调用 .-> WM

@@ -9,14 +9,12 @@
 ```
 bench/
 ├── multihop_rag/            # MultiHop-RAG 检索评测
-│   ├── __main__.py          # python -m bench.multihop_rag 入口
-│   ├── runner.py            # 评测主流程（建图 → 多 query → 聚合指标）
-│   ├── builder.py           # 语料建图
+│   ├── builder.py           # 语料建图（build_shared_graph / _make_mcs）
 │   ├── data.py              # 语料 / QA 加载与过滤
 │   ├── metrics.py           # Hit@k / Recall@k / MAP@k / MRR@k
 │   ├── config/              # 配置
 │   ├── data/                # 数据集（不提交）
-│   ├── scripts/             # 启动脚本（无命令行参数，配置硬编码或读配置文件）
+│   ├── scripts/             # 启动脚本（build / agent_full_run / analyze 等）
 │   ├── reports/             # 测试报告（提交）
 │   └── README.md            # 详细说明
 ├── plugins/                 # bench 专用插件（如 doc_rerank，不进核心插件链）
@@ -53,22 +51,24 @@ temporal）分组 + overall 汇总：
 ### 运行
 
 ```bash
-# 先估算首建图成本（不调 LLM）
-python -m bench.multihop_rag --dry-run --corpus-subset 50
+# 先建图（一次建图很贵，之后复用该图；幂等续跑）
+.venv/Scripts/python.exe bench/multihop_rag/scripts/build.py \
+    --output bench/multihop_rag/outputs/run --docs 50 --token-budget 16000
 
-# 小规模真实评测（采样 50 篇，自动过滤到证据可达的 query）
-python -m bench.multihop_rag --corpus-subset 50 --k 2,4,10
+# 小规模真实评测（agent ReAct 轨，限量 N 题）
+.venv/Scripts/python.exe bench/multihop_rag/scripts/agent_full_run.py \
+    --graph-dir bench/multihop_rag/outputs/run --limit 50
 
-# 全量（一次建图很贵，之后 query 复用该图）
-python -m bench.multihop_rag
+# 全量
 ```
 
-关键参数：`--corpus-subset N`、`--db`（共享图落盘路径，复用即续跑）、`--k`（逗号分隔）、`--max-chunks`、
-`--no-resume`、`--exclude-null`、`--rerank`（节点级词法重排）、`--doc-rerank`（bench 专用文档级重排）。
-API key 从 `DEEPSEEK_API_KEY` 读取（会尝试自动加载项目根 `.env`）。
+> 读查询编排（框架 `mcs.query` runner / `python -m bench.multihop_rag`）已退役（retire-framework-query-pipeline）——
+> 检索评测改走 agent ReAct 轨（`scripts/agent_full_run.py`）。关键参数：`--limit`（限量题数）、
+> `--graph-dir`（图库目录）、`--shard i/k`（分片并发）、`--context-budget`（会话上下文预算）。
+> API key 从 `DEEPSEEK_API_KEY` 读取（会尝试自动加载项目根 `.env`）。
 
-> **重排是检索主力**：`query()` 召回好但排名差。开启词法重排后 overall recall@10 从 ~0.14 量级显著提升。
-> 节点级（`--rerank`）与文档级（`--doc-rerank`）正交、均默认 opt-in。细节见 [bench/multihop_rag/README.md](../bench/multihop_rag/README.md)。
+> **重排是检索主力**：agent 导航召回好但排名差。排序由评测层文档级重排 `bench.plugins.doc_rerank`
+> 离线完成（对 agent 触达节点映射的候选文档词法打分、零额外 LLM）。细节见 [bench/multihop_rag/README.md](../bench/multihop_rag/README.md)。
 
 ## extraction_quality 抽取评测
 

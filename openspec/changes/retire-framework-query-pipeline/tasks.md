@@ -44,21 +44,21 @@
 
 ## Phase 4 — spec + CLAUDE.md + docs（宪法级，archive 前必须完成）
 
-> **9 份 delta 已在 proposal 阶段起草**（`specs/{query-pipeline,lightweight-query,query-rerank,plugin-protocol,mcs-builder,memory-agent,result-rendering,phase1-defaults,mcs-presets}/spec.md`）。本 phase 任务 = 核对 delta 与现行 spec 逐条对齐、补全 MODIFIED requirement 完整正文、apply 到 main spec。
+> **10 份 delta**（`specs/{query-pipeline,lightweight-query,query-rerank,plugin-protocol,mcs-builder,memory-agent,result-rendering,phase1-defaults,preprocess-plugin,bench-utils}/spec.md`）。本 phase = 核对 delta 与现行 spec 逐条对齐、补全 MODIFIED 完整正文、同步 CLAUDE.md/docs/diagrams（delta apply 到 main spec 在 Phase 6 archive 自动完成）。
 
-- [ ] T4.1 `query-pipeline` delta（已起草）：核对 18 条 REMOVED 标题与现行 spec 逐字一致；apply 后整目录从 main spec 移除。
-- [ ] T4.2 `query-rerank` delta（已起草）：3 条 REMOVED 核对；apply 后整目录移除；从 `INDEX.md` 摘除。
-- [ ] T4.3 `lightweight-query` delta（已起草）：核对 2 MODIFIED（query_nodes 去 skip_postprocess / select_facts_write 去读侧引用）+ 9 ADDED（locate_seeds/ENTRY/HubFallback/TrimPlugin/`_traverse`×3/frontier-accumulated/瘦身 QueryContext）正文完整。
-- [ ] T4.4 `mcs-builder` delta（已起草）：补全「MCS 类瘦门面设计」与「show 方法」MODIFIED 完整正文（删 query API + Reader Pipeline mermaid 段）。
-- [ ] T4.5 `plugin-protocol` delta（已起草）：3 接口 REMOVED + MCSBuilder 抽象基类 MODIFIED（PluginType 枚举删 3 值、删 ArbitrationPlugin 单例检查）核对。
-- [ ] T4.6 `memory-agent` delta（已起草）：2 MODIFIED（渲染纯函数 / associate 原语）核对，删 mcs 模式相关 scenario。
-- [ ] T4.7 `phase1-defaults` delta（已起草）：补全默认清单 MODIFIED 完整正文（**SummaryPlugin 保留** + 删 2 默认空 scenario + Idempotency 标注）。`mcs-presets` **无 delta**（SummaryPlugin 是 NodeExtension、shared 不变）。
-- [ ] T4.7b `preprocess-plugin` delta（已起草）：补全废弃指向 MODIFIED 完整正文（去 QueryPreprocess）。
-- [ ] T4.8 `result-rendering` delta（已起草）：补全「核心库提供共享结果渲染纯函数」MODIFIED 完整正文（删 render_query_result，留 format_ingest_status）。
-- [ ] T4.9 CLAUDE.md：「总体流程·查询 `query`」段改写为"查询由 agent 驱动；框架仅提供图底座原语（locate_seeds/get_related_events/narrative_timeline/_traverse/query_nodes）"；插件类型清单删 `ARBITRATION`/`POSTPROCESS`/`QUERY_PREPROCESS`；「四区硬比例仅框架查询路径」条更新或删；MCS 顶层描述"双管线"措辞调整为"写管线 + 图原语只读入口"。
-- [ ] T4.10 docs：`docs/api-reference.md`（删 `query` 行）、`docs/faq.md`（BFS/rerank 措辞）、`docs/INDEX.md` + `openspec/specs/INDEX.md`（query-pipeline/query-rerank 条目摘除）、`docs/memory-agent.md`（arbitrate 消歧 + associate 模式措辞）、`docs/architecture.md`（读写管线段 + PluginType 清单）、`docs/graph-model-design.md`（§4.3/§5.1/§5.2）、`docs/getting-started.md`（§4 查询）、`docs/plugin-system.md`（PluginType 表 + 内置清单去 rerank）、`examples/README.md`（query demo 描述）。
-- [ ] T4.10b diagrams（5 个 `.mmd`）：`docs/diagrams/{query,gmd-workzones,select-facts-dualrole-flow,plugin-chain,arch-system-overview}.mmd`——删或重画（read 侧退役；`_traverse` 返 accumulated 取代"后处理 → Subgraph"；plugin-chain 读侧改 ENTRY+TRIM→`_traverse`）。
-- [ ] T4.11 `CHANGELOG.md`：追加本 change 条目。
+- [x] T4.1 `query-pipeline` delta：18 条 REMOVED 标题与现行 spec 逐字核对一致（archive 时整目录移除）。
+- [x] T4.2 `query-rerank` delta：3 条 REMOVED 核对一致；`openspec/specs/INDEX.md` + `docs/INDEX.md` 摘除 query-rerank。
+- [x] T4.3 `lightweight-query` delta：2 MODIFIED（query_nodes 去 skip_postprocess / select_facts_write 去读侧引用）+ 9 ADDED（locate_seeds/ENTRY/HubFallback/TrimPlugin/`_traverse`×3/frontier-accumulated/瘦身 QueryContext）正文完整。
+- [x] T4.4 `mcs-builder` delta：「MCS 类瘦门面设计」与「show 方法」MODIFIED 完整正文（删 query API + Reader Pipeline mermaid 段）。
+- [x] T4.5 `plugin-protocol` delta：3 接口 REMOVED + **修正 beta 漏洞**（原误把「MCSBuilder 抽象基类」MODIFIED 放此 capability——该 requirement 实属 mcs-builder；拆为正确标题的 2 MODIFIED：`PluginType 类型枚举` 删 3 值 + `PluginManager 支持新插件接口的注册与查找` 删 ArbitrationPlugin 单例检查）。
+- [x] T4.6 `memory-agent` delta：2 MODIFIED（渲染纯函数 / associate 原语）核对，删 mcs 模式相关 scenario。
+- [x] T4.7 `phase1-defaults` delta：默认清单 MODIFIED 完整正文（**SummaryPlugin 保留** + 删 2 默认空 scenario + Idempotency 标注）。`mcs-presets` **无 delta**。
+- [x] T4.7b `preprocess-plugin` delta：**修正 beta 漏洞**（原 MODIFIED「废弃指向」标题在 preprocess-plugin live spec 不存在——废弃 requirement 归 plugin-protocol；本 delta 改为 REMOVED「查询管线阶段 ① 使用 PreprocessPlugin 类型」+ Purpose 收敛）；**代码侧** `mcs/interfaces/preprocess_plugin.py` DeprecationWarning 去 `QueryPreprocessPluginInterface`。
+- [x] T4.8 `result-rendering` delta：「核心库提供共享结果渲染纯函数」MODIFIED 完整正文（删 render_query_result，留 format_ingest_status）。
+- [x] T4.9 CLAUDE.md：「总体流程·查询 `query`」段改写为 agent 驱动 + 图底座原语；插件类型清单删 `ARBITRATION`/`POSTPROCESS`/`QUERY_PREPROCESS`；「四区硬比例仅框架查询路径」改为 `_traverse` 内部结构。
+- [x] T4.10 docs：`api-reference.md`（删 query 行 + 读查询不经门面注）、`faq.md`（rerank→评测层 doc_rerank）、`docs/INDEX.md` + `openspec/specs/INDEX.md`（query-pipeline 条目摘除、lightweight-query/preprocess-plugin 描述更新）、`memory-agent.md`（LLMArbitrationPlugin 消歧）、`architecture.md`（PluginType 10 类 + postprocess 目录注）、`graph-model-design.md`（插件清单去重排 + query 图退役注）、`getting-started.md`（§4 查询改 agent + locate_seeds）、`plugin-system.md`（表删 3 行 + rerank 内置注）、`evaluation.md`（dir 树去 runner/__main__ + 命令改 agent_full_run）。
+- [x] T4.10b diagrams：`query.mmd/.png` 删（退役流程）；`gmd-workzones`/`select-facts-dualrole-flow`（_traverse 内部机制，改 select_facts_write + accumulated、去后处理）；`plugin-chain`（读侧塌缩为 ENTRY+TRIM→locate_seeds）；`arch-system-overview`（门面去 query、QueryEngine→图原语、read_manager→ENTRY/TRIM）——4 图 .mmd 修正 + 文档内嵌 mermaid（mmdc 未装、.png 删）。
+- [ ] T4.11 `CHANGELOG.md`：**Phase 6 archive 时追加**（条目绑定 archive 日期 + `archive/` 路径，见文件头「所有归档 change 的索引」）。
 
 ## Phase 5 — tests + examples
 

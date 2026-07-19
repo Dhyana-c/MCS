@@ -26,10 +26,7 @@
 |---|---|---|---|
 | `ENTRY` | `EntryPluginInterface` | `locate(query, ctx) -> list[Node]`；`exclusive` | AliasEntry, HubFallback |
 | `TRIM` | `TrimPluginInterface` | `trim(...)` | PriorityTrim,（SemanticTrim opt-in） |
-| `ARBITRATION` | `ArbitrationPluginInterface` | `arbitrate(...)` | —（≤1，单一职责） |
 | `WRITE_PREPROCESS` | `WritePreprocessPluginInterface` | `preprocess(text, ctx: WriteContext) -> str` | IdempotencyCheck |
-| `QUERY_PREPROCESS` | `QueryPreprocessPluginInterface` | `preprocess(text, ctx: QueryContext) -> str` | — |
-| `POSTPROCESS` | `PostprocessPluginInterface` | `process(input, ctx) -> Any` | Rerank（opt-in） |
 | `COMPACTION` | `CompactionPluginInterface` | `should_run(changed, store)`；`run(...)` | FanoutReducer, SummaryRegen, GraphSummary |
 | `INDEX` | `IndexInterface` | `build/lookup/add_entry/remove_entry/update_entry` | AliasIndex |
 | `LLM` | `LLMInterface` | `call(purpose, nodes_in?, free_args?) -> Any` | DeepSeek, Claude, Ollama |
@@ -52,7 +49,24 @@
 按 `PluginType` 索引插件；同类型多个插件按 `get_priority()` 排序成链。写 / 读分离让两侧可用不同 LLM 后端
 （`write_llm` / `read_llm`），也让 LLM、`NodeExtension` 这类**共享插件**用同一实例注册到两侧。
 
-![插件链执行流：write_manager / read_manager 双侧并列、shared_plugins 同实例横跨登记两侧、每侧内按 PluginType + priority 排序成链](diagrams/plugin-chain.png)
+插件链执行流：write_manager 侧（写入 ingest：ENTRY→WRITE_PREPROCESS→LLM 抽取→COMPACTION）；read_manager 侧（读 locate_seeds：ENTRY→TRIM，供 agent search / 写管线 query_nodes）；shared_plugins 同实例横跨登记两侧（源 `diagrams/plugin-chain.mmd`）。
+
+```mermaid
+flowchart TB
+    WSTART(["写入 ingest<br/>write_manager"]) --> W1
+    W1["ENTRY 链<br/>按 priority↓ · alias_entry=100 → hub_fallback=0"] --> W2
+    W2["WRITE_PREPROCESS 链<br/>idempotency_check（幂等跳重）"] --> W3
+    W3["LLM 抽取 + 连边<br/>（见 ingest 流程）"] --> W4
+    W4["COMPACTION 链<br/>fanout_reducer / summary_regen / graph_summary<br/>守门 + 裂变收敛"] --> WEND([写入完成])
+
+    RSTART(["读 locate_seeds<br/>read_manager"]) --> R1
+    R1["ENTRY 链<br/>按 priority↓ · alias_entry=100 → hub_fallback=0"] --> R2
+    R2["TRIM 链<br/>priority_trim（按 priority 截断候选）"] --> REND([种子定位完成<br/>供 agent search / 写管线 query_nodes])
+
+    SH1["LLM 后端<br/>deepseek / claude / ollama"] -. 同实例登记 .-> W3
+    SH2["NodeExtension / StorageSchemaExt<br/>source_tracking / summary"] -. 节点扩展 .-> WEND
+    SH2 -. 节点扩展 .-> REND
+```
 
 ## 注册机制
 
@@ -136,9 +150,8 @@ mcs.register_plugin(LowercasePlugin(), target="writer")
 | `priority_trim` | TRIM | 按 priority 截断候选集 |
 | `deepseek_llm` / `claude_llm` / `ollama_llm` | LLM | 三种 LLM 后端适配 |
 | `semantic_trim` | TRIM | 语义筛选（opt-in，需手动注册） |
-| `rerank` | POSTPROCESS | 查询结果词法重排（opt-in） |
 
-> `sqlite_storage` 不是插件，是 Store 配置项（`plugin_configs["sqlite_storage"]["path"]`），不在注册表中。
+> `rerank`（POSTPROCESS）已随读查询编排退役删除（retire-framework-query-pipeline）——节点→文档级重排改由评测层 `bench.plugins.doc_rerank` 离线完成。`sqlite_storage` 不是插件，是 Store 配置项（`plugin_configs["sqlite_storage"]["path"]`），不在注册表中。
 
 ## 进一步阅读
 

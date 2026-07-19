@@ -1,14 +1,11 @@
 # preprocess-plugin Spec Delta — retire-framework-query-pipeline
 
-## MODIFIED Requirements
+> 本 capability 定义前置插件接口（`PreprocessPluginInterface` / `PluginType.PREPROCESS`）。读查询编排退役后，**查询管线阶段 ① 不再消费前置插件**——`QueryEngine._run_preprocess` 收敛为纯 `return text` 透传（`PluginType.QUERY_PREPROCESS` 已删、无插件链可遍历），作为 `locate_seeds` 的内部细节存活（见 lightweight-query delta）。Purpose 从"查询和写入管线的文本预处理"**收敛为"写入管线的文本预处理"**。
+>
+> `PreprocessPluginInterface` 废弃后的迁移指向（去 `QueryPreprocessPluginInterface`）由 `plugin-protocol` delta 的「废弃 PreprocessPluginInterface」MODIFIED 承载（该 requirement 本身归 plugin-protocol capability）；本 capability 不重复。
 
-### Requirement: 废弃 PreprocessPluginInterface 的迁移指向
+## REMOVED Requirements
 
-原 `PreprocessPluginInterface`（已废弃）的迁移指向 SHALL 仅保留 `WritePreprocessPluginInterface`（写管线阶段 ①）。原"迁移到 WritePreprocess / QueryPreprocess"的 `QueryPreprocess` 指向 REMOVED——`PluginType.QUERY_PREPROCESS` 与 `QueryPreprocessPluginInterface` 已删（见 plugin-protocol delta）。
+### Requirement: 查询管线阶段 ① 使用 PreprocessPlugin 类型
 
-#### Scenario: 废弃指向不含 QueryPreprocess
-
-- **WHEN** 检查 `PreprocessPluginInterface` 废弃说明
-- **THEN** MUST 仅指向 `WritePreprocessPluginInterface`；MUST NOT 提及已删除的 `QueryPreprocessPluginInterface`
-
-> 完整 requirement 正文（含原废弃 scenario）impl 期对照现行 spec 核定。
+读查询管线退役（见 query-pipeline delta）→ `QueryEngine._run_preprocess` 不再遍历任何前置插件链（方法体收敛为 `return text`）。该 requirement 描述的"查询管线 ① 使用 PreprocessPlugin"已不成立，整体 REMOVED。

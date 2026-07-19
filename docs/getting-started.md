@@ -72,19 +72,17 @@ mcs.ingest(IngestInput(
 
 ## 4. 查询（query）
 
-`query()` 默认返回一个 **`Subgraph`**（选中的节点 + 选中的 `关联` / `互斥` 边），不是自然语言答案：
+**读查询由记忆 agent 驱动**（`mcs_agent`：`search` / `associate` / `reason` / `generalize` / `arbitrate` / `timeline` 分步游走图底座）。固定查询管线（`mcs.query()`）已退役（retire-framework-query-pipeline）——agent 的分步探索本身就是 BFS，不再需要框架侧的 5 段固定管线。上手见 [memory-agent.md](memory-agent.md)。
+
+框架仅保留**图底座原语**供 agent 与写管线复用。最低层的种子定位可直接调：
 
 ```python
-result = mcs.query("什么是深度学习？")
-
-for node in result.nodes:
+seeds = mcs.query_engine.locate_seeds("深度学习")   # jieba 字面匹配名 / 别名
+for node in seeds:
     print(node.name, "—", node.content[:80])
-
-for edge in result.edges:               # 关联 / 互斥 边
-    print(f"{edge.source_id} —{edge.type}→ {edge.target_id}")
 ```
 
-> 想要自然语言答案？挂一个 `POSTPROCESS` 插件把 `Subgraph` 合成成字符串，或把节点交给上层 LLM 自行合成。
+> 需要事件出处 / 叙事时间线时，用 `mcs.query_engine.get_related_events(node_id)` / `narrative_timeline(universe)`（详见 [api-reference.md](api-reference.md)）。自然语言答案由 agent 在探索后综合给出，不经框架后处理插件。
 
 ## 5. 持久化
 

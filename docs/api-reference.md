@@ -10,15 +10,16 @@
 | 方法 | 签名 | 说明 |
 |------|------|------|
 | `ingest` | `ingest(data: str \| IngestInput, **metadata) -> WriteContext` | **事件 / source / 概念 / 事实的唯一入口**。走写入管线：⓪ 规则入库（每次把整个输入记为一个事件节点、落时间轴；可选 source 切分，不经 LLM）→ 抽 `content` 概念 / 事实、对齐、判关系与互斥 → 事件 / source 对抽出节点连背书边 → 守门、落盘。`str` 归一化为 `IngestInput(content=text)`（now、无 source），老调用零改动 |
-| `query` | `query(text: str, existing_context: list \| None = None) -> Subgraph` | 走查询管线，返回 `Subgraph`；传 `existing_context` 可跳过种子定位、直接对给定节点扩展 |
 | `run_maintenance` | `run_maintenance(force: bool = False) -> list[str]` | 跑 `MAINTENANCE` 插件（去重 / 压缩 / 摘要）；`force=True` 忽略 `should_run()`。返回已执行插件名 |
 | `register_plugin` | `register_plugin(plugin, target: "writer" \| "reader")` | 向单侧管线注册插件 |
 | `register_shared_plugin` | `register_shared_plugin(plugin)` | 同一实例注册到两侧（LLM / 节点扩展等） |
 | `unregister_plugin` | `unregister_plugin(name, target) -> bool` | 注销，成功返回 True |
 | `get_plugin` | `get_plugin(name) -> Plugin \| None` | 按名查找（优先 write_manager） |
-| `show` | `show() -> str` | Markdown 流程图展示双管线插件注册 |
+| `show` | `show() -> str` | Markdown 流程图展示写管线 + 双 PluginManager 插件注册 |
 | `shutdown` | `shutdown()` | 关闭所有插件与存储（共享插件只一次） |
 
+> **读查询不经 `MCS` 门面。** 固定查询管线（`MCS.query()`）已退役（retire-framework-query-pipeline）——读查询由记忆 agent 驱动（见 [memory-agent.md](memory-agent.md)）。框架仅保留图底座原语供 agent / 写管线复用：`mcs.query_engine.locate_seeds` / `query_nodes` / `_traverse` / `get_related_events` / `narrative_timeline`。
+>
 > **`get_related_events` 不在 `MCS` 门面上。** 定向查事件（绕过载重规则、时间倒排）经查询引擎调用：
 > `mcs.query_engine.get_related_events(node_id, limit=None) -> list[Node]`（同一方法也在 `store` 上）。
 > 核心节点的 `get_relations` 不含事件边，需要出处 / 证据时用这个独立检索步。

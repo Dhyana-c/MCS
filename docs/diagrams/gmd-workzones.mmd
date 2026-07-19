@@ -6,7 +6,7 @@ flowchart TD
 
         subgraph BUDGET["进 LLM · 占 T 预算（积累区 + 活跃区 ≤ T）"]
             direction LR
-            ACC["积累区<br/>已确认相关 · 逐轮累积<br/>最终成答案子图<br/>受 token_budget ≤ T 封顶"]
+            ACC["积累区<br/>已确认相关 · 逐轮累积<br/>最终成返回集 accumulated<br/>受 token_budget ≤ T 封顶"]
             ACT["活跃区<br/>本轮候选 · 当前节点活跃视图<br/>占 T 的剩余 = T − 积累区"]
         end
 
@@ -17,7 +17,7 @@ flowchart TD
         end
 
         ACC -. 本轮一起喂 .-> LLM
-        ACT ==>|本轮推理 / 双角色筛选| LLM["LLM<br/>select_facts<br/>结果·探索双角色"]
+        ACT ==>|本轮推理 / 双角色筛选| LLM["LLM<br/>select_facts_write<br/>结果·探索双角色"]
         LLM -->|结果 → 进积累区<br/>逐轮变大 · 吃 T| ACC
         LLM -. 探索 → 进 frontier<br/>宽召回 · 不吃 T .-> FRT
         VIS -. 标记本轮已处理 .-> ACC
@@ -25,15 +25,14 @@ flowchart TD
 
     ROUND --> DEC{"积累区逼近<br/>token_budget?"}
     DEC -->|否 · 继续 BFS| ROUND
-    DEC -->|是 · 停| POST["后处理（重排 / 裁剪）"]
-    POST --> OUT([返回 Subgraph<br/>积累区 = 答案子图])
+    DEC -->|是 · 停| OUT([返回 accumulated<br/>积累区 = List[Node] 返回集])
 
     classDef llm fill:#FFD700,stroke:#333,color:#000
     classDef acc fill:#87CEEB,stroke:#333,color:#001a66
     classDef act fill:#90EE90,stroke:#333,color:#003300
     classDef book fill:#E6E6FA,stroke:#333,color:#4b0082
     classDef term fill:#FFD700,stroke:#333,color:#000
-    class LLM,POST,OUT term
+    class LLM,OUT term
     class ACC acc
     class ACT act
     class VIS,FRT book

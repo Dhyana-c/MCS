@@ -67,11 +67,11 @@ MCS 默认不依赖向量相似度兜底——大模型直接阅读"装得下的
 
 ### 评测指标是什么？
 
-MultiHop-RAG 评测的指标为文档级检索：**Hit@k / Recall@k / MAP@k / MRR@k**。`query()` 返回的节点经 `source_tracking` 映射回来源文档，与 gold evidence 文档比对。
+MultiHop-RAG 评测的指标为文档级检索：**Hit@k / Recall@k / MAP@k / MRR@k**。agent 探索触达的节点经 `source_tracking` 映射回来源文档，与 gold evidence 文档比对。
 
 ### 相关性重排为什么重要？
 
-查询管线默认按 BFS 发现顺序返回（无排序），gold 文档常被埋没。开启查询侧词法重排（现为默认、零额外 LLM 调用）后，overall Hit@10 从 ~0.16 提升到 ~0.73。
+agent 导航召回好但排名差（gold 文档常被埋没）。**排序主力是评测层文档级重排** `bench.plugins.doc_rerank`（对候选文档词法打分、零额外 LLM），overall Hit@10 从 ~0.16 提升到 ~0.73。读查询编排（框架 `mcs.query` + 节点级 `RerankPlugin`）已退役（retire-framework-query-pipeline）——节点→文档映射与重排统一在评测层离线完成。
 
 ## 进一步阅读
 

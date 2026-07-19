@@ -6,7 +6,6 @@
 
 | Capability | 关注 |
 |------------|------|
-| [query-pipeline](query-pipeline/spec.md) | 读流程 5 段管线（前置→种子定位→语义 Loop→仲裁→后置），默认返回 `Subgraph` |
 | [write-pipeline](write-pipeline/spec.md) | 写流程 7 段管线（前置→关联定位→提取→判定→更新→压缩→落盘） |
 | [store-interface](store-interface/spec.md) | 统一存储接口（StoreInterface ABC + InMemoryStore + SQLiteStore），边 API 基于 `type`（关联/互斥），`get_relations` 统一反查 |
 | [llm-interaction](llm-interaction/spec.md) | LLM 调用统一模式（`purpose` + `nodes_in` + `free_args`），杜绝厂商 SDK 直接调用 |
@@ -20,7 +19,7 @@
 |------------|------|
 | [plugin-protocol](plugin-protocol/spec.md) | 插件基类 Plugin、PluginType 枚举、各阶段插件接口与生命周期管理 |
 | [plugin-directory-by-type](plugin-directory-by-type/spec.md) | 插件目录按 PluginType 分组，import 路径反映类型 |
-| [preprocess-plugin](preprocess-plugin/spec.md) | 前置插件接口（WRITE_PREPROCESS / QUERY_PREPROCESS），类型安全挂载点 |
+| [preprocess-plugin](preprocess-plugin/spec.md) | 前置插件接口（WRITE_PREPROCESS；QUERY_PREPROCESS 已随读查询退役删除），类型安全挂载点 |
 | [edge-extension-model](edge-extension-model/spec.md) | 边扩展字段模型（`Edge.extensions` + `EdgeExtensionInterface`），逐条保真存取 / 反查 / 重组 |
 | [mcs-builder](mcs-builder/spec.md) | MCS 实例构建契约：Builder 全量组装、MCS 瘦门面、双 PluginManager |
 | [mcs-presets](mcs-presets/spec.md) | Phase1Builder + create_mcs() 快捷工厂函数 |
@@ -29,10 +28,9 @@
 
 | Capability | 关注 |
 |------------|------|
-| [query-rerank](query-rerank/spec.md) | 查询输出相关性重排，词法打分器 + 可插拔打分器接口 |
 | [batch-neighbor-traverse](batch-neighbor-traverse/spec.md) | 批量邻居扩展，减少遍历 LLM 调用次数 |
 | [token-budget-traverse](token-budget-traverse/spec.md) | token 预算驱动遍历，替代 max_picked 节点计数 |
-| [lightweight-query](lightweight-query/spec.md) | 轻量查询模式，写入管线阶段②快速定位关联节点 |
+| [lightweight-query](lightweight-query/spec.md) | QueryEngine 图导航 + 遍历原语（locate_seeds / query_nodes / _traverse），供写管线关联定位与 agent 导航复用；读查询编排已退役 |
 | [estimate-memoization](estimate-memoization/spec.md) | 查询期 token 估算缓存，避免重复计算 |
 
 ## LLM 适配器

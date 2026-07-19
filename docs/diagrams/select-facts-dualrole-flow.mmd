@@ -1,6 +1,6 @@
 flowchart TD
-    SEED(["种子节点<br/>核心 BFS 沿 关联 边"]) --> SF
-    SF["select_facts · LLM 双角色筛选<br/>邻域命题 / 邻居 → 两套口径分流"] --> SPLIT{"双角色输出<br/>{result, frontier}"}
+    SEED(["种子节点<br/>_traverse 沿 关联 边 BFS"]) --> SF
+    SF["select_facts_write · LLM 双角色筛选<br/>邻域命题 / 邻居 → 两套口径分流"] --> SPLIT{"双角色输出<br/>{result, frontier}"}
 
     SPLIT -->|"result<br/>严口径 · 与查询有关"| ACC
     SPLIT -->|"frontier<br/>宽口径 · 可能有关"| FRT
@@ -10,7 +10,7 @@ flowchart TD
         ACC["本轮 result 精筛命题 / 邻居<br/>进 LLM 上下文"]
         ACC2["逐轮累积 · 去重沉淀"]
         ACC --> ACC2
-        ACC2 --> ANS["最终答案子图<br/>Subgraph 输出"]
+        ACC2 --> ANS["返回集 accumulated<br/>List[Node]"]
     end
 
     subgraph FRT_AREA["BFS frontier 队列（不进 LLM · 不吃 T）"]

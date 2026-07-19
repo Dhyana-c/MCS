@@ -16,7 +16,50 @@ MCS **不依赖 embedding / 向量检索**，靠大模型直接阅读"装得下�
 MCS 专注"记忆本身"，把合成答案、多轮对话、追问加深留给上层（RAG / Agent / Chatbot）；后处理插件可把
 `Subgraph` 转成其他形态（如自然语言字符串）。
 
-![MCS 系统全景：核心库 mcs/ 内 MCS 瘦门面分别委托 WritePipeline(写) / QueryEngine(读)；write_manager / read_manager 双 PluginManager 分离注册、各配 write_llm / read_llm；底层 StoreInterface(InMemoryStore / SQLiteStore)；mcs_mcp / mcs_agent / bench 三应用包平级单向依赖 mcs](diagrams/arch-system-overview.png)
+MCS 系统全景：核心库 mcs/ 内 MCS 瘦门面委托 WritePipeline(写 ingest) + 持 QueryEngine(图导航/遍历原语)；write_manager / read_manager 双 PluginManager 分离注册、各配 write_llm / read_llm；底层 StoreInterface(InMemoryStore / SQLiteStore)；mcs_mcp / mcs_agent / bench 三应用包平级单向依赖 mcs（源 `diagrams/arch-system-overview.mmd`）。
+
+```mermaid
+flowchart TB
+    subgraph APPS["应用包 · 单向依赖 mcs/"]
+        MCP["mcs_mcp<br/>MCP(stdio) server"]
+        AGENT["mcs_agent<br/>ReAct loop + FastAPI + 前端"]
+        BENCH["bench<br/>multihop_rag / extraction_quality"]
+    end
+
+    subgraph MCSLIB["核心库 mcs/（纯库）"]
+        direction TB
+        subgraph FACADE["顶层瘦门面"]
+            MCS["MCS<br/>顶层门面 · ingest / 维护 / 插件注册"]
+        end
+        subgraph PIPES["写管线 + 图原语 · 门面委托"]
+            direction LR
+            WP["WritePipeline<br/>写入 ingest"]
+            QE["QueryEngine<br/>图导航 + 遍历原语<br/>locate_seeds / query_nodes / _traverse"]
+        end
+        subgraph MGRS["双 PluginManager · 分离注册"]
+            direction LR
+            WM["write_manager<br/>WRITE_PREPROCESS / TRIM / ..."]
+            RM["read_manager<br/>ENTRY / TRIM / ..."]
+        end
+        subgraph STORE["StoreInterface · 统一存储抽象"]
+            direction LR
+            MEM["InMemoryStore<br/>无持久化"]
+            SQL["SQLiteStore<br/>默认 · auto_persist 增量落盘"]
+        end
+    end
+
+    MCS -->|"写 ingest"| WP
+    MCS -->|"持 query_engine<br/>供 WP 关联定位 / agent 导航"| QE
+    WP -. 注册 / 调用 .-> WM
+    QE -. 注册 / 调用 .-> RM
+    WM -. 用 write_llm 后端 .-> WL["LLM 后端<br/>DeepSeek / Claude / Ollama"]
+    RM -. 用 read_llm 后端 .-> RL["LLM 后端<br/>（可与 write_llm 不同）"]
+    WP -->|"persist / 增量落盘"| STORE
+    QE -->|"读取节点 / 边 / 反查"| STORE
+    MCP --> MCS
+    AGENT --> MCS
+    BENCH --> MCS
+```
 
 ## 核心不变量
 
@@ -138,11 +181,12 @@ MCS 采用模块式架构：核心引擎稳定，功能由插件链组合。统�
 **双 PluginManager**：`MCS` 持 `write_manager` 与 `read_manager` 两套，写入侧 / 读取侧插件分离注册，
 可用不同 LLM 后端（`write_llm` / `read_llm`）。
 
-13 类 `PluginType`（逐类签名与内置实现见 [plugin-system.md](plugin-system.md)）：
+10 类 `PluginType`（逐类签名与内置实现见 [plugin-system.md](plugin-system.md)）：
 
-`ENTRY`、`TRIM`、`ARBITRATION`、`WRITE_PREPROCESS`、`QUERY_PREPROCESS`、`POSTPROCESS`、`COMPACTION`、
+`ENTRY`、`TRIM`、`WRITE_PREPROCESS`、`COMPACTION`、
 `INDEX`、`LLM`、`NODE_EXTENSION`、`EDGE_EXTENSION`、`STORAGE_SCHEMA_EXT`、`MAINTENANCE`。
 
+> `ARBITRATION` / `POSTPROCESS` / `QUERY_PREPROCESS` 已随读查询编排退役删除（retire-framework-query-pipeline）。
 > `PREPROCESS` 是**已废弃别名**：指向 `WRITE_PREPROCESS`，保留一个版本后移除。`SEED_SELECTOR` 已移除——
 > 语义筛选并入 `TrimPlugin` 实现（`SemanticTrimPlugin`）。
 
@@ -193,7 +237,7 @@ mcs/                             # 核心库（纯库，不含应用代码）
 │   ├── index/                   # AliasIndex（INDEX）+ AliasEntry（ENTRY）
 │   ├── trim/                    # PriorityTrim、SemanticTrim（TRIM）
 │   ├── preprocess/              # SourceTracking、IdempotencyCheck
-│   ├── postprocess/             # Summary（NODE_EXTENSION）、Rerank（POSTPROCESS）
+│   ├── postprocess/             # Summary（NODE_EXTENSION）；Rerank（POSTPROCESS）已随读查询退役删除
 │   ├── maintenance/             # FanoutReducer / SummaryRegen / GraphSummary（COMPACTION / MAINTENANCE）
 │   └── llm/                     # DeepSeek / Claude / Ollama（LLM）
 ├── stores/                      # in_memory.py / sqlite_store.py

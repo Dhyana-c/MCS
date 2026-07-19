@@ -173,7 +173,35 @@ extensions    边的元信息（置信度、时间……，默认不填充）
 | **visited** | 否 | 已处理节点的 id，去重、防重复遍历 | 不占（仅存 id） |
 | **frontier** | 否 | BFS 待扩展的节点 id 队列 | 不占（仅存 id） |
 
-![一次查询的四个工作区 + 预算归属：积累区 + 活跃区进 LLM 合计 ≤ T；visited + frontier 仅存 id 不计 token；每轮组装 S + 查询 + 积累 + 活跃 + R ≤ W](diagrams/gmd-workzones.png)
+一次 `_traverse` 遍历的四个工作区 + 预算归属：积累区 + 活跃区进 LLM 合计 ≤ T；visited + frontier 仅存 id 不计 token；每轮组装 S + 查询 + 积累 + 活跃 + R ≤ W（源 `diagrams/gmd-workzones.mmd`）。
+
+```mermaid
+flowchart TD
+    SEED([种子定位完成<br/>_traverse BFS 启动]) --> ROUND
+
+    subgraph ROUND["每轮循环 · 单次喂 LLM 的内容 = S + 查询 + 积累区 + 活跃区 + R ≤ W"]
+        direction TB
+        subgraph BUDGET["进 LLM · 占 T 预算（积累区 + 活跃区 ≤ T）"]
+            direction LR
+            ACC["积累区<br/>已确认相关 · 逐轮累积<br/>最终成返回集 accumulated<br/>受 token_budget ≤ T 封顶"]
+            ACT["活跃区<br/>本轮候选 · 当前节点活跃视图<br/>占 T 的剩余 = T − 积累区"]
+        end
+        subgraph BOOK["不进 LLM · 不计 token（仅存 id · 簿记留在算法侧）"]
+            direction LR
+            VIS["visited<br/>已处理节点 id<br/>去重 · 防重复遍历"]
+            FRT["frontier<br/>BFS 待扩展 id 队列<br/>另受 max_frontier_nodes 兜"]
+        end
+        ACC -. 本轮一起喂 .-> LLM
+        ACT ==>|本轮推理 / 双角色筛选| LLM["LLM<br/>select_facts_write<br/>结果·探索双角色"]
+        LLM -->|结果 → 进积累区<br/>逐轮变大 · 吃 T| ACC
+        LLM -. 探索 → 进 frontier<br/>宽召回 · 不吃 T .-> FRT
+        VIS -. 标记本轮已处理 .-> ACC
+    end
+
+    ROUND --> DEC{"积累区逼近<br/>token_budget?"}
+    DEC -->|否 · 继续 BFS| ROUND
+    DEC -->|是 · 停| OUT([返回 accumulated<br/>积累区 = List[Node] 返回集])
+```
 
 - **每轮真正喂给 LLM 的** = `S`（指令）+ 查询 + 积累区（已确认）+ 活跃区（本轮候选）+ `R`（结果余量），整体 ≤ `W`；即 **积累区 + 活跃区 ≤ 查询窗口 `T`**。积累区逐轮变大、活跃区空间随之收缩，逼近 `token_budget` 即停。
 - **把积累区也放进上下文**，是为了让 LLM 带着"已经确认了什么"来判断下一跳值不值得扩——代价是它占预算、必须封顶。
@@ -246,7 +274,7 @@ extensions    边的元信息（置信度、时间……，默认不填充）
 
 种子定位后在核心做 BFS；积累区 / 活跃区进 LLM，visited / frontier 只做簿记；事件默认不进、按需取。
 
-![query 查询流程：种子定位 → 核心 BFS（渲染活跃视图 → LLM 双角色筛选：结果进积累区 / 探索进 frontier）→ 需出处时事实→事件定向查 → 后处理返回子图](diagrams/query.png)
+> **读查询流程图已退役**：固定 5 段查询管线（种子定位→BFS→筛选→事实边→后处理返回 `Subgraph`）随 retire-framework-query-pipeline 删除——读查询改由记忆 agent 分步驱动（见 [memory-agent.md](memory-agent.md) 的 agent-react-state / agent-tools 图）。上图的 `_traverse` 四区机制（积累区/活跃区/visited/frontier）仍是写管线 `query_nodes` 关联定位与 agent 底座的遍历原语，只是不再有"后处理返回 Subgraph"收尾——遍历结束直接返回 `accumulated`（`List[Node]`）。
 
 > **预算归属**：进 LLM·吃 T 预算 = 积累区 + 活跃区；只存 id·不进 LLM = visited + frontier。frontier 另受 `max_frontier_nodes` 阀兜；种子定位里的"热门事件反查"属**未来**能力（暂未实现，不在 `unified-graph-schema` change 内）。
 
@@ -278,7 +306,7 @@ extensions    边的元信息（置信度、时间……，默认不填充）
 
 - **领域语义** → 事实节点 `content`（开放谓词）+ `extensions` 软字段（领域子类型、领域属性）。
 - **新增边类型** → 谨慎、登记制增加（如未来的 `因果` / `背书`）；当前刻意只保留 `互斥`。能用事实节点表达的，优先用事实节点，不轻易加边类型。
-- **插件**：抽取 / 判定 / 重排 / 索引 / 持久化等阶段经插件接口扩展，不改核心 schema。
+- **插件**：抽取 / 判定 / 索引 / 持久化等阶段经插件接口扩展，不改核心 schema（读查询编排 + 节点级重排已退役，排序归评测层 `doc_rerank`）。
 - **优先级与遗忘**：`priority` 评分、时间衰减 / 遗忘为派生机制，可独立演进（核心有界口径不依赖其具体实现）。
 
 ### 6.3 扩展纪律

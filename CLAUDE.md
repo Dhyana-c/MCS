@@ -41,7 +41,7 @@ MCS 把知识组织成图，并维持一条硬不变量，使任意节点的**�
 ## 总体流程
 
 - **写入 `ingest`**：⓪ **universe 判定**（`IngestInput.work_id` 经 **universe 注册表**——元节点 name + 别名字面匹配——规范化为 canonical universe id；命中复用、未命中**自动建 universe 元节点**（`概念`/`universe="__reality__"`、不持成员）；**不经 LLM**；**摄入行为事件 universe 固定 `__reality__`**，概念 / 事实 / source 归 canonical；合并 / 互斥 / 同名去重 / read-repair / dedup **均限同 universe**——跨 universe 不合并、不互斥，修"虚构 vs 真实误判互斥"）→ ① **规则入库**（**每次 ingest 把整个输入记为一个事件节点——记录这一行为、落用户时间轴**；source 按类型切分分类；摄入事件 / source **不经 LLM**、**只有 `content` 走 LLM**；`content` 内转述的过去事件 → 有 `work_id` 走 ③b 作品叙事事件、否则按**时间形态**归属（real-narrative-events）：带固定历史时间的已完成世界发生抽成**历史事实命题**（时间留 content、清单逐条抽取不聚合概括）、相对/单次时间的发生去时间化，均不盖成用户时间轴事件；事件 / source id 先建、供 ⑤ 背书连边）→ ② **关联节点提取**（复用 read 检索图中已有相关节点）→ ③ `extract_concepts` + `judge_relations`（**带已有节点对齐**：抽概念 / 命题，合并同义、判互斥；关系落**命题节点 + 关联边**，谓词在 content，**不产 label**；一条关系 / 互斥只存一份、两端可达）→ ③b **作品叙事事件抽取**（仅 `work_id` 非空：`extract_work_events` 从作品文本识别带纪年的叙述发生 → `WorkEventDraft` → 建事件节点（`universe=work`、`event_meta.timestamp=纪年`）；参与者名**限同 universe** 解析——命中同名概念复用、未命中新建，事件 —单向→ 参与者背书；新建参与者概念与作品事件一并过 ⑤ 守门）→ ④ 连边（命题 —关联— 端点；事件 —单向→ 命题 / 概念 背书；事实 —互斥— 事实；**仅孤儿**挂 `__seed_root__`——零关联才挂，`get_relations` 空者为孤儿）→ ⑤ **主动守门 + 整窗单次裂变 + 边吸收**（全局任意节点）→ ⑥ `persist`（`save_full`，逐条保真）。**入参 `str | IngestInput`**：`str` 归一化为 `IngestInput(content=text)`（now 时间戳、无 source），老调用零改动（除新增一条记录事件外）。
-- **查询 `query`**：种子定位（**jieba 切词 + 字面匹配名 / 别名**为主力，embedding 兜底，root 仅最后退路；**反查 + 多种子**让入口只需一个 foothold）→ **核心 BFS**（沿 `关联` 边，每节点渲染活跃双向视图，LLM **双角色筛选**相关命题 / 邻居——`结果` 进积累区·吃 T、`探索` 进 frontier·不吃 T、端点随角色补入；探索宽召回与进 LLM 的结果集**成员解耦**；**事件默认不进**，需出处时按需 `命题 → 事件` 定向查）→ read-repair → 后处理（重排 / 裁剪）→ `Subgraph`（nodes + 选中 `关联` / `互斥` 边）。
+- **查询 `query`**：**由记忆 agent 驱动**（`mcs_agent`：`search`/`associate`/`reason`/`generalize`/`arbitrate`/`timeline` 分步游走图底座）；框架**不再提供读查询编排**——固定 5 段管线（`QueryEngine.query()` / `MCS.query()`）已退役（retire-framework-query-pipeline，agent 的分步 search+associate+reason **本身就是** BFS，无需再搬一套固定管线）。框架仅保留**图底座原语**供 agent 与写管线复用：`locate_seeds`（种子定位——jieba 切词 + 字面匹配名 / 别名为主力、embedding 兜底、root 最后退路；反查 + 多种子让入口只需一个 foothold；经 ENTRY + TRIM 插件链）、`_traverse` / `query_nodes`（BFS 遍历——沿 `关联` 边、每节点渲染活跃双向视图、`select_facts_write` 筛选、frontier / accumulated 解耦、事件默认不进、需出处时 `命题 → 事件` 定向查）、`get_related_events` / `narrative_timeline`（事件 / 叙事时间线视图）、read-repair（读时收敛）。**重排 / 仲裁 / 裁剪**归 agent 工具层（`arbitrate` 用 `purpose=adjudicate`；节点 → 文档映射离线走 `bench.plugins.doc_rerank`），不在框架读管线。
 
 ## 边方向
 
@@ -57,7 +57,7 @@ MCS 把知识组织成图，并维持一条硬不变量，使任意节点的**�
 ## 上下文预算
 
 - 上下文窗口 **`W = S + T + R`**（系统 / 查询 / 结果窗口，`R = T` 默认、可配置）。`T`（查询窗口）即不变量阈值——任意节点活跃视图 ≤ T；`token_budget` 为一次查询累积答案的上限。
-- 一次查询的工作状态分四区：**积累区 / 活跃区**（进 LLM、吃 T 预算）+ **visited / frontier**（只存 id、不进 LLM、不计 token）。**四区硬比例仅框架查询路径**。
+- `_traverse` 遍历原语的工作状态分四区：**积累区 / 活跃区**（进 LLM、吃 T 预算）+ **visited / frontier**（只存 id、不进 LLM、不计 token）。该四区是 `_traverse` / `query_nodes`（写管线关联定位）的内部结构；**读查询的多轮宽召回游走归记忆 agent**（其上下文管理见下条 agent 路径，非此四区）。
 - **agent 路径（`mcs_agent`）单一硬 `context_budget` + 模型自治工作集**（agent-context-autonomy）：开启时每轮组装 messages 由框架估算并保证总量 ≤ 预算（**估算口径 == 发送口径**，MUST NOT 交 LLM 自估——会话层铁律一）；预算内取舍归模型（pin / 换出 / FINISH 收尾），旧工具结果折叠为带 `[id:...]` 的一行存根——**遗忘可逆**（按 id 取回或 PIN 恢复全文）；同参重复调用不拦截仅标注（去重做成信号——相关性判断是积累集依赖的）。`context_budget=None`（默认）零行为变化。
 
 ## 开关 / 工程
@@ -66,7 +66,7 @@ MCS 把知识组织成图，并维持一条硬不变量，使任意节点的**�
 - **单一图模型**——`relation_model` 开关已删除（不再有 `property_graph` / `attribute_node` 双模式）；节点 4 类、边 2 类见上。
 - 运行用根目录 `.venv`；测试 `.venv\Scripts\python.exe -m pytest -q`。
 - 规范在 `openspec/specs/`，变更走 `openspec/changes/`；权威图模型设计见 `docs/graph-model-design.md`。
-- 插件体系：统一基类 `core/plugin.py`（`Plugin` + `PluginType`），各接口继承它、`PluginManager` 按 `PluginType` 索引（多接口插件经 `get_types()` 登记到每个类型）；详见 `openspec/specs/plugin-protocol`。插件类型包括：`ENTRY`、`TRIM`、`ARBITRATION`、`WRITE_PREPROCESS`（写入管线阶段 ①）、`QUERY_PREPROCESS`（查询管线阶段 ①）、`POSTPROCESS`、`COMPACTION`、`INDEX`、`LLM`、`NODE_EXTENSION`、`EDGE_EXTENSION`、`STORAGE_SCHEMA_EXT`、`MAINTENANCE`。`PREPROCESS` 已废弃（指向 `WRITE_PREPROCESS`）；`SEED_SELECTOR` 已移除（语义筛选并入 `TrimPlugin`，实现见 `SemanticTrimPlugin`）。
+- 插件体系：统一基类 `core/plugin.py`（`Plugin` + `PluginType`），各接口继承它、`PluginManager` 按 `PluginType` 索引（多接口插件经 `get_types()` 登记到每个类型）；详见 `openspec/specs/plugin-protocol`。插件类型包括：`ENTRY`、`TRIM`、`WRITE_PREPROCESS`（写入管线阶段 ①）、`COMPACTION`、`INDEX`、`LLM`、`NODE_EXTENSION`、`EDGE_EXTENSION`、`STORAGE_SCHEMA_EXT`、`MAINTENANCE`。`ARBITRATION` / `POSTPROCESS` / `QUERY_PREPROCESS` 已随读查询编排退役删除（retire-framework-query-pipeline）；`PREPROCESS` 已废弃（指向 `WRITE_PREPROCESS`）；`SEED_SELECTOR` 已移除（语义筛选并入 `TrimPlugin`，实现见 `SemanticTrimPlugin`）。
 - 评测框架：启动脚本和库代码均在顶层 `bench/` 目录（按评测类型分类）。详见 `bench/README.md`。
 
 # 工作规范
