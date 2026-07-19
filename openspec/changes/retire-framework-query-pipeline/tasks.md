@@ -35,11 +35,12 @@
 
 ## Phase 3 — benchmark 删框架基线轨（保留 agent 评测轨）
 
-- [ ] T3.1 `bench/multihop_rag/runner.py`：删框架 BFS runner（`mcs.query(q.query)` 路径）；若整个 runner 即框架基线则删文件、留 agent runner。
-- [ ] T3.2 `bench/multihop_rag/scripts/`：删 `diag_dualrole.py` / `diagnose_bfs_root.py` / `exp_rankfail_rerank.py`（直调 `_traverse`/`mcs.query` 的诊断脚本）；`agent_case_study.py` 按 T0.2 核定删框架段、留 agent 段。
-- [ ] T3.3 `bench/locomo/scripts/agent_eval.py`：删检索轨（`mcs.query(question, universe=sample_id)`），留 agent 轨。
-- [ ] T3.4 `bench/golden_cage/runner.py`：删 `mode=mcs` 轨，留 agent 轨。
-- [ ] T3.5 同步 bench 相关 spec：`multihop-rag-eval` / `locomo-eval` / `bench-doc-rerank` / `bench-doc-rerank-plugin` 中描述框架基线的部分。
+- [x] T3.1 `bench/multihop_rag/runner.py`：整文件删（框架 BFS runner，`mcs.query` 路径）+ `__main__.py`（import 已删 runner）+ `scripts/{eval,query,test}.py`（纯框架，调 `_common.run_queries`→`mcs.query`）。
+- [x] T3.2 `bench/multihop_rag/scripts/`：删 `diag_dualrole.py` / `diagnose_bfs_root.py` / `exp_rankfail_rerank.py`（直调 `_traverse`/`mcs.query` 的诊断脚本）；`agent_case_study.py` 删 `_do_associate` 的 `mode=mcs` 分支（含 `mcs.query` + `render_query_result` import）、对齐 Phase 1 后 base 签名 `(seed_id, limit)`；`_common.py` 删框架查询循环（`run_queries`/`_make_reranker`/`_print_metrics`/`add_query_args`/`_built_titles`/`_count_llm_calls` + 死 import），留 agent + build/compact 共用 utils。
+- [x] T3.3 `bench/locomo/scripts/agent_eval.py`：删检索轨（`run_retrieval_eval` + `track` 参数 + `--track` CLI + `retrieved_sessions` import），留 agent QA 轨；`tests/test_locomo_eval.py` 删 `TestRunRetrievalEval`。
+- [x] T3.4 `bench/golden_cage/runner.py`：`mode=mcs` 轨已于 Phase 1 删（`_do_associate(seed_id, limit)` 签名、无 `mcs.query`）；本 phase 核定无需再动。
+- [x] T3.5 同步 bench spec：加 `bench-utils` delta（MODIFIED「.env 加载」去 runner 场景 +「功能替代」改指 `agent_full_run.py`）——唯一 LIVE spec 引用退役 runner 处；`multihop-rag-eval`/`locomo-eval`/`bench-doc-rerank` 等 spec 不引用框架基线 API、无需动。
+- [x] T3.6 **Phase 2 连带 landmine 修复**：`bench/multihop_rag/builder.py::_make_mcs` 删 `if rerank:` 块（删 RerankPlugin 后所有 bench 建图 rerank=True 会炸；locomo builder 透传同款修复）；`case_study_failures.py`/`cf_corpus_rerank.py` 修 broken import（`mcs.plugins.postprocess.rerank._tokenize` → `bench.plugins.doc_rerank._tokenize`）。
 
 ## Phase 4 — spec + CLAUDE.md + docs（宪法级，archive 前必须完成）
 

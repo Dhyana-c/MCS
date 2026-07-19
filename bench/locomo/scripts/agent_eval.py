@@ -1,12 +1,13 @@
-"""LoCoMo agent 评测（QA 轨 + 检索轨，D5/D6/D7）。
+"""LoCoMo agent 评测（QA 轨，D5/D6/D7）。
 
-**同一套图服务两轨**（语料与问题统一用 V2 人名）：
+**同一套图服务 QA 评测**（语料与问题统一用 V2 人名）：
 
 - **QA 轨**（V2 全部 1922 题）：``agent.chat(question)`` → LLM 生成答案 → LLM judge 判对错
   （主指标）；F1 / 时间容忍为副。agent 工具集 = golden_cage QUERY_TOOLS + **timeline**
   （temporal 题查对话 universe 叙事时间轴）。adversarial 弃答判定交 judge（不用关键词匹配）。
-- **检索轨**（移植 evidence 的题）：``mcs.query(question, universe=sample_id)`` → session 级
-  Recall@k（any / all-evidence hit）。**仅诊断用**（Multi-Mention Flaw 致系统偏低）。
+
+读查询编排（框架 ``mcs.query`` 检索轨）随 retire-framework-query-pipeline 退役——检索
+Recall@k 改由 agent 触达节点 + ``bench.plugins.doc_rerank`` 离线映射。
 
 稳健性沿用 golden_cage 模式：逐题落盘 + 断点续跑（按 qid 跳过）+ 单题异常隔离 + 连续失败熔断。
 每对话独立 db（``locomo_{sample_id}.db``）；试点 conv-26 优先。
@@ -37,7 +38,6 @@ from bench.locomo.data import LoCoMoDataLoader, LoCoMoDoc
 from bench.locomo.metrics import (
     f1_token_level,
     judge_correct,
-    retrieved_sessions,
     temporal_offset_accept,
 )
 from bench.multihop_rag.builder import _make_mcs
@@ -304,85 +304,6 @@ def run_agent_eval(
 
 
 # ---------------------------------------------------------------------------
-# 检索轨（框架 mcs.query 基线）
-# ---------------------------------------------------------------------------
-
-
-def run_retrieval_eval(
-    doc: LoCoMoDoc,
-    db_path: Path,
-    out_dir: Path,
-    *,
-    token_budget: int = 16000,
-    fail_limit: int = 5,
-    rerank: bool = True,
-    max_questions: int = 0,
-) -> dict:
-    """对单对话跑检索轨：``mcs.query(question, universe=sample_id)`` → session 级 ranked。
-
-    仅对移植到 evidence 的题运行；写 retrieval_results_{sample_id}.jsonl（按 qid 续跑）；
-    ``max_questions`` 限量本次新评题数（0=全部）。
-    """
-    if not db_path.exists():
-        raise SystemExit(f"未找到图库 {db_path}（先跑建图）")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    results_path = out_dir / f"retrieval_results_{doc.sample_id}.jsonl"
-    internal_llm = out_dir / f"retrieval_llm_calls_{doc.sample_id}.jsonl"
-
-    evidence_qs = [q for q in doc.qa_list if q.evidence]
-    done = _load_done(results_path)
-    todo = [q for q in evidence_qs if q.qid not in done]
-    if max_questions and max_questions > 0:
-        todo = todo[:max_questions]
-    print(f"检索（框架）[{doc.sample_id}]：{len(evidence_qs)} 题（已完成 {len(done)}，待跑 {len(todo)}）")
-    if not todo:
-        return {"sample_id": doc.sample_id, "evaluated": len(done), "skipped_all": True}
-
-    mcs = _make_mcs("deepseek", str(db_path), token_budget=token_budget,
-                    record_path=str(internal_llm), rerank=rerank)
-    fh = results_path.open("a", encoding="utf-8")
-    t_run = time.time()
-    n_done = 0
-    consecutive_fail = 0
-    try:
-        for i, q in enumerate(todo, 1):
-            t0 = time.time()
-            try:
-                # universe=sample_id：work universe 封闭检索（P7 单 universe 不变量）
-                sub = mcs.query(q.question, universe=doc.sample_id)
-                nodes = list(getattr(sub, "nodes", []) or [])
-                ranked = retrieved_sessions(nodes)
-                rec = {
-                    "qid": q.qid, "sample_id": doc.sample_id, "category": q.category,
-                    "gold_sessions": sorted(q.evidence_sessions),
-                    "ranked_sessions": ranked,
-                    "n_nodes": len(nodes),
-                    "wall_s": round(time.time() - t0, 1),
-                }
-                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                fh.flush()
-                done[q.qid] = rec
-                n_done += 1
-                consecutive_fail = 0
-            except Exception as e:
-                consecutive_fail += 1
-                print(f"  [{i}/{len(todo)}] {q.qid} 失败: {type(e).__name__}: {e}", flush=True)
-                if consecutive_fail >= fail_limit:
-                    print(f"  连续 {fail_limit} 题失败，停止（可续跑）。", flush=True)
-                    break
-                continue
-
-            if i % 20 == 0 or i == len(todo):
-                el = time.time() - t_run
-                print(f"  进度 {i}/{len(todo)}  用时 {el/60:.1f}min", flush=True)
-    finally:
-        fh.close()
-
-    return {"sample_id": doc.sample_id, "evaluated": n_done,
-            "total": len(evidence_qs), "wall_s": round(time.time() - t_run, 1)}
-
-
-# ---------------------------------------------------------------------------
 # 编排
 # ---------------------------------------------------------------------------
 
@@ -400,14 +321,14 @@ def run_eval(
     max_questions: int = 0,
     workers: int = 1,
     context_budget: int | None = 200_000,
-    track: str = "both",
     fail_limit: int = 5,
     build: bool = True,
     force_build: bool = False,
 ) -> dict:
-    """建图 + 双轨评测（conv-26 优先）。``track`` ∈ {qa, retrieval, both}；
-    ``max_questions`` 每对话限量新评题数（0=全部，冒烟用）；``workers`` 仅 QA 轨
-    并发（检索轨 ``mcs.query`` 含 read-repair 可能写图，保持串行）。"""
+    """建图 + QA 评测（conv-26 优先）。
+
+    ``max_questions`` 每对话限量新评题数（0=全部，冒烟用）；``workers`` QA 轨并发数。
+    """
     db_dir = Path(db_dir)
     out_dir = Path(out_dir)
     selected = select_conversations(docs, sample_ids, max_conversations)
@@ -415,8 +336,8 @@ def run_eval(
         raise SystemExit("未选中任何对话（检查 --sample-ids / --max-conversations）")
     print(f"选中 {len(selected)} 对话：{[d.sample_id for d in selected]}")
 
-    llm_call = _make_llm_call() if track in ("qa", "both") else None
-    summary: dict[str, list] = {"build": [], "qa": [], "retrieval": []}
+    llm_call = _make_llm_call()
+    summary: dict[str, list] = {"build": [], "qa": []}
 
     # 建图（统一走 build_all_graphs，含 pilot 优先排序 + resume）
     if build:
@@ -439,18 +360,12 @@ def run_eval(
 
     for doc in selected:
         db_path = db_dir / f"locomo_{doc.sample_id}.db"
-        if track in ("qa", "both"):
-            summary["qa"].append(run_agent_eval(
-                doc, db_path, out_dir, llm_call=llm_call,
-                token_budget=token_budget, max_turns=max_turns, fail_limit=fail_limit,
-                max_questions=max_questions, workers=workers,
-                context_budget=context_budget,
-            ))
-        if track in ("retrieval", "both"):
-            summary["retrieval"].append(run_retrieval_eval(
-                doc, db_path, out_dir, token_budget=token_budget, fail_limit=fail_limit,
-                max_questions=max_questions,
-            ))
+        summary["qa"].append(run_agent_eval(
+            doc, db_path, out_dir, llm_call=llm_call,
+            token_budget=token_budget, max_turns=max_turns, fail_limit=fail_limit,
+            max_questions=max_questions, workers=workers,
+            context_budget=context_budget,
+        ))
     return summary
 
 
@@ -463,11 +378,10 @@ def main() -> None:
     ap.add_argument("--max-questions", type=int, default=0,
                     help="每对话限量新评题数（0=全部；冒烟/控成本）")
     ap.add_argument("--workers", type=int, default=1,
-                    help="QA 轨并发数（1=串行；检索轨恒串行）")
+                    help="QA 轨并发数（1=串行）")
     ap.add_argument("--context-budget", type=int, default=200_000,
                     help="agent 会话上下文预算（0=关闭收尾轮；默认 200K=纯收尾轮，"
                          "折叠/兜底不触发。MUST NOT 设小于上下文峰值，见 run_agent_eval docstring）")
-    ap.add_argument("--track", choices=["qa", "retrieval", "both"], default="both")
     ap.add_argument("--build", choices=["auto", "skip", "force"], default="auto",
                     help="auto=resume（db 存在则跳过）；skip=不建图；force=强制重建")
     ap.add_argument("--output", default=str(DEFAULT_OUT_DIR))
@@ -487,7 +401,6 @@ def main() -> None:
         sample_ids=sample_ids, max_conversations=args.max_conversations,
         max_questions=args.max_questions, workers=args.workers,
         context_budget=(args.context_budget or None),
-        track=args.track,
         build=(args.build != "skip"),
         force_build=(args.build == "force"),
     )

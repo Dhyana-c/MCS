@@ -1,13 +1,11 @@
-"""文档级重排（bench-only）测试。覆盖 tasks 3.1–3.5。"""
+"""文档级重排（bench-only）测试。覆盖 tasks 3.1–3.3（纯函数）。
+
+runner 集成测试（3.4/3.5）随框架 ``mcs.query`` runner 退役（retire-framework-query-pipeline）
+删除——文档级重排现由 agent 轨（``scripts/agent_full_run.py``）触达节点后离线调用。
+"""
 
 from __future__ import annotations
 
-import json
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-from bench.multihop_rag import MultiHopEvalConfig, MultiHopEvalRunner
 from bench.plugins.doc_rerank import aggregate_docs, doc_rerank
 from mcs.entities.graph import Node
 from mcs.plugins.preprocess.source_tracking import Source
@@ -98,67 +96,3 @@ def test_doc_rerank_empty_passthrough():
 def test_doc_rerank_no_doc_id_returns_empty():
     n = Node(id="n", name="x", content="", extensions={})
     assert doc_rerank([n], "anything") == []
-
-
-# ─── 3.4 / 3.5 runner 集成：默认旁路 + 启用路由 + 与 --rerank 正交 ────────────
-
-
-@pytest.fixture
-def tmp_corpus_qa(tmp_path):
-    corpus = [
-        {"title": "DocA", "body": "Alpha Beta", "source": "S", "url": "u"},
-        {"title": "DocB", "body": "Gamma", "source": "S", "url": "u"},
-    ]
-    qa = [
-        {"query": "Alpha Beta", "answer": "x", "question_type": "inference_query",
-         "evidence_list": [{"title": "DocA", "url": "u", "fact": "f"}]},
-    ]
-    cp = tmp_path / "c.json"
-    qp = tmp_path / "q.json"
-    cp.write_text(json.dumps(corpus), encoding="utf-8")
-    qp.write_text(json.dumps(qa), encoding="utf-8")
-    return str(cp), str(qp)
-
-
-def _fake_build_factory():
-    # query 返回：DocB 节点(原序在前、不相关) + DocA 节点(含查询词 Alpha Beta)
-    def fake_build(docs, llm="deepseek", db_path="", max_chunks_per_doc=8, **kw):
-        m = MagicMock()
-        m.query.return_value = [
-            _node("noise", "zzz", "DocB"),
-            _node("Alpha Beta", "Alpha Beta concept", "DocA"),
-        ]
-        return m
-    return fake_build
-
-
-def test_config_doc_rerank_default_off():
-    assert MultiHopEvalConfig().doc_rerank is False
-
-
-def test_runner_doc_rerank_off_uses_node_order(tmp_corpus_qa, tmp_path):
-    cp, qp = tmp_corpus_qa
-    out = tmp_path / "out"
-    cfg = MultiHopEvalConfig(
-        corpus_path=cp, queries_path=qp, output_dir=str(out),
-        db_path=str(tmp_path / "g.db"), doc_rerank=False,
-    )
-    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=_fake_build_factory()):
-        MultiHopEvalRunner(cfg).run()
-    res = json.loads((out / "retrieval_results.json").read_text(encoding="utf-8"))
-    ranked = next(iter(res.values()))["ranked"]
-    assert ranked == ["DocB", "DocA"]  # 旁路：retrieved_docs 按节点 rank 序
-
-
-def test_runner_doc_rerank_on_routes_through_doc_rerank(tmp_corpus_qa, tmp_path):
-    cp, qp = tmp_corpus_qa
-    out = tmp_path / "out"
-    cfg = MultiHopEvalConfig(
-        corpus_path=cp, queries_path=qp, output_dir=str(out),
-        db_path=str(tmp_path / "g.db"), doc_rerank=True,
-    )
-    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=_fake_build_factory()):
-        MultiHopEvalRunner(cfg).run()
-    res = json.loads((out / "retrieval_results.json").read_text(encoding="utf-8"))
-    ranked = next(iter(res.values()))["ranked"]
-    assert ranked[0] == "DocA"  # 文档级重排把含查询词的 DocA 排前

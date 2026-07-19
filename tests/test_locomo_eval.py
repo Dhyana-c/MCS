@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""bench.locomo 评测脚本测试（不调真实 LLM；agent / judge / mcs.query 均 mock）。
+"""bench.locomo 评测脚本测试（不调真实 LLM；agent / judge 均 mock）。
 
-覆盖：system prompt 构造、对话选择（conv-26 优先）、resume、QA 轨记录 schema、检索轨记录
-schema、报告口径分离（主表 judge / 副表 F1·temporal·检索）。真实 agent.chat / mcs.query /
-③b 抽取质量由 conv-26 试点验收，不在此单测。
+覆盖：system prompt 构造、对话选择（conv-26 优先）、resume、QA 轨记录 schema、
+报告口径分离（主表 judge / 副表 F1·temporal）。真实 agent.chat / ③b 抽取质量
+由 conv-26 试点验收，不在此单测。
 """
 
 from __future__ import annotations
@@ -195,32 +195,6 @@ class TestRunAgentEval:
         recs = [json.loads(l) for l in (out / f"qa_results_{doc.sample_id}.jsonl").read_text(encoding="utf-8").splitlines()]
         assert "temporal_accept" in recs[0]  # cat-2 带
         assert "temporal_accept" not in recs[1]  # 非 temporal 不带
-
-
-# ---------------------------------------------------------------------------
-# 检索轨（mock mcs.query）
-# ---------------------------------------------------------------------------
-
-
-class TestRunRetrievalEval:
-    def test_writes_ranked_sessions(self, tmp_path):
-        doc = _doc(n_qa=3)  # 前 2 题有 evidence
-        db = tmp_path / f"locomo_{doc.sample_id}.db"
-        db.write_bytes(b"")
-        out = tmp_path / "out"
-
-        # mock 节点带 source_tracking chunk_id
-        def mk_node(chunk):
-            return MagicMock(extensions={"source_tracking": {"sources": [MagicMock(chunk_id=chunk)]}})
-        sub = MagicMock(nodes=[mk_node("session_1"), mk_node("session_2")])
-        mcs = MagicMock()
-        mcs.query.return_value = sub
-        with patch.object(ae, "_make_mcs", return_value=mcs):
-            stats = ae.run_retrieval_eval(doc, db, out, token_budget=100)
-        assert stats["evaluated"] == 2  # 仅 evidence 题
-        recs = [json.loads(l) for l in (out / f"retrieval_results_{doc.sample_id}.jsonl").read_text(encoding="utf-8").splitlines()]
-        assert recs[0]["ranked_sessions"] == [1, 2]
-        assert recs[0]["gold_sessions"] == [1]  # evidence D1:1
 
 
 # ---------------------------------------------------------------------------

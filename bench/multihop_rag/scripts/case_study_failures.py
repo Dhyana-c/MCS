@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 
-from mcs.plugins.postprocess.rerank import _tokenize
+from bench.plugins.doc_rerank import _tokenize
 from mcs.utils.tokenizer import ChineseTokenizer
 
 ROOT = Path(__file__).resolve().parents[1]

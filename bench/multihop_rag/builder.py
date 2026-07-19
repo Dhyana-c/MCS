@@ -88,8 +88,11 @@ def _make_mcs(
     """创建一个配置好持久化与 LLM key 的 MCS 实例（已 initialize）。
 
     ``token_budget`` 设核心不变量阈值 T（如 32000）。``record_path`` 非空时挂载
-    JSONL LLM 调用记录器。``rerank=True`` 时把 query_postprocess 重排插件加入插件链
-    （opt-in）。``max_accumulated_nodes`` / ``max_rounds`` 非 None 时放宽遍历参数。
+    JSONL LLM 调用记录器。``max_accumulated_nodes`` / ``max_rounds`` 非 None 时放宽遍历参数。
+
+    ``rerank`` / ``rerank_top_n`` / ``rerank_min_score`` 参数已**退役**（读查询编排 +
+    RerankPlugin 随 retire-framework-query-pipeline 删除）——保留为 no-op kwargs 仅为
+    不破坏既有调用点；节点级重排改由评测层 ``bench.plugins.doc_rerank`` 离线完成。
     """
     config = MCSConfig.knowledge_graph(write_llm=llm, read_llm=llm)
     config.token_budget = token_budget  # 核心不变量阈值 T（如 32k）
@@ -109,14 +112,9 @@ def _make_mcs(
         config.max_accumulated_nodes = max_accumulated_nodes
     if max_rounds is not None:
         config.max_rounds = max_rounds
-    if rerank:
-        if "rerank" not in config.read_plugins:
-            config.read_plugins.append("rerank")
-        config.plugin_configs["rerank"] = {
-            "scorer": "lexical",
-            "top_n": rerank_top_n,
-            "min_score": rerank_min_score,
-        }
+    # rerank 参数已退役（RerankPlugin 随 retire-framework-query-pipeline 删除）；
+    # 此处 no-op 透传，仅保调用点签名兼容。节点级重排由评测层离线做。
+    _ = rerank or rerank_top_n or rerank_min_score
     if llm == "deepseek":
         ds = config.plugin_configs["deepseek_llm"]
         # 优先 llm_config["deepseek"]（如智谱 OpenAI 端点 + thinking 开关），

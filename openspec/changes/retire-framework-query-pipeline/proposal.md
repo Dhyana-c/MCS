@@ -43,7 +43,7 @@
 - `query-pipeline` capability **整体退役**（18 条 requirement 全 REMOVED）；存活原语 ADDED 到 `lightweight-query`（`seed-selector-plugin` 已是 REMOVED 状态、不可收纳——见 design D4）。
 - `query-rerank` capability 退役（3 条 requirement 全 REMOVED，rerank 插件随 `POSTPROCESS` 删除）。
 - CLAUDE.md「总体流程·查询 `query`」段改写为"查询由 agent 驱动；框架仅提供图底座原语"；插件类型清单移除 `ARBITRATION` / `POSTPROCESS` / `QUERY_PREPROCESS`；「四区硬比例仅框架查询路径」条更新。
-- 已建 9 份 delta：`query-pipeline`（全删 18）/ `lightweight-query`（收纳存活）/ `query-rerank`（全删）/ `plugin-protocol`（删 3 接口 + Preprocess 废弃指向去 QueryPreprocess）/ `mcs-builder`（删 query API + show Reader 段）/ `memory-agent`（删 associate mcs 模式 + render_query_result 复用）/ `result-rendering`（删 render_query_result）/ `phase1-defaults`（SummaryPlugin 保留 + 删 2 默认空 scenario + Idempotency 标注）/ `preprocess-plugin`（废弃指向去 QueryPreprocess）。`mcs-presets` **无 delta**（SummaryPlugin 是 NodeExtension、保留，shared 清单不变）。
+- 已建 10 份 delta：`query-pipeline`（全删 18）/ `lightweight-query`（收纳存活）/ `query-rerank`（全删）/ `plugin-protocol`（删 3 接口 + Preprocess 废弃指向去 QueryPreprocess）/ `mcs-builder`（删 query API + show Reader 段）/ `memory-agent`（删 associate mcs 模式 + render_query_result 复用）/ `result-rendering`（删 render_query_result）/ `phase1-defaults`（SummaryPlugin 保留 + 删 2 默认空 scenario + Idempotency 标注）/ `preprocess-plugin`（废弃指向去 QueryPreprocess）/ `bench-utils`（MODIFIED：.env 加载去 runner 场景 + 功能替代改指 `agent_full_run.py`——框架 runner 退役的 LIVE spec 唯一引用处）。`mcs-presets` **无 delta**（SummaryPlugin 是 NodeExtension、保留，shared 清单不变）。
 - `docs/api-reference.md`（删 `query` 条）、`docs/faq.md`、`docs/INDEX.md`、`openspec/specs/INDEX.md` 同步。
 
 ## Capabilities

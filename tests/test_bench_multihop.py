@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from bench.multihop_rag import (
     MultiHopDataLoader,
-    MultiHopEvalConfig,
-    MultiHopEvalRunner,
     MultiHopQuery,
     aggregate_metrics,
     chunk_body,
@@ -147,43 +145,6 @@ def test_aggregate_groups_and_null():
     assert agg["inference_query"]["recall@2"] == 1.0
 
 
-# ─── 7.5 运行器：mock 共享图，验证增量落盘 + resume ──────────────────────────
-
-
-def test_runner_persists_and_resumes(tmp_corpus_qa, tmp_path):
-    cp, qp = tmp_corpus_qa
-    out = tmp_path / "out"
-    cfg = MultiHopEvalConfig(
-        corpus_path=cp, queries_path=qp,
-        output_dir=str(out), db_path=str(tmp_path / "g.db"),
-    )
-
-    built: list = []
-
-    def fake_build(docs, llm="deepseek", db_path="", max_chunks_per_doc=8, **kwargs):
-        m = MagicMock()
-        node = MagicMock()
-        node.extensions = {"source_tracking": {"sources": [
-            MagicMock(doc_id="DocA"), MagicMock(doc_id="DocB"),
-        ]}}
-        m.query.return_value = [node]
-        built.append(m)
-        return m
-
-    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=fake_build):
-        metrics = MultiHopEvalRunner(cfg).run()
-        assert built[-1].query.call_count > 0
-
-    assert (out / "retrieval_results.json").exists()
-    assert (out / "metrics.json").exists()
-    assert metrics["overall"]["n"] >= 1
-
-    # resume：第二次运行不应再 query（全部已完成）
-    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=fake_build):
-        MultiHopEvalRunner(cfg).run()
-        assert built[-1].query.call_count == 0
-
-
 # ─── 7.x（5.7）--exclude-null ─────────────────────────────────────────────────
 
 
@@ -197,29 +158,3 @@ def test_filter_queries_excludes_null():
     kept = filter_queries(qs, exclude_null=True)
     assert len(kept) == 2
     assert all(q.question_type != "null_query" for q in kept)
-
-
-def test_runner_exclude_null_drops_null_queries(tmp_corpus_qa, tmp_path):
-    """开启 exclude_null 后，null_query 不进入检索结果。"""
-    cp, qp = tmp_corpus_qa
-    out = tmp_path / "out"
-    cfg = MultiHopEvalConfig(
-        corpus_path=cp, queries_path=qp,
-        output_dir=str(out), db_path=str(tmp_path / "g.db"),
-        exclude_null=True,
-    )
-
-    def fake_build(docs, llm="deepseek", db_path="", max_chunks_per_doc=8, **kwargs):
-        m = MagicMock()
-        node = MagicMock()
-        node.extensions = {"source_tracking": {"sources": [MagicMock(doc_id="DocA")]}}
-        m.query.return_value = [node]
-        return m
-
-    with patch("bench.multihop_rag.runner.build_shared_graph", side_effect=fake_build):
-        MultiHopEvalRunner(cfg).run()
-
-    results = json.loads((out / "retrieval_results.json").read_text(encoding="utf-8"))
-    types = {r["type"] for r in results.values()}
-    assert "null_query" not in types
-    assert types  # 仍有非 null 的 query 被评测
