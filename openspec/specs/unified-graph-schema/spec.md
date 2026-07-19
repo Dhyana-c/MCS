@@ -2,9 +2,7 @@
 
 ## Purpose
 定义 MCS 图模型的统一数据结构与核心机制：4 类节点（概念 / 事实 / 事件 / source）、有向边（仅 关联 / 互斥）、谓词落点、核心 / 事件双层与有界、守门挂在改图操作上。完整、权威设计见 [`docs/graph-model-design.md`](../../docs/graph-model-design.md)；本 spec 固定**机制契约**（SHALL / MUST）。语义关系类型的扩充（因果 / 背书等）为 TBD，按场景演进。
-
 ## Requirements
-
 ### Requirement: 世界归属（universe）维度
 
 每个节点（含事件）SHALL 归属一个 `universe`（世界）。`"__reality__"` 为默认现实世界；明确来源于某作品（`IngestInput.work_id` 非空）的，该次 ingest 产出的概念 / 事实 / source 归该作品的 universe。universe 判定 MUST 在 ingest 规则入库阶段按 `work_id` 作出：**无** `work_id` → `"__reality__"`，**有** `work_id` → **经 universe 注册表规范化后的 canonical universe id**（见「universe 元节点与归一」requirement）——`work_id` 是原始标注、非稳定身份，经注册表字面 / 别名匹配归一。**摄入行为事件**（记录"读了某作品"这一行为）`universe` 固定 `"__reality__"`，MUST NOT 随被读作品变 universe。`work_id` 判定与注册表规范化 MUST NOT 经 LLM。`universe` 是与 `node_class` 并列的**结构行为归属轴**（控制合并 / 互斥 / 聚类 / 载重过滤边界），MUST NOT 与领域 type 混淆。半虚构 / 历史小说归属由 source 提供方经 `work_id` 显式标注决定，系统 MUST NOT 用 LLM 判断"是否虚构"。
@@ -353,3 +351,23 @@ ingest 遇新 canonical universe（work_id 别名未命中）SHALL 自动建元�
 - **THEN** 积累区 MUST 受 `token_budget`（≤ T）封顶
 - **AND** 达 `token_budget` 或 `max_rounds` 时查询 MUST 停止扩展
 - **AND** 单跳活跃视图 MUST 仍独立受 `T` 约束（累积闸不放宽单跳闸）
+
+### Requirement: 叙事时间戳锚点解析（日精度）
+
+作品叙事事件抽取（③b `extract_work_events`）的 `narr_timestamp` SHALL 默认保留原文形态、不换算、不猜测（现行规则）；**唯一例外**：作品文本自带**显式时间锚点**（如逐行 `[1:56 pm on 8 May, 2023]` 标记）、发生时间为**相对锚点的表述**（yesterday / two days ago / 前天）、且经纯日期算术能**确定到具体某天**时，`narr_timestamp` MAY 解析为 ISO 日期形态（`YYYY-MM-DD`）。确定不了具体某天（如 "last week" / "last year"）MUST 保留原文形态（MUST NOT 编造日期）；解析产物 MUST NOT 使用年/月截断形态（`"2023-05"` / `"2022"`——与 ISO 日期分属两把排序尺子，同 universe 混排错乱，年/月精度归 Phase 2 纪年归一化）。无锚点文本与作品纪年（"建安五年"类）行为 MUST 保持不变。
+
+#### Scenario: 锚点在场的相对时间解析为 ISO
+
+- **WHEN** 以 `work_id` ingest 文本 `"[1:56 pm on 8 May, 2023] Sarah: I went to a support group yesterday"`，LLM 按规则解析
+- **THEN** 叙事事件 `narr_timestamp` MAY 为 `"2023-05-07"`（ISO 日期），落 `event_meta.timestamp` 后 `timestamp_sort_value` MUST 非 -inf（可排序），`narrative_timeline` 按日期正确排序
+
+#### Scenario: 确定不了具体某天则保留原文
+
+- **WHEN** 锚点在场但相对表述无法定位到具体某天（如 "last week"）
+- **THEN** `narr_timestamp` MUST 保留原文形态（如 `"last week"`），MUST NOT 编造具体日期，MUST NOT 写年/月截断形态
+
+#### Scenario: 无锚点作品纪年行为不变
+
+- **WHEN** 以 `work_id` ingest 无显式时间锚点的作品文本（如 "建安五年，曹操……"）
+- **THEN** `narr_timestamp` MUST 保留原文形态（`"建安五年"`），MUST NOT 换算——与本 requirement 引入前行为一致
+

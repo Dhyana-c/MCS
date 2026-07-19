@@ -1,6 +1,6 @@
 ## Phase 0: 依赖（独立框架 change，不在本 change 实现）
 
-- [ ] T0 `work-event-anchor-resolution`（仅跟踪依赖，不在此实现）：`extract_work_events` prompt 放宽——文本内含显式时间锚点时，相对时间 MAY 解析为 ISO 绝对时间；无锚点保留原文形态；"建安五年"类作品纪年行为不变。边界测试：有锚点解析（yesterday→ISO）、无锚点保持原样、作品纪年不受影响。本 change 的 temporal 类评测依赖它（D11）；未落地也可先跑（temporal 如实反映缺口，作为修复前基线）
+- [x] T0 `work-event-anchor-resolution`（仅跟踪依赖，不在此实现；依赖已在 change `work-event-anchor-resolution` 落地）：`extract_work_events` prompt 放宽——文本内含显式时间锚点时，相对时间 MAY 解析为 ISO 绝对时间；无锚点保留原文形态；"建安五年"类作品纪年行为不变。边界测试：有锚点解析（yesterday→ISO）、无锚点保持原样、作品纪年不受影响。本 change 的 temporal 类评测依赖它（D11）；未落地也可先跑（temporal 如实反映缺口，作为修复前基线）
 
 ## Phase 1: LoCoMo 评测框架
 
