@@ -1,7 +1,7 @@
 """记忆 agent 的 FastAPI 对话后端（基础 app）。
 
 - ``create_app(agent)``：接受任意带 ``chat(user_message) -> str`` 的 agent，挂 ``/chat``、
-  ``/health``、``/graph/expand`` 基础路由 + 静态前端（``static/index.html``、``graph.html``）。
+  ``/health``、``/graph/expand`` 基础路由 + 静态前端（``static/index.html``）。
   仅基础 agent 能力——个人记忆应用（碎片 / 整合 / 日记 / 召回 / 管理看板）由独立 PyPI 包 / repo
   ``mcs-mem`` 扩展（``mcs_mem.create_app`` 自建 app、复用本模块的 ``register_base_routes``，
   详见 https://github.com/Dhyana-c/mcs-mem）。
@@ -18,10 +18,16 @@ import os
 from pathlib import Path
 from typing import Any, Protocol
 
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+try:
+    from fastapi import FastAPI, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.staticfiles import StaticFiles
+    from pydantic import BaseModel
+except ImportError as exc:  # pragma: no cover - 仅 core-only 安装（无 [agent] extras）时触发
+    raise ImportError(
+        "mcs_agent.app 依赖 fastapi / pydantic（HTTP 服务后端），core-only 安装不含。"
+        "装一下即可：pip install mcs-core[agent]"
+    ) from exc
 
 from mcs.entities.config import MCSConfig
 from mcs_agent.builder import AgentBuilder, AgentConfig, LLMConfig

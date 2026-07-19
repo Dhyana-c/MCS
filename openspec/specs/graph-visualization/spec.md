@@ -1,7 +1,7 @@
 # graph-visualization Specification
 
 ## Purpose
-TBD - created by archiving change graph-visualization. Update Purpose after archive.
+规定 `MemoryStore.graph_view` 只读原语 + `GET /graph/expand` JSON 端点的契约（本仓履行）；前端 `graph.html` 已随 `mcs-mem` 迁出（本仓不交付），本 spec 保留其前端 Requirement 作为后端契约的前端侧补充。
 ## Requirements
 ### Requirement: MemoryStore graph_view 只读原语
 
@@ -100,7 +100,10 @@ TBD - created by archiving change graph-visualization. Update Purpose after arch
 
 ---
 
-### Requirement: graph.html 默认渲染根子图并支持点击下钻
+### Requirement: graph.html 默认渲染根子图并支持点击下钻（前端契约，由 mcs-mem repo 履行）
+
+> **本仓不交付 `static/graph.html`**——前端可视化随 `mcs_mem` 迁至独立 repo `mcs-mem`（https://github.com/Dhyana-c/mcs-mem）。
+> 以下 SHALL/scenario 由 `mcs-mem` 的前端履行；本 spec 保留之作为 `GET /graph/expand` 后端契约的前端侧补充。本仓履行的后端契约见上三个 Requirement（`graph_view` 只读原语 / JSON 结构 / `/graph/expand` 端点）。
 
 `static/graph.html` SHALL 经 Cytoscape.js 在打开时默认拉取 `__seed_root__` 子图（`GET /graph/expand`）渲染；右键任一节点触发 `GET /graph/expand?node_id=<该节点>`，把返回的 `nodes` 与 `edges` **增量并入**（按 id 去重）；返回空的节点标为叶子（首次点击后缓存）。**事件节点可下钻**（展开其涉及的概念/事实，`事件→核心` 出边）；`source` / 孤立节点 expand 返回空 → 标叶子。关系边按 `type` 渲染（`关联` / `互斥`，**无 label**），下钻（组织）边以区分样式渲染。前端 MUST NOT 自造边，仅渲染后端返回的 `edges`。
 

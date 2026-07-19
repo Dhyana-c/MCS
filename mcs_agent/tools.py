@@ -486,7 +486,7 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
 
 # 只读工具白名单：由 ``ToolSpec.readonly`` 元数据驱动（非 ``if name != "learn"`` 黑名单）。
 # 新增写图工具标 ``readonly=False`` 即自动排除出只读召回——避免黑名单漏维护、静默破坏
-# "召回 MUST NOT 写图"（详见 memory-management-ui spec「召回块」）。
+# "召回 MUST NOT 写图"（本仓由 ``ToolSpec.readonly`` 元数据落地；``memory-management-ui`` spec 已随 ``mcs_mem`` 迁出）。
 READONLY_TOOL_NAMES: tuple[str, ...] = tuple(
     name for name, spec in BUILTIN_TOOLS.items() if spec.readonly
 )

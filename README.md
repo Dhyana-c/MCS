@@ -171,6 +171,20 @@ mcs-mcp                          # 或 python -m mcs_mcp
 
 > `query` 经 agent 多步探索（多轮 LLM、耗时较长）、调用经 `MemoryStore` 单 worker 串行保证 SQLite 线程亲和。详见 [MCP Server 文档](docs/mcp-server.md)。
 
+## 作为 Agent 服务
+
+MCS 也内置 **对话式记忆 agent**（`mcs_agent`）：建在 MCS 之上的 ReAct loop，让 LLM 经 tool calling 自主在记忆图里导航，配 FastAPI 后端 + 前端对话 UI。
+
+```bash
+pip install -e ".[agent]"          # 可选依赖 fastapi + uvicorn
+export MCS_CONFIG=/path/to/mcs.yaml     # MCS 配置（见「配置文件」）
+export AGENT_LLM_API_KEY=sk-...         # agent chat LLM（独立于 MCS read_llm）
+export AGENT_LLM_MODEL=deepseek-chat
+mcs-agent                          # 或 python -m mcs_agent，默认 http://127.0.0.1:8000
+```
+
+基础路由：`/chat`（POST 跑一轮 ReAct）、`/health`、`/graph/expand`（只读图谱可视化），`/` 兜底前端对话 UI。个人记忆应用（碎片 / 整合 / 日记 / 召回 / 看板）是独立产品 `mcs-mem`，依赖 `mcs-core`。详见 [记忆 Agent 文档](docs/memory-agent.md)。
+
 ## 文档
 
 | 文档 | 说明 |

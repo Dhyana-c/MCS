@@ -168,7 +168,7 @@ MCS 非线程安全、SQLite 连接绑创建线程，所以 `MemoryStore`（`mem
 | `/health` | GET | 健康检查 `{ok: true}` |
 | `/graph/expand` | GET `?node_id=__seed_root__` | 只读图谱可视化：转发 `memory.graph_view`（缺省虚拟根） |
 
-`/` 兜底挂 `static/`（前端 `index.html`，对话 + Cytoscape 图谱可视化）。CORS 开发期全开、生产按域名收紧。
+`/` 兜底挂 `static/`（前端 `index.html`，对话 UI）。CORS 开发期全开、生产按域名收紧。
 
 ## 构造与可插拔 LLM 后端
 

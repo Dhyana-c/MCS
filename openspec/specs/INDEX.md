@@ -80,7 +80,7 @@
 | [result-rendering](result-rendering/spec.md) | 核心库共享结果渲染纯函数（`mcs/rendering.py`），供 `mcs_mcp` / `mcs_agent` 复用，杜绝跨应用私有引用 |
 | [mcp-server](mcp-server/spec.md) | MCP（stdio）server（顶层包 `mcs_mcp`），从 YAML 配置 build MCS 并服务 ingest / query 工具 |
 | [memory-agent](memory-agent/spec.md) | 基于 MCS 的记忆 agent（独立 `mcs_agent` 包）：单线程 MCS 包装 + 5 导航工具（learn/search/associate/reason/recall）+ ReAct loop + FastAPI + 前端 |
-| [graph-visualization](graph-visualization/spec.md) | 记忆图谱只读可视化：`MemoryStore.graph_view` 只读原语 + `GET /graph/expand` JSON 端点 + `graph.html` 默认渲染根子图 + 点击下钻 |
+| [graph-visualization](graph-visualization/spec.md) | 记忆图谱只读可视化：`MemoryStore.graph_view` 只读原语 + `GET /graph/expand` JSON 端点（前端 `graph.html` 已随 `mcs-mem` 迁出，本仓不交付） |
 
 ## 研究型
 

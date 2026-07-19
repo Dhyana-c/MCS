@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 from fastapi.testclient import TestClient
 
 from mcs_agent.app import create_app
@@ -146,3 +149,33 @@ def test_graph_expand_memory_without_graph_view_returns_503():
     client = TestClient(create_app(_Agent()))
     r = client.get("/graph/expand")
     assert r.status_code == 503
+
+
+# === core-only 安装（无 [agent] extras）下的友好降级（b1）===
+
+
+def test_app_import_without_fastapi_gives_friendly_hint():
+    """core-only（无 fastapi/pydantic）下 import mcs_agent.app 抛带安装提示的 ImportError。
+
+    ``mcs-agent`` 入口在 core-only 安装下应给清晰 ``pip install mcs-core[agent]`` 提示，
+    而非裸 ``ImportError: No module named 'fastapi'``。用 subprocess 隔离，
+    避免污染主进程 ``sys.modules``。
+    """
+    code = (
+        "import sys\n"
+        "sys.modules['fastapi'] = None\n"
+        "sys.modules['pydantic'] = None\n"
+        "try:\n"
+        "    import mcs_agent.app\n"
+        "    print('IMPORTED_OK')\n"
+        "except ImportError as e:\n"
+        "    print('IMPORT_ERROR::' + str(e))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+    out = result.stdout
+    assert "IMPORT_ERROR::" in out, (
+        f"期望 ImportError，实际 stdout={out!r} stderr={result.stderr!r}"
+    )
+    assert "mcs-core[agent]" in out, f"错误消息缺安装提示：{out!r}"

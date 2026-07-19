@@ -39,16 +39,21 @@ mcp = [
 agent = [
     "fastapi>=0.110",
     "uvicorn>=0.27",
-    "apscheduler>=3.10",
+    "pydantic>=2",
 ]
 
 [project.scripts]
 mcs-mcp = "mcs_mcp.server:main"
-mcs-agent = "mcs_agent.app:run"
+mcs-agent = "mcs_agent.app:run [agent]"
 
 [tool.setuptools.packages.find]
 include = ["mcs*", "mcs_mcp*", "mcs_agent*"]
 exclude = ["tests*", "examples*"]
+
+# 前端静态资源随 mcs_agent 包发货（StaticFiles mount 依赖）；缺此则 wheel 不含 index.html、`/` 路由 404。
+# 用 ** 递归 glob：覆盖 static/ 直接文件 + 任意深度子目录（setuptools>=68 实测递归有效）。
+[tool.setuptools.package-data]
+mcs_agent = ["static/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
