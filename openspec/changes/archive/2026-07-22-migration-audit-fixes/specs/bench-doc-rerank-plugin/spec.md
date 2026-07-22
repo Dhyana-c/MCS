@@ -1,20 +1,18 @@
-## Purpose
-将文档级重排实现为 bench-only 的 PostprocessPlugin，不入核心 query 插件链，同时保留纯函数供评测直接调用。
-## Requirements
-### Requirement: bench 插件目录结构
+# bench-doc-rerank-plugin Delta
 
-`bench/plugins/` 目录 SHALL 存放 bench-only 插件，这些插件不入核心管线，仅供评测使用。
+> migration-audit-fixes：E2 spec 仍称 `DocRerankPlugin` 实现 `PostprocessPluginInterface`，但该接口 +
+> `PluginType.POSTPROCESS` 已随 retire-framework-query-pipeline 退役删除；`bench/plugins/doc_rerank.py` 现状
+> 是纯函数模块（无插件类）。收敛 spec 到代码现状。
 
-#### Scenario: bench 插件目录存在
+## REMOVED Requirements
 
-- **WHEN** 检查 `bench/` 目录
-- **THEN** MUST 存在 `plugins/` 子目录
-- **AND** `plugins/` 下 MUST 包含 `__init__.py`
+### Requirement: bench-only 文档级重排作为 PostprocessPlugin
 
-#### Scenario: bench 插件不污染 mcs 包
+> REMOVED：`DocRerankPlugin` 类 / `PostprocessPluginInterface` / `PluginType.POSTPROCESS` 三者随
+> retire-framework-query-pipeline 退役删除；`doc_rerank.py` 现为纯函数模块，无插件类。由下方 ADDED 的
+> 「bench-only 文档级重排为纯函数（无插件类）」取代。
 
-- **WHEN** 检查 `mcs/plugins/` 目录
-- **THEN** MUST NOT 存在 `doc_rerank.py` 或 `DocRerankPlugin` 相关文件
+## ADDED Requirements
 
 ### Requirement: bench-only 文档级重排为纯函数（无插件类）
 
@@ -41,4 +39,3 @@
 
 - **WHEN** 在 bench 脚本中导入 `from bench.plugins.doc_rerank import doc_rerank`
 - **THEN** 导入 MUST 成功，无需依赖 `mcs.bench` 包
-

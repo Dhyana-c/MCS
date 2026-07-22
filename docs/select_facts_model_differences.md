@@ -73,7 +73,7 @@ flowchart TD
 - **要点**:删"拿不准归 result",LLM 自然判有关/可能有关 + 任务背景说明。
 - **为什么**:V3 胀,试精筛;加背景让 LLM 理解多跳检索语境。
 - **效果**:deepseek gold 3/6、accumulated 10–267;**GLM-5.1 gold 5/6 + accumulated 16–78(全局最优)**。
-- **适用**:**强模型(GLM/Claude)生产推荐**。**当前 `select_facts.py` 读侧 = V4**。
+- **适用**:**强模型(GLM/Claude)生产推荐**。**V4 曾为 `select_facts.py` 读侧定稿,已随 retire-framework-query-pipeline 退役删除**（读查询改由记忆 agent 驱动,仅写侧 `select_facts_write` 存活）。
 
 ### V5 单列表宽召回 + 背景(同源,不区分角色)
 - **要点**:回退单列表(选中即 accumulated+frontier 同源)+ 背景说明。
@@ -107,7 +107,7 @@ deepseek-chat 在 `select_facts` 上:
 
 ## 6. 多版本 prompt 保留策略
 
-代码 `mcs/prompts/select_facts.py` 读侧定稿 **V4**(双角色,适配强模型)。其余版本记录于本文档,按模型/场景切换(切换 = 改 SYSTEM/USER 文本,版本文本见 git 历史或本文档要点):
+代码 `mcs/prompts/select_facts.py` 读侧原定稿 **V4**(双角色,适配强模型),**已随 retire-framework-query-pipeline 退役删除**（读查询改由记忆 agent 驱动;写侧 `select_facts_write` 存活）。本文档为历史实验记录,其余版本按模型/场景切换(切换 = 改 SYSTEM/USER 文本,版本文本见 git 历史或本文档要点):
 
 | 场景 | 推荐版本 | 理由 |
 |---|---|---|
@@ -123,7 +123,7 @@ deepseek-chat 在 `select_facts` 上:
 ## 8. 复现
 
 ```bash
-# deepseek(当前读侧 prompt = V4;要跑 V3 等先改 SYSTEM/USER 文本)
+# deepseek(读侧 prompt 原 V4,已随 retire-framework-query-pipeline 删除;本文档为历史复现记录)
 MCS_DIAG_LLM=deepseek .venv/Scripts/python.exe bench/multihop_rag/scripts/diag_dualrole.py
 
 # GLM-5.1 经 0ki.cn 网关(避开智谱官方网关的敏感审查)

@@ -60,7 +60,7 @@ class BuildMemory(MemoryStore):
         self.scene_written = False
         self.learn_calls = 0
 
-    def _do_learn(self, text: str) -> str:  # noqa: ARG002（钉死文档原文，忽略 LLM 转述）
+    def _do_learn(self, text: str, work_id: str | None = None) -> str:  # noqa: ARG002（钉死文档原文，忽略 LLM 转述 / work_id——golden_cage 现实语料）
         self.learn_calls += 1
         if self.scene_written:
             return f"[已写入] 「{self._scene_doc}」本轮已入图，无需重复 learn。"

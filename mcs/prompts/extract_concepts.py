@@ -14,20 +14,11 @@ import logging
 
 from mcs.core.errors import LLMParseError
 from mcs.entities.decisions import ConceptDraft
-from mcs.entities.graph import CLASS_CONCEPT, CLASS_FACT
+from mcs.entities.graph import CLASS_CONCEPT
+from mcs.prompts._common import NODE_CLASS_BY_LABEL, language_follow_clause
 from mcs.utils.text_utils import salvage_json_array, strip_json_fence
 
 logger = logging.getLogger(__name__)
-
-# node_class 枚举英中映射：prompt 协议层对 LLM 暴露英文 concept/fact（降低中文翻译诱导，
-# 见 change prompt-language-following），parse 统一映射回中文常量；同时接受中文值
-# （向后兼容旧 LLM 输出 / 旧库）。**存储层 node.node_class 取值不变（仍中文常量）**。
-_NODE_CLASS_BY_LABEL: dict[str, str] = {
-    "concept": CLASS_CONCEPT,
-    "fact": CLASS_FACT,
-    CLASS_CONCEPT: CLASS_CONCEPT,
-    CLASS_FACT: CLASS_FACT,
-}
 
 SYSTEM_PROMPT = (
     "你是知识图谱构建助手。从输入文本中识别独立的概念和事实。"
@@ -57,12 +48,8 @@ SYSTEM_PROMPT = (
     "- 清单/汇总型内容（逐条列出的公司/比赛/交易等）MUST 逐条抽取——每条一个事实、"
     "涉及实体各自抽为概念，MUST NOT 卷成一个聚合概念。\n"
     "- MUST NOT 把偏好/模式（如「喜欢 X」）当概念/事实——偏好靠概念被多事件背书涌现；"
-    "无时间锚的模糊事件指代（「X 的情况」）也不抽。\n\n"
-    "**语言跟随**（关键）：name / content / relation_hints MUST 使用与输入文本相同的语言"
-    "（中文输入写中文、英文输入写英文），MUST NOT 翻译——即使该实体在通用知识里有其他语言"
-    "（如中文）的名称（如 Apple 不要写成「苹果公司」、Tesla 不要写成「特斯拉」），"
-    "也 MUST 保留输入原文语言的表述；混合语言文本逐实体保留其原文语言。"
-)
+    "无时间锚的模糊事件指代（「X 的情况」）也不抽。"
+) + language_follow_clause("name / content / relation_hints")
 
 USER_TEMPLATE = (
     "已知相关概念（可复用其名称）:\n"
@@ -135,7 +122,7 @@ def parse(raw: str) -> list[ConceptDraft]:
         # node_class：接受英文 concept/fact（prompt 协议层）与中文 概念/事实（向后兼容），
         # 统一映射到中文常量；未知值回退为概念。存储层取值仍为中文常量。
         raw_nc = str(item.get("node_class", CLASS_CONCEPT)).strip().lower()
-        node_class = _NODE_CLASS_BY_LABEL.get(raw_nc, CLASS_CONCEPT)
+        node_class = NODE_CLASS_BY_LABEL.get(raw_nc, CLASS_CONCEPT)
         result.append(
             ConceptDraft(
                 name=str(name),

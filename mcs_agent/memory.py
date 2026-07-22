@@ -21,13 +21,14 @@ LLM 决定用哪个工具、哪个种子、哪种模式、哪两个节点找路�
 worker 线程触发 LLM 同一既定模式；material 经 ``free_args["material"]`` 显式传
 （估算与投喂同源，铁律一）。
 
-复用核心库 ``mcs.rendering`` 的渲染纯函数（``render_query_result`` / ``format_ingest_status``）；
+复用核心库 ``mcs.rendering`` 的渲染纯函数（``format_ingest_status``）；
 节点 id 渲染 helper 让 LLM 能在多步工具间引用具体节点（search→associate→reason）。
 未实现的能力（vector / hot / random）以空壳诚实返回，不伪造。
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -52,16 +53,30 @@ if TYPE_CHECKING:
     from mcs.core.mcs import MCS
     from mcs.core.store import StoreInterface
 
-__all__ = ["MemoryStore"]
+__all__ = ["MemoryStore", "MemoryShuttingDown"]
+
+logger = logging.getLogger(__name__)
 
 # 虚拟根 id（同 MCS 全图约定，见 CLAUDE.md / subgraph-bounding spec）
 _SEED_ROOT = "__seed_root__"
 
 
+class MemoryShuttingDown(RuntimeError):
+    """``MemoryStore.shutdown`` 已开始后，``_submit`` 拒绝新提交时抛。
+
+    让 in-flight chat 的下一轮工具调用优雅降级（loop 捕获 → termination='shutting_down'），
+    而非撞 ``executor`` 的 ``RuntimeError('cannot schedule new futures')`` 被 ``_dispatch``
+    兜成 ``[error]`` 文本、loop 空转到 ``max_turns``（B1：mcp shutdown 竞态）。
+    """
+
+
 def _render_nodes(nodes: list[Node], header: str) -> str:
     """把节点列表渲染为含 id 的文本，供 LLM 在后续工具调用中引用。
 
-    name==content 只写一份（与 ContextRenderer 渲染口径一致）。
+    name==content 只写一份（与 ContextRenderer 渲染口径一致）。非现实 universe 节点在
+    id 后、name 前标 ``[universe:xxx]``（A4：universe 归属轴对 LLM 可见；现实不标，避免
+    单 universe 仓库噪音——search/associate/generalize/split/merge 五个共享原语一处改
+    全覆盖）。估算与渲染共用本函数（铁律一：universe 标签同步进 material 估算）。
     """
     nodes = [n for n in nodes if n is not None]
     if not nodes:
@@ -70,10 +85,11 @@ def _render_nodes(nodes: list[Node], header: str) -> str:
     for i, n in enumerate(nodes, 1):
         name = (n.name or "").strip()
         content = (n.content or "").strip()
+        univ_tag = f" [universe:{n.universe}]" if n.universe != REALITY_UNIVERSE else ""
         if content and content != name:
-            lines.append(f"{i}. [id:{n.id}] {name} — {content}")
+            lines.append(f"{i}. [id:{n.id}]{univ_tag} {name} — {content}")
         else:
-            lines.append(f"{i}. [id:{n.id}] {name}")
+            lines.append(f"{i}. [id:{n.id}]{univ_tag} {name}")
     return "\n".join(lines)
 
 
@@ -230,6 +246,7 @@ class MemoryStore:
     """
 
     def __init__(self, build_fn: Callable[[], "MCS"]) -> None:
+        self._closed = False  # B1：shutdown sentinel（_submit 据此拒绝新提交）
         self._executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="mcs-agent-worker"
         )
@@ -243,35 +260,66 @@ class MemoryStore:
             raise
 
     def _submit(self, fn: Callable[..., Any], *args: Any) -> Any:
-        """把 fn 提交到单 worker 线程并阻塞等待结果（调用方线程不触碰 MCS）。"""
-        return self._executor.submit(fn, *args).result()
+        """把 fn 提交到单 worker 线程并阻塞等待结果（调用方线程不触碰 MCS）。
+
+        ``self._closed`` 置位后（shutdown 已开始）拒绝新提交、抛 ``MemoryShuttingDown``，
+        让 in-flight chat 优雅收尾而非撞 ``RuntimeError('cannot schedule new futures')``
+        被兜成 ``[error]`` 空转（B1：mcp shutdown 竞态）。
+        """
+        if self._closed:
+            raise MemoryShuttingDown("MemoryStore 已 shutdown，拒绝新提交")
+        # 拆 submit / result：只 submit 失败（executor 已关的竞态窗口）归一为
+        # MemoryShuttingDown；worker 内 fn 抛的 RuntimeError 经 result() 自然冒泡、
+        # 不被「cannot schedule new futures」子串误判（避免 worker 异常被错当关闭信号）。
+        try:
+            fut = self._executor.submit(fn, *args)
+        except RuntimeError as exc:
+            if "cannot schedule new futures" in str(exc):
+                raise MemoryShuttingDown("MemoryStore executor 已关闭") from exc
+            raise
+        return fut.result()
 
     # === learn（写入，复用 MCS 写管线） ===
 
-    def _do_learn(self, text: str) -> str:
-        wctx = self._mcs.ingest(text)
+    def _do_learn(self, text: str, work_id: str | None = None) -> str:
+        # work_id 非空 → IngestInput 显式带 work_id（经 _resolve_universe 归作品 universe、
+        # 触发 ③b extract_work_events 抽作品叙事事件）；空 → str 归一化路径（现实 universe、
+        # 无 work_id，现状不变——不动底层 str→IngestInput(content=data) 默认语义）。
+        if work_id:
+            wctx = self._mcs.ingest(IngestInput(content=text, work_id=work_id))
+        else:
+            wctx = self._mcs.ingest(text)
         return format_ingest_status(wctx)
 
-    def learn(self, text: str) -> str:
-        """写记忆：跑 mcs.ingest（worker 线程）→ 状态摘要文本。"""
-        return self._submit(self._do_learn, text)
+    def learn(self, text: str, work_id: str | None = None) -> str:
+        """写记忆：跑 mcs.ingest（worker 线程）→ 状态摘要文本。
+
+        ``work_id`` 非空按作品 universe 摄入（触发 ③b 作品叙事事件抽取、摄入行为事件
+        仍 ``__reality__``）；为空走 str 归一化（现实 universe，现状不变）。可选参数默认
+        ``None`` → 老调用 ``learn(text)`` 逐字不变（向后兼容）。
+        """
+        return self._submit(self._do_learn, text, work_id)
 
     # === ingest_structured（结构化写入，保留原始时间戳） ===
 
-    def _do_ingest_structured(self, content: str, timestamp: str) -> str:
-        wctx = self._mcs.ingest(IngestInput(content=content, timestamp=timestamp))
+    def _do_ingest_structured(self, content: str, timestamp: str, work_id: str | None = None) -> str:
+        # work_id 默认 None 与现状 IngestInput(content, timestamp) 等价（向后兼容）。
+        wctx = self._mcs.ingest(
+            IngestInput(content=content, timestamp=timestamp, work_id=work_id)
+        )
         event_node = wctx.event_node
         if event_node is None:
             raise RuntimeError("ingest 未产生事件节点")
         return event_node.id
 
-    def ingest_structured(self, content: str, timestamp: str) -> str:
-        """结构化写入：跑 mcs.ingest(IngestInput(content, timestamp))，返回事件节点 id。
+    def ingest_structured(self, content: str, timestamp: str, work_id: str | None = None) -> str:
+        """结构化写入：跑 mcs.ingest(IngestInput(content, timestamp, work_id))，返回事件节点 id。
 
-        事件时间忠实落 ``event_meta.timestamp``（非调用时刻 now）。
-        用于整合管线把碎片逐条入图。调用方线程 MUST NOT 直接触碰 MCS。
+        事件时间忠实落 ``event_meta.timestamp``（非调用时刻 now）。``work_id`` 非空按作品
+        universe 摄入（同 ``learn``）。用于整合管线把碎片逐条入图。调用方线程 MUST NOT
+        直接触碰 MCS。
         """
-        return self._submit(self._do_ingest_structured, content, timestamp)
+        return self._submit(self._do_ingest_structured, content, timestamp, work_id)
 
     # === search（种子搜索，阶段② 封装） ===
 
@@ -316,12 +364,19 @@ class MemoryStore:
         cap = max(1, limit)
         shown_mutex = mutex_ids[:cap]
         shown_assoc = assoc_ids[: cap - len(shown_mutex)]
+        # F3 效率：合并两次 get_node 循环为单次 get_nodes 批量取，按 id 映射分派两组。
+        # _render_nodes 自带 None 过滤；批量缺的 id 在 map 缺、被 `if i in map` 跳过。
+        neighbor_map = {
+            n.id: n
+            for n in mcs.store.get_nodes(shown_mutex + shown_assoc)
+            if n is not None
+        }
         parts: list[str] = []
         if shown_mutex:
-            nodes = [mcs.store.get_node(i) for i in shown_mutex]
+            nodes = [neighbor_map[i] for i in shown_mutex if i in neighbor_map]
             parts.append(_render_nodes(nodes, f"与 [id:{node.id}] {node.name} 互斥的事实"))
         if shown_assoc:
-            nodes = [mcs.store.get_node(i) for i in shown_assoc]
+            nodes = [neighbor_map[i] for i in shown_assoc if i in neighbor_map]
             parts.append(_render_nodes(nodes, f"[id:{node.id}] {node.name} 的关联邻居"))
         n_shown = len(shown_mutex) + len(shown_assoc)
         if total > n_shown:
@@ -360,20 +415,24 @@ class MemoryStore:
 
     # === recall（最近事件，时间倒排） ===
 
-    def _do_recall(self, limit: int) -> str:
+    def _do_recall(self, limit: int, universe: str) -> str:
         """扫全图事件 → 时间倒排 → 双上界截断（limit 条数 + T token）→ 全文渲染。
 
         截断：达 ``limit>0`` 条数、或「纳入后的完整渲染文本」超 ``token_budget.T`` 即停
         （先到先停）；唯一例外是**最近 1 条无条件全文返回**（即使其单条就超 T——recall 是
         「最近发生了什么」，残缺最新事件无意义）。``limit<=0`` 仅受 T 约束。
 
+        限 ``universe`` 内（每 universe 一条独立时间轴，MUST NOT 跨 universe 混排——
+        现实 ISO 与作品纪年不同语义、epoch 不可比；A3）。
+
         估算口径 == 渲染口径（铁律一）：对**候选完整文本** ``_render_events(selected+[ev])``
         整体估算（含 header 与行间换行符）；MUST NOT 分段累加单条 line 的 estimate——
         那会漏 ``_render_events`` 的 ``\\n`` join 分隔符、系统性低估、致多条时超 T。
         """
         store = self._mcs.store
-        # 定向取事件（不经 get_all_nodes 把核心节点也物化进列表——事件层只读近期口径）
-        events = store.get_nodes_by_class(CLASS_EVENT)
+        # 定向取事件（不经 get_all_nodes 把核心节点也物化进列表——事件层只读近期口径）；
+        # 限 universe 内（A3：每 universe 独立时间轴）。
+        events = [n for n in store.get_nodes_by_class(CLASS_EVENT) if n.universe == universe]
         if not events:
             return _render_events([])
         # 时间倒排 + id 次级键保确定性（epoch 秒比较，兼容混合形态时间戳；
@@ -395,9 +454,13 @@ class MemoryStore:
             selected = candidate
         return _render_events(selected)
 
-    def recall(self, limit: int = 5) -> str:
-        """回忆最近发生的事件（时间倒排、纯近期口径，受 limit 与 T 双约束，不伪造）。"""
-        return self._submit(self._do_recall, limit)
+    def recall(self, limit: int = 5, universe: str = REALITY_UNIVERSE) -> str:
+        """回忆最近发生的事件（时间倒排、纯近期口径，受 limit 与 T 双约束，不伪造）。
+
+        限 ``universe`` 内（默认现实 ``__reality__``，与 ``search`` 默认同口径）：每
+        universe 一条独立时间轴，MUST NOT 跨 universe 混排（A3）。
+        """
+        return self._submit(self._do_recall, limit, universe)
 
     # === timeline（叙事时间线视图：某 universe 事件层按时间升序，只读不落图） ===
 
@@ -523,10 +586,26 @@ class MemoryStore:
         if not facts:
             return "（无可用事实：传入的 node_ids 全部不存在或为空，无法裁决）"
 
-        # 每事实反查背书事件（get_related_events 已时间倒排 + limit）
+        # 仲裁 universe 派生（A2）：互斥事实构造上恒同 universe（write_pipeline 拒跨
+        # universe 互斥 + store invariant 双护）。universe 是派生值非入参——arbitrate
+        # 公共签名不动。跨 universe 出现 = 互斥前提已破（如手搓 node_ids），按首事实
+        # universe 反查、warning 不拒整个裁决。
+        arb_universe = facts[0].universe
+        universes_seen = {f.universe for f in facts}
+        if len(universes_seen) > 1:
+            logger.warning(
+                "arbitrate 收到跨 universe 事实 %s，按首事实 universe=%s 反查事件",
+                sorted(universes_seen), arb_universe,
+            )
+
+        # 每事实反查背书事件（get_related_events 已时间倒排 + limit）；限 arb_universe：
+        # 载重命根——核心不反查同 universe 的他世界事件（防污染裁决，A2）。
         blocks: list[tuple[Node, list[Node]]] = []
         for f in facts:
-            evs = store.get_related_events(f.id, limit=k) if k > 0 else []
+            evs = (
+                store.get_related_events(f.id, universe=arb_universe, limit=k)
+                if k > 0 else []
+            )
             blocks.append((f, list(evs or [])))
 
         tb = self._mcs.query_engine.token_budget
@@ -1085,9 +1164,25 @@ class MemoryStore:
     # === 生命周期 ===
 
     def shutdown(self) -> None:
-        """关闭 MCS（worker 线程内）+ 关闭 executor。"""
+        """关闭 MCS（worker 线程内）+ 关闭 executor。
+
+        先翻 ``_closed`` sentinel（后续 ``_submit`` 立即抛 ``MemoryShuttingDown``）；关
+        MCS 改走 ``executor.submit`` 直连（绕 ``_submit`` 的 sentinel 检查，避免自拒）。
+        幂等：并发 / 重复 shutdown 时 mcs.shutdown 仍被调但 executor 已关则 submit 抛
+        RuntimeError 被归一忽略（mcs.shutdown 幂等收尾，跳过不影响一致性）。
+        """
+        self._closed = True
         try:
             if hasattr(self._mcs, "shutdown"):
-                self._submit(self._mcs.shutdown)
+                # 直连 executor.submit 绕过 _submit 的 _closed 检查（本方法专享路径）。
+                # 并发 shutdown 使 executor 已关时 submit 抛 RuntimeError → 忽略（mcs.shutdown
+                # 幂等，进程退出兜底）。
+                try:
+                    self._executor.submit(self._mcs.shutdown).result()
+                except RuntimeError as exc:
+                    # 只吞 executor 已关的竞态（'cannot schedule new futures'）；
+                    # mcs.shutdown 自身抛的 RuntimeError 记 warning 不静默（防掩盖持久化失败）。
+                    if "cannot schedule new futures" not in str(exc):
+                        logger.warning("mcs.shutdown raised during shutdown", exc_info=True)
         finally:
             self._executor.shutdown(wait=True)

@@ -39,8 +39,9 @@ mcs = create_mcs(llm="deepseek", db_path="mcs.db")
 mcs.ingest("深度学习是机器学习的一个子领域，它使用多层神经网络来学习数据的表示。")
 mcs.ingest("卷积神经网络是一种专门处理网格状数据的深度学习模型。")
 
-# 查询 → 默认返回相关节点集合
-nodes = mcs.query("什么是深度学习？")
+# 读查询由记忆 agent 驱动（固定管线 mcs.query() 已随 retire-framework-query-pipeline 退役）；
+# 种子定位演示（agent search 工具底层即调它）：
+nodes = mcs.query_engine.locate_seeds("深度学习")
 for n in nodes:
     print(n.name, "—", n.content[:80])
 ```

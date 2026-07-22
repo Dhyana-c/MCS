@@ -49,8 +49,9 @@ MCS 的**双轨事件模型**（当下事件 vs 谈话中的事件）、universe
 - **QA 轨**（1922 题，主指标）：`agent.chat(question)` → LLM 生成答案 → LLM judge 判对错。
   agent 工具集含 `timeline`（temporal 题查叙事时间轴）。adversarial 弃答判定交 judge（不用
   关键词匹配）。
-- **检索轨**（evidence 题，诊断副指标）：`mcs.query(question, universe=sample_id)` → session
-  级 Recall@k（any/all-evidence hit）。
+- **检索轨**（evidence 题，诊断副指标）：记忆 agent 触达节点（含 search 种子 + associate
+  邻居）经 `bench.plugins.doc_rerank` 离线重排 → session 级 Recall@k（any/all-evidence hit）。
+  框架 `mcs.query()` 检索轨已随 retire-framework-query-pipeline 退役（改由 agent 触达驱动）。
 
 **口径分离**（spec 硬要求）：主表仅 LLM-judge 正确率；F1 / 时间容忍 / 检索 Recall 为副表，
 不混入同一对比表。
@@ -62,10 +63,10 @@ MCS 的**双轨事件模型**（当下事件 vs 谈话中的事件）、universe
 python -m bench.locomo download
 
 # 1. 试点：单对话 conv-26（194 题，~5M token 验证全链路）
-python -m bench.locomo eval --track both --sample-id conv-26
+python -m bench.locomo eval --sample-id conv-26
 
 # 1b. 冒烟：限量每对话前 N 题（控成本验证链路）
-python -m bench.locomo eval --track both --sample-id conv-26 --max-questions 5
+python -m bench.locomo eval --sample-id conv-26 --max-questions 5
 
 # 2. 汇总报告
 python -m bench.locomo analyze

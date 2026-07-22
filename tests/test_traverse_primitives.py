@@ -56,7 +56,7 @@ def test_traverse_empty_seeds_returns_empty(seeded_graph, mock_llm):
 def test_traverse_bfs_cycle_terminates(mock_llm):
     """有环图 A→B→C→A：visited 防死循环，三节点各处理至多一次、全部到达。"""
     g = _cycle_graph()
-    mock_llm.set_response("select_facts", _select(["a", "b", "c"], ["a", "b", "c"]))
+    mock_llm.set_response("select_facts_write", _select(["a", "b", "c"], ["a", "b", "c"]))
     engine = make_query_engine(g, mock_llm)
     accumulated, _ = engine._traverse([g.get_node("a")], "cycle", QueryContext())
     assert {n.id for n in accumulated} == {"a", "b", "c"}  # 全到达、无重复
@@ -71,7 +71,7 @@ def test_traverse_max_rounds_caps_depth(seeded_graph, mock_llm):
     seeded_graph: dl — nn — cnn（cnn 在 nn 下钻侧）。首轮 dl 的视图暴露 dl/nn/ml，
     选 dl+nn 为 result；max_rounds=1 使第 2 轮（nn→cnn）不执行 → cnn 不进 accumulated。
     """
-    mock_llm.set_response("select_facts", _select(["dl", "nn"], ["nn"]))
+    mock_llm.set_response("select_facts_write", _select(["dl", "nn"], ["nn"]))
     engine = make_query_engine(seeded_graph, mock_llm, max_rounds=1)
     accumulated, _ = engine._traverse([seeded_graph.get_node("dl")], "x", QueryContext())
     ids = {n.id for n in accumulated}
@@ -81,7 +81,7 @@ def test_traverse_max_rounds_caps_depth(seeded_graph, mock_llm):
 def test_traverse_max_accumulated_nodes_caps(mock_llm):
     """max_accumulated_nodes=1：accumulated 达 1 即终止。"""
     g = _cycle_graph()
-    mock_llm.set_response("select_facts", _select(["a", "b", "c"], ["a", "b", "c"]))
+    mock_llm.set_response("select_facts_write", _select(["a", "b", "c"], ["a", "b", "c"]))
     engine = make_query_engine(g, mock_llm, max_accumulated_nodes=1)
     accumulated, _ = engine._traverse([g.get_node("a")], "x", QueryContext())
     assert len(accumulated) <= 1
@@ -92,7 +92,7 @@ def test_traverse_max_accumulated_nodes_caps(mock_llm):
 
 def test_traverse_result_role_to_accumulated(seeded_graph, mock_llm):
     """标 `结果` 的节点进 accumulated（返回集）。"""
-    mock_llm.set_response("select_facts", _select(["dl"]))
+    mock_llm.set_response("select_facts_write", _select(["dl"]))
     engine = make_query_engine(seeded_graph, mock_llm, max_rounds=1)
     accumulated, _ = engine._traverse([seeded_graph.get_node("dl")], "x", QueryContext())
     assert {n.id for n in accumulated} == {"dl"}
@@ -100,7 +100,7 @@ def test_traverse_result_role_to_accumulated(seeded_graph, mock_llm):
 
 def test_traverse_explore_role_not_in_return(seeded_graph, mock_llm):
     """仅标 `探索`（frontier）的节点 MUST NOT 进返回集（accumulated）。"""
-    mock_llm.set_response("select_facts", _select([], ["dl"]))
+    mock_llm.set_response("select_facts_write", _select([], ["dl"]))
     engine = make_query_engine(seeded_graph, mock_llm, max_rounds=2)
     accumulated, _ = engine._traverse([seeded_graph.get_node("dl")], "x", QueryContext())
     assert accumulated == []  # dl 仅探索、未进 accumulated
@@ -108,7 +108,7 @@ def test_traverse_explore_role_not_in_return(seeded_graph, mock_llm):
 
 def test_traverse_seed_not_selected_returns_empty(seeded_graph, mock_llm):
     """种子未被任何角色选中 → accumulated 为空。"""
-    mock_llm.set_response("select_facts", {"result": [], "frontier": []})
+    mock_llm.set_response("select_facts_write", {"result": [], "frontier": []})
     engine = make_query_engine(seeded_graph, mock_llm, max_rounds=2)
     accumulated, _ = engine._traverse([seeded_graph.get_node("dl")], "x", QueryContext())
     assert accumulated == []
@@ -116,7 +116,7 @@ def test_traverse_seed_not_selected_returns_empty(seeded_graph, mock_llm):
 
 def test_traverse_both_roles_in_accumulated(seeded_graph, mock_llm):
     """同时标 `结果`+`探索`（两者）→ 进 accumulated（且随 frontier，但返回集只看 accumulated）。"""
-    mock_llm.set_response("select_facts", _select(["dl"], ["dl"]))
+    mock_llm.set_response("select_facts_write", _select(["dl"], ["dl"]))
     engine = make_query_engine(seeded_graph, mock_llm, max_rounds=1)
     accumulated, _ = engine._traverse([seeded_graph.get_node("dl")], "x", QueryContext())
     assert {n.id for n in accumulated} == {"dl"}
@@ -135,7 +135,7 @@ def test_traverse_read_repair_merges_same_name(mock_llm):
     g.add_node(Node(id="x1", name="同义", content="内容A", universe="__reality__"))
     g.add_node(Node(id="x2", name="同义", content="内容B", universe="__reality__"))
     g.add_edge("x1", "x2")
-    mock_llm.set_response("select_facts", _select(["x1", "x2"], []))
+    mock_llm.set_response("select_facts_write", _select(["x1", "x2"], []))
     engine = make_query_engine(g, mock_llm, max_rounds=1)
     accumulated, _ = engine._traverse([g.get_node("x1")], "x", QueryContext())
     ids = [n.id for n in accumulated]

@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 
 from mcs.entities.decisions import IngestInput
+from mcs.entities.graph import EDGE_ASSOC, EDGE_MUTEX, Edge, Node
 
 from bench.golden_cage.builder import BUILD_TOOLS, BuildMemory, built_titles
 from bench.golden_cage.runner import (
@@ -142,6 +143,83 @@ def test_touched_nodes_dedup_keeps_order():
             {"tool": "associate", "args": {}, "nodes": [b, c, a]},
         ]
         assert [n.id for n in mem.touched_nodes()] == ["a", "b", "c"]
+    finally:
+        mem.shutdown()
+
+
+# ---------- D1：CapturingMemory._do_associate 捕获一跳邻居 ----------
+
+
+class _NeighborStore:
+    """mini store：get_node + get_relations（_do_associate / _capture_neighbor_nodes 所需）。"""
+
+    def __init__(self, nodes: dict, edges: list):
+        self.nodes = nodes
+        self.edges = edges
+
+    def get_node(self, nid: str):
+        return self.nodes.get(nid)
+
+    def get_nodes(self, nids: list):
+        return [self.nodes[n] for n in nids if n in self.nodes]
+
+    def get_relations(self, nid: str):
+        return [e for e in self.edges if e.source_id == nid or e.target_id == nid]
+
+
+class _NeighborMCS:
+    def __init__(self, store):
+        self.store = store
+
+    def shutdown(self):
+        pass
+
+
+def _neighbor_fixture():
+    """seed s1 + 2 互斥邻居 + 3 关联邻居。"""
+    nodes = {f"id_{c}": Node(id=f"id_{c}", name=c, content=c)
+             for c in ["s1", "m1", "m2", "a1", "a2", "a3"]}
+    edges = [
+        Edge(source_id="id_m1", target_id="id_s1", type=EDGE_MUTEX),
+        Edge(source_id="id_m2", target_id="id_s1", type=EDGE_MUTEX),
+        Edge(source_id="id_s1", target_id="id_a1", type=EDGE_ASSOC),
+        Edge(source_id="id_s1", target_id="id_a2", type=EDGE_ASSOC),
+        Edge(source_id="id_s1", target_id="id_a3", type=EDGE_ASSOC),
+    ]
+    return _NeighborStore(nodes, edges)
+
+
+def test_associate_captures_all_neighbors():
+    """D1：_do_associate 把一跳邻居（互斥+关联）入 records['nodes']。"""
+    mem = CapturingMemory(lambda: _NeighborMCS(_neighbor_fixture()))
+    try:
+        mem._do_associate("id_s1", 60)  # cap=60 全收
+        rec = mem.records[-1]
+        assert rec["tool"] == "associate"
+        assert {n.id for n in rec["nodes"]} == {
+            "id_m1", "id_m2", "id_a1", "id_a2", "id_a3",
+        }
+    finally:
+        mem.shutdown()
+
+
+def test_associate_limit_truncates_assoc_after_mutex():
+    """D1：cap 截断——limit=2 时互斥占满 cap、关联邻居不进 records（与基类同口径）。"""
+    mem = CapturingMemory(lambda: _NeighborMCS(_neighbor_fixture()))
+    try:
+        mem._do_associate("id_s1", 2)
+        rec = mem.records[-1]
+        assert {n.id for n in rec["nodes"]} == {"id_m1", "id_m2"}
+    finally:
+        mem.shutdown()
+
+
+def test_associate_missing_seed_empty_nodes():
+    """D1：seed 不存在 → records['nodes'] 空（不抛）。"""
+    mem = CapturingMemory(lambda: _NeighborMCS(_NeighborStore({}, [])))
+    try:
+        mem._do_associate("ghost", 60)
+        assert mem.records[-1]["nodes"] == []
     finally:
         mem.shutdown()
 

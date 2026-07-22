@@ -24,6 +24,7 @@ from typing import Any, Callable
 
 from mcs_agent.context import CONTEXT_MANAGEMENT_PROMPT, SessionContext
 from mcs_agent.llms import AgentLLMInterface, CallableAgentLLM
+from mcs_agent.memory import MemoryShuttingDown
 from mcs_agent.tools import BUILTIN_TOOLS, MEMORY_TOOLS, ToolsetConfig, build_toolset
 from mcs_agent.trace import ChatTrace, LLMCallTrace, ToolCallTrace
 
@@ -128,6 +129,7 @@ class MemoryAgent:
         token_counter: Callable[[str], int] | None = None,
     ) -> None:
         self.memory = memory
+        self._shutting_down = False  # B1：记忆关闭中（_dispatch 捕 MemoryShuttingDown 置位）
         # 裸 callable 自动包 CallableAgentLLM（保既有注入式测试零改动）；AgentLLMInterface 直用
         self.llm: AgentLLMInterface = (
             llm if isinstance(llm, AgentLLMInterface) else CallableAgentLLM(llm)
@@ -152,6 +154,7 @@ class MemoryAgent:
         assistant 文本解析 PIN/UNPIN/FINISH 标记；预算耗尽时新工具调用不执行、以
         [预算耗尽] tool 消息告知模型换出或收尾。
         """
+        self._shutting_down = False  # B1：每次 chat 重置（表「本次 chat」状态，防实例级粘性泄漏）
         t_start = time.perf_counter()
         llm_traces: list[LLMCallTrace] = []
         tool_traces: list[ToolCallTrace] = []
@@ -222,6 +225,15 @@ class MemoryAgent:
                         "content": result,
                     }
                 )
+                if self._shutting_down:
+                    # B1：记忆正在关闭——跳出 tool_call 循环（剩余 tool_calls 不再执行）
+                    break
+            if self._shutting_down:
+                # B1：优雅收尾——不进下一轮 LLM（避免撞下一轮 _submit sentinel 兜成 [error]
+                # 空转到 max_turns）。break 跳出 turn 循环，不进 for-else 的 forced 分支。
+                reply = "（记忆服务正在关闭，本次对话无法继续。）"
+                termination = "shutting_down"
+                break
         else:
             reply = "（达到最大轮次，未能给出最终答复。）"
             termination = "forced"
@@ -345,6 +357,11 @@ class MemoryAgent:
         handler, params = entry
         try:
             result = handler(self.memory, {**llm_args, **params})
+        except MemoryShuttingDown:
+            # B1：记忆正在关闭——置 flag、返回友好降级文本（非 [error]），chat loop 据此
+            # 优雅收尾（termination='shutting_down'），而非兜成 [error] 空转到 max_turns。
+            self._shutting_down = True
+            result = "（记忆服务正在关闭，本次工具调用未完成。）"
         except Exception as exc:  # 单次工具异常隔离，loop 不崩
             logger.warning("tool %s failed", name, exc_info=True)
             error = f"{type(exc).__name__}: {exc}"

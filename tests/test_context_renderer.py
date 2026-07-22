@@ -77,25 +77,6 @@ def test_decide_directions_uses_summary_for_neighbors():
     assert "neighbor content full" not in out
 
 
-def test_arbitrate_uses_summary_for_all_nodes():
-    a = Node(
-        id="1",
-        name="N1",
-        content="long A",
-        extensions={"summary": {"text": "short A"}},
-    )
-    b = Node(
-        id="2",
-        name="N2",
-        content="long B",
-        extensions={"summary": {"text": "short B"}},
-    )
-    r = ContextRenderer()
-    out = r.render([a, b], "arbitrate")
-    assert "short A" in out and "short B" in out
-    assert "long A" not in out and "long B" not in out
-
-
 def test_extension_contributes_only_for_synthesize_purpose():
     pm = _make_pm_with(FakeSourceExt())
     r = ContextRenderer(pm)

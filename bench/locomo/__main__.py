@@ -3,8 +3,7 @@
 用法：
   python -m bench.locomo download                     # 拉取数据（探测复用 copy）
   python -m bench.locomo build --sample-id conv-26    # 单对话建图（断点续跑）
-  python -m bench.locomo eval --track qa --sample-id conv-26   # QA 轨
-  python -m bench.locomo eval --track retrieval --max-conversations 1   # 检索轨
+  python -m bench.locomo eval --sample-id conv-26     # QA 评测（检索轨已退役）
   python -m bench.locomo analyze                       # 汇总 REPORT.md
   python -m bench.locomo all --max-conversations 1     # 全流程（试点）
 
@@ -53,8 +52,7 @@ def main() -> None:
     ap.add_argument("--max-questions", type=int, default=0,
                     help="每对话限量新评题数（0=全部；冒烟/控成本）")
     ap.add_argument("--workers", type=int, default=0,
-                    help="QA 轨并发数（0=取 config qa_workers 默认 1；检索轨恒串行）")
-    ap.add_argument("--track", choices=["qa", "retrieval", "both"], default="both")
+                    help="QA 轨并发数（0=取 config qa_workers 默认 1）")
     ap.add_argument("--build", choices=["auto", "skip", "force"], default="auto")
     ap.add_argument("--limit", type=int, default=0, help="build 冒烟：只建前 N 对话（0=全部）")
     ap.add_argument("--output", default=None)
@@ -99,7 +97,7 @@ def main() -> None:
             max_questions=args.max_questions,
             workers=(args.workers or int(cfg.get("qa_workers", 1))),
             context_budget=(int(cfg.get("qa_context_budget", 32000)) or None),
-            track=args.track, build=(args.build != "skip"),
+            build=(args.build != "skip"),
             force_build=(args.build == "force"),
         )
     if args.command in ("analyze", "all"):

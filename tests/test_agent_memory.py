@@ -13,9 +13,10 @@ import pytest
 from mcs.core.errors import LLMParseError
 from mcs.core.plugin import PluginType
 from mcs.core.token_budget import TokenBudget
-from mcs.entities.graph import CLASS_EVENT, REALITY_UNIVERSE, Edge, Node
+from mcs.entities.graph import CLASS_EVENT, CLASS_FACT, REALITY_UNIVERSE, Edge, Node
 from mcs.interfaces.llm import LLMInterface
 from mcs_agent.memory import (
+    MemoryShuttingDown,
     MemoryStore,
     _RECALL_HEADER,
     _event_timestamp,
@@ -28,23 +29,33 @@ from mcs_agent.memory import (
 # === Fake store / query_engine / mcs ===
 
 
-def _n(nid: str, name: str | None = None) -> Node:
+def _n(nid: str, name: str | None = None, universe: str | None = None) -> Node:
     """构造 Node（content 默认=name，测试不依赖 content 差异）。"""
     nm = name if name is not None else nid
-    return Node(id=nid, name=nm, content=nm)
+    kwargs: dict = dict(id=nid, name=nm, content=nm)
+    if universe is not None:
+        kwargs["universe"] = universe
+    return Node(**kwargs)
 
 
 def _ev(
-    nid: str, content: str, ts: str | None = None, name: str | None = None
+    nid: str,
+    content: str,
+    ts: str | None = None,
+    name: str | None = None,
+    universe: str | None = None,
 ) -> Node:
-    """构造事件节点（node_class=事件，可选 event_meta.timestamp）。"""
+    """构造事件节点（node_class=事件，可选 event_meta.timestamp / universe）。"""
     nm = name if name is not None else content
     ext: dict = {}
     if ts is not None:
         ext["event_meta"] = {"timestamp": ts}
-    return Node(
+    kwargs: dict = dict(
         id=nid, name=nm, content=content, node_class=CLASS_EVENT, extensions=ext
     )
+    if universe is not None:
+        kwargs["universe"] = universe
+    return Node(**kwargs)
 
 
 class FakeStore:
@@ -67,6 +78,10 @@ class FakeStore:
 
     def get_node(self, nid: str) -> Node | None:
         return self.nodes.get(nid)
+
+    def get_nodes(self, nids: list[str]) -> list[Node]:
+        # 批量取（与生产 StoreInterface.get_nodes 同语义：仅返存在的、不含 None）。
+        return [self.nodes[n] for n in nids if n in self.nodes]
 
     def get_out_hierarchy(self, nid: str, universe: str | None = None) -> list[Node]:
         self.hierarchy_calls.append((nid, universe))
@@ -109,14 +124,16 @@ class FakeStore:
                 out.append(e)
         return out[:limit] if limit else out
 
-    def get_related_events(self, node_id: str, limit: int | None = None) -> list[Node]:
-        """复刻 StoreInterface 口径：时间倒排（timestamp,id）+ limit。"""
+    def get_related_events(self, node_id: str, universe: str | None = None, limit: int | None = None) -> list[Node]:
+        """复刻 StoreInterface 口径：时间倒排（timestamp,id）+ 可选 universe 过滤 + limit。"""
         self.related_events_calls.append((node_id, limit))
         evs = sorted(
             self.related_events.get(node_id, []),
             key=lambda n: (_event_timestamp(n), n.id),
             reverse=True,
         )
+        if universe is not None:
+            evs = [n for n in evs if n.universe == universe]
         if limit is not None:
             evs = evs[:limit]
         return evs
@@ -210,11 +227,14 @@ class FakeMCS:
         # associate（neighbors）MUST NOT 触发查询管线——此字段作回归守卫：若有人
         # 重新给 associate 接上 mcs.query，下面的 query 桩会被调用并置非 None。
         self.last_query_existing_context: list | None = None
+        self.last_ingest_input = None  # A1：最后一次 ingest 入参（str 或 IngestInput）
+        self.shutdown_calls = 0  # B1：mcs.shutdown 调用计数（幂等断言）
 
     def ingest(self, text_or_input) -> _FakeWriteCtx:
         """支持 str 和 IngestInput 两种入参，IngestInput 时设置 event_node 含 timestamp。"""
         from mcs.entities.decisions import IngestInput
 
+        self.last_ingest_input = text_or_input  # A1：记录入参供 work_id 透传断言
         ctx = _FakeWriteCtx()
         if isinstance(text_or_input, IngestInput):
             ts = text_or_input.timestamp or ""
@@ -232,7 +252,7 @@ class FakeMCS:
         return f"raw-subgraph-for:{text}"
 
     def shutdown(self) -> None:
-        pass
+        self.shutdown_calls += 1
 
 
 def _make(store: FakeStore, qe: FakeQueryEngine) -> tuple[MemoryStore, FakeMCS]:
@@ -685,27 +705,26 @@ def test_learn_unchanged_after_ingest_structured():
 # === locate_seeds 委托等价性（QueryEngine 公共薄方法不改 query 行为） ===
 
 
-def test_locate_seeds_delegates_preprocess_then_locate():
-    """locate_seeds 把 query 经 _run_preprocess 后传给 _locate_seeds（与 query() 内一致）。"""
+def test_locate_seeds_passes_query_directly_to_locate():
+    """locate_seeds 直传 query 给 _locate_seeds（_run_preprocess 死壳已随退役删除，C3）。"""
+    import inspect
     from mcs.core.query_engine import QueryEngine
+
+    # _run_preprocess 已从 QueryEngine 删除（C3：QUERY_PREPROCESS 随读查询编排退役）
+    assert "_run_preprocess" not in inspect.getsource(QueryEngine)
 
     qe = QueryEngine.__new__(QueryEngine)  # 绕过 __init__，避免组装真依赖
     qe.system_prompt = ""
     calls: dict[str, str] = {}
 
-    def fake_preprocess(text: str, ctx):
-        calls["preprocess"] = text
-        return text + "_proc"
-
-    def fake_locate(processed: str, ctx):
-        calls["locate"] = processed
+    def fake_locate(query: str, ctx):
+        calls["locate"] = query
         return [_n("x")]
 
-    qe._run_preprocess = fake_preprocess  # type: ignore[method-assign]
     qe._locate_seeds = fake_locate  # type: ignore[method-assign]
 
     result = qe.locate_seeds("hello")
-    assert calls == {"preprocess": "hello", "locate": "hello_proc"}
+    assert calls == {"locate": "hello"}  # 直传，未经 preprocess 改写
     assert [n.id for n in result] == ["x"]
 
 
@@ -1215,3 +1234,249 @@ def test_get_cross_universe_edges_no_bridge_hint():
         assert "无跨 universe 桥" in out
     finally:
         ms.shutdown()
+
+
+# === migration-audit-fixes · A1：learn / ingest_structured 的 work_id 透传 ===
+
+
+def test_learn_default_str_path_no_work_id():
+    """learn(text) 默认走 str 归一化（无 work_id）——回归基线。"""
+    ms, mcs = _make(FakeStore(), FakeQueryEngine())
+    try:
+        ms.learn("一段记忆")
+        assert mcs.last_ingest_input == "一段记忆"  # str，非 IngestInput
+    finally:
+        ms.shutdown()
+
+
+def test_learn_work_id_passes_ingest_input():
+    """learn(text, work_id) → IngestInput(content, work_id) 透传（触发 ③b 作品事件抽取）。"""
+    from mcs.entities.decisions import IngestInput
+
+    ms, mcs = _make(FakeStore(), FakeQueryEngine())
+    try:
+        ms.learn("桃园三结义", work_id="三国演义")
+        inp = mcs.last_ingest_input
+        assert isinstance(inp, IngestInput)
+        assert inp.content == "桃园三结义"
+        assert inp.work_id == "三国演义"
+    finally:
+        ms.shutdown()
+
+
+def test_learn_work_id_none_or_empty_equivalent_to_default():
+    """work_id=None / '' 等价默认（走 str 归一化、不进作品 universe）。"""
+    ms, mcs = _make(FakeStore(), FakeQueryEngine())
+    try:
+        ms.learn("a", work_id=None)
+        assert mcs.last_ingest_input == "a"
+        ms.learn("b", work_id="")
+        assert mcs.last_ingest_input == "b"
+    finally:
+        ms.shutdown()
+
+
+def test_ingest_structured_work_id_passthrough():
+    """ingest_structured(content, timestamp, work_id) → IngestInput 三字段透传。"""
+    from mcs.entities.decisions import IngestInput
+
+    ms, mcs = _make(FakeStore(), FakeQueryEngine())
+    try:
+        ms.ingest_structured("c", "2026-06-27T14:30:00", work_id="三国演义")
+        inp = mcs.last_ingest_input
+        assert isinstance(inp, IngestInput)
+        assert inp.content == "c"
+        assert inp.timestamp == "2026-06-27T14:30:00"
+        assert inp.work_id == "三国演义"
+    finally:
+        ms.shutdown()
+
+
+def test_ingest_structured_default_work_id_none():
+    """ingest_structured(content, timestamp) 默认 work_id=None（向后兼容）。"""
+    from mcs.entities.decisions import IngestInput
+
+    ms, mcs = _make(FakeStore(), FakeQueryEngine())
+    try:
+        ms.ingest_structured("c", "2026-06-27T14:30:00")
+        assert isinstance(mcs.last_ingest_input, IngestInput)
+        assert mcs.last_ingest_input.work_id is None
+    finally:
+        ms.shutdown()
+
+
+# === migration-audit-fixes · A2：arbitrate 按 universe 派生 + 载重过滤 ===
+
+
+def _fact(nid: str, name: str, universe: str = REALITY_UNIVERSE) -> Node:
+    """构造事实节点（node_class=事实，universe 归属）。"""
+    return Node(id=nid, name=name, content=name, node_class=CLASS_FACT, universe=universe)
+
+
+def test_arbitrate_filters_cross_universe_events():
+    """arbitrate 反查事件限同 universe：跨 universe 事件不漏入 material（载重命根）。"""
+    store = FakeStore()
+    store.add_node(_fact("f1", "曹操是丞相", universe="三国演义"))
+    e_same = _ev("e1", "曹操任丞相", ts="200 年", universe="三国演义")
+    e_cross = _ev("e2", "悟空护送唐僧", ts="629 年", universe="西游记")
+    store.add_node(e_same)
+    store.add_node(e_cross)
+    store.related_events["f1"] = [e_same, e_cross]
+    llm = FakeLLMPlugin({"adjudicate": '{"adopt": ["f1"], "reason": "三国志载"}'})
+    ms, _ = _make_with_llm(store, FakeQueryEngine(), llm)
+    try:
+        ms.arbitrate(["f1"], "谁说的", events_per_fact=3)
+        material = llm.calls[0][2]["material"]
+        assert "曹操任丞相" in material  # 同 universe 事件入 material
+        assert "悟空护送唐僧" not in material  # 跨 universe 事件被过滤
+    finally:
+        ms.shutdown()
+
+
+def test_arbitrate_cross_universe_facts_warns_uses_first(caplog):
+    """跨 universe 事实（手搓 node_ids）→ warning + 按首事实 universe 反查（不拒裁决）。"""
+    store = FakeStore()
+    store.add_node(_fact("f1", "曹操是丞相", universe="三国演义"))
+    store.add_node(_fact("f2", "悟空是猴", universe="西游记"))
+    e1 = _ev("e1", "三国志载", ts="200 年", universe="三国演义")
+    store.add_node(e1)
+    store.related_events["f1"] = [e1]
+    store.related_events["f2"] = []
+    llm = FakeLLMPlugin({"adjudicate": '{"adopt": ["f1"], "reason": "x"}'})
+    ms, _ = _make_with_llm(store, FakeQueryEngine(), llm)
+    try:
+        with caplog.at_level("WARNING", logger="mcs_agent.memory"):
+            ms.arbitrate(["f1", "f2"], "q", events_per_fact=3)
+        assert any(
+            "三国演义" in r.message and "西游记" in r.message for r in caplog.records
+        )
+        material = llm.calls[0][2]["material"]
+        assert "三国志载" in material  # 按首事实 universe 反查到 e1
+    finally:
+        ms.shutdown()
+
+
+# === migration-audit-fixes · A3：recall 按 universe 过滤（每 universe 独立时间轴）===
+
+
+def test_recall_default_only_reality():
+    """recall(5) 默认只返现实 universe（作品事件不混入现实时间轴）。"""
+    store = FakeStore()
+    store.add_node(_ev("r1", "买了咖啡", ts="2026-06-25T10:00:00+00:00"))
+    store.add_node(_ev("w1", "桃园三结义", ts="200 年", universe="三国演义"))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        out = ms.recall(5)
+        assert "[id:r1]" in out
+        assert "[id:w1]" not in out
+    finally:
+        ms.shutdown()
+
+
+def test_recall_explicit_work_universe():
+    """recall(5, universe='三国演义') 只返该作品事件（现实事件不混入）。"""
+    store = FakeStore()
+    store.add_node(_ev("r1", "买了咖啡", ts="2026-06-25T10:00:00+00:00"))
+    store.add_node(_ev("w1", "桃园三结义", ts="200 年", universe="三国演义"))
+    store.add_node(_ev("w2", "赤壁之战", ts="208 年", universe="三国演义"))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        out = ms.recall(5, universe="三国演义")
+        assert "[id:w1]" in out and "[id:w2]" in out
+        assert "[id:r1]" not in out
+    finally:
+        ms.shutdown()
+
+
+def test_recall_unknown_universe_empty():
+    """recall(5, universe='不存在') 无事件 → 空提示（不跨 universe 混排）。"""
+    store = FakeStore()
+    store.add_node(_ev("r1", "现实事件", ts="2026-06-25T10:00:00+00:00"))
+    ms, _ = _make(store, FakeQueryEngine())
+    try:
+        out = ms.recall(5, universe="不存在")
+        assert "暂无事件" in out
+        assert "[id:r1]" not in out
+    finally:
+        ms.shutdown()
+
+
+# === migration-audit-fixes · A4：_render_nodes 的 universe 标签 ===
+
+
+def test_render_nodes_reality_no_universe_tag():
+    """现实节点不标 [universe:...]（避免单 universe 仓库噪音）。"""
+    out = _render_nodes([_n("c1", "猫")], "种子")
+    assert "[id:c1]" in out
+    assert "[universe:" not in out
+
+
+def test_render_nodes_non_reality_has_universe_tag():
+    """非现实节点在 id 后、name 前标 [universe:xxx]。"""
+    out = _render_nodes([_n("c1", "曹操", universe="三国演义")], "种子")
+    assert "[id:c1] [universe:三国演义] 曹操" in out
+
+
+def test_render_nodes_mixed_list():
+    """mixed list：现实不标、非现实标。"""
+    nodes = [_n("r1", "现实"), _n("w1", "演义", universe="三国演义")]
+    out = _render_nodes(nodes, "种子")
+    assert "[id:r1] 现实" in out
+    assert "[id:w1] [universe:三国演义] 演义" in out
+    r1_line = [ln for ln in out.splitlines() if "[id:r1]" in ln][0]
+    assert "[universe:" not in r1_line
+
+
+def test_generalize_non_reality_universe_tag_counts_in_estimate():
+    """A4 铁律一：非现实节点的 [universe:xxx] 标签计入 material estimate，超 T 触发截断。
+
+    锁死「估算口径 == 渲染口径」——标签进 material 文本，tb.estimate(material) 也含它；
+    防 estimate 走不含标签的旁路致 material 实际超 T 未触发。
+    """
+    store = FakeStore()
+    store.add_node(_n("w1", "曹操", universe="三国演义"))
+    store.add_node(_n("w2", "刘备", universe="三国演义"))
+    llm = FakeLLMPlugin({"generalize": "三国人物"})
+    qe = FakeQueryEngine(token_budget_T=200)  # 小 T 逼出截断
+    ms, _ = _make_with_llm(store, qe, llm)
+    try:
+        ms.generalize(["w1", "w2"], focus=None)
+        material = llm.calls[0][2]["material"]
+        assert "[universe:三国演义]" in material  # 标签在 material
+        # 铁律一：喂 LLM 的 material（含 universe 标签）estimate ≤ T
+        assert qe.token_budget.estimate(material) <= qe.token_budget.T
+    finally:
+        ms.shutdown()
+
+
+# === migration-audit-fixes · B1：shutdown 竞态（sentinel + 幂等）===
+
+
+def test_shutdown_then_primitive_raises_shutting_down():
+    """shutdown 后调任意原语抛 MemoryShuttingDown（优雅降级信号，非 RuntimeError）。"""
+    ms, _ = _make(FakeStore(), FakeQueryEngine())
+    ms.shutdown()
+    with pytest.raises(MemoryShuttingDown):
+        ms.learn("x")
+    with pytest.raises(MemoryShuttingDown):
+        ms.recall(5)
+
+
+def test_shutdown_idempotent_mcs_shutdown_once():
+    """连续两次 shutdown 幂等：mcs.shutdown 仅调 1 次（第二次 executor 已关、submit 失败被忽略）。"""
+    ms, mcs = _make(FakeStore(), FakeQueryEngine())
+    ms.shutdown()
+    ms.shutdown()  # 第二次不抛
+    assert mcs.shutdown_calls == 1
+
+
+# === migration-audit-fixes · F1：associate 签名锁（mode 已退役）===
+
+
+def test_associate_signature_has_limit_no_mode():
+    """F1：MemoryStore.associate 签名含 limit、无 mode（mode 随退役删除）——机器化锁对齐。"""
+    import inspect
+
+    sig = inspect.signature(MemoryStore.associate)
+    assert "limit" in sig.parameters
+    assert "mode" not in sig.parameters  # mode="mcs" 框架 BFS 已退役

@@ -24,9 +24,6 @@ _SUMMARY_PURPOSES = frozenset(
     {"decide_directions", "decide_hub", "navigate_hub", "extract_concepts"}
 )
 
-# 对所有节点（包括焦点）使用摘要的目的。
-_ALL_SUMMARY_PURPOSES = frozenset({"arbitrate"})
-
 
 class ContextRenderer:
     """将节点列表渲染为 LLM 可读文本，按目的键控。
@@ -114,9 +111,7 @@ class ContextRenderer:
         lines.append(f"- {node.name} (id={node.id})")
 
         # body 选择：摘要类 purpose 对非焦点节点降级为 summary，其余用完整内容。
-        if purpose in _ALL_SUMMARY_PURPOSES:
-            body = ContextRenderer.get_summary(node)
-        elif purpose in _SUMMARY_PURPOSES and not is_focus:
+        if purpose in _SUMMARY_PURPOSES and not is_focus:
             body = ContextRenderer.get_summary(node)
         else:
             body = node.content or ContextRenderer.get_summary(node)

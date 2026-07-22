@@ -171,11 +171,11 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 
 `MemoryAgent` SHALL 经 `ToolSpec` 注册表（`BUILTIN_TOOLS`）向 LLM 暴露**可配置的**导航 / 时间线视图 / 语义判断 / 概念重组 / 跨 universe 工具集，**默认 12 个**（learn / search / associate / reason / recall / timeline / generalize / arbitrate / **split** / **merge** / get_cross_universe_edges / **link_cross_universe**），分发到 `MemoryStore` 对应原语；工具集经 `ToolsetConfig` 可启用 / 禁用子集、覆盖参数：
 
-- `learn(text)` → `memory.learn`
+- `learn(text, work_id?)` → `memory.learn`（`work_id` 非空时本次写入归该作品 universe、触发阶段 ③b 作品叙事事件抽取；省略 / None = 现实 universe，默认行为不变）
 - `search(query, mode)` → `memory.search`
-- `associate(seed_id, mode)` → `memory.associate`
+- `associate(seed_id, limit?)` → `memory.associate`（一跳邻居纯图读，`limit` 截断默认 60；原 `mode="mcs"` 已随读查询管线退役删除）
 - `reason(source_id, target_id)` → `memory.find_path`
-- `recall(limit)` → `memory.recall`
+- `recall(limit, universe?)` → `memory.recall`（`universe` 默认 `__reality__`，限该 universe 事件近期倒排；查作品世界时传作品名，与 timeline 同口径——跨 universe 时间不可比）
 - `timeline(universe, limit?)` → `memory.timeline`（叙事时间线：某 universe 事件层按时间**升序**组装的只读虚拟视图、不落图）
 - `generalize(node_ids, focus?)` → `memory.generalize`（归纳概括：LLM 概括若干节点的公共上位概念）
 - `arbitrate(node_ids, question)` → `memory.arbitrate`（互斥裁决：反查背书事件、LLM 裁决采信方 + 理由）
@@ -215,6 +215,18 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 - **WHEN** `ToolsetConfig.params` 为某工具指定参数（如 `{"reason": {"max_hops": 8}}` 或 `{"arbitrate": {"events_per_fact": 3}}`，key = 工具名）
 - **THEN** dispatch 执行该工具时 MUST 应用覆盖后的参数（而非内置默认值）
 - **AND** `params` 与 LLM 入参同名时 MUST 以 `params` 为准（合并口径 `handler(memory, {**llm_args, **params})`）
+
+#### Scenario: learn 工具的 work_id 透传
+
+- **WHEN** LLM 调用 `learn` 工具且 `arguments` 含 `work_id`（如作品文本摄入）
+- **THEN** dispatch MUST 经 `memory.learn(text, work_id=work_id)` 透传（非空 → 触发 ③b 作品叙事事件抽取；省略 → 现实 universe 默认行为）
+- **AND** `BUILTIN_TOOLS["learn"]` schema 的 `parameters.properties` MUST 含可选 `work_id` 字段（`required` 仍仅 `["text"]`）
+
+#### Scenario: recall 工具的 universe 透传
+
+- **WHEN** LLM 调用 `recall` 工具且 `arguments` 含 `universe`
+- **THEN** dispatch MUST 经 `memory.recall(limit, universe)` 透传；省略 `universe` 时默认 `__reality__`
+- **AND** `BUILTIN_TOOLS["recall"]` schema 的 `parameters.properties` MUST 含可选 `universe` 字段（`required` 为 `[]`）
 
 #### Scenario: 未知工具
 
@@ -314,23 +326,42 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 
 ### Requirement: 工具返回携带节点 id
 
-`search` / `associate` / `find_path` 的返回文本 SHALL 包含节点 id，使 LLM 能在后续工具调用中引用具体节点。
+`search` / `associate` / `find_path` 的返回文本 SHALL 包含节点 id，使 LLM 能在后续工具调用中引用具体节点。多 universe 库下，非现实 universe（`universe != __reality__`）节点 SHALL 在 id 后、name 前显式标注 `[universe:xxx]`，使 LLM 能判断 `timeline` 取哪个世界、是否需 `link_cross_universe`（两端 universe 必须不同护栏）；现实 universe（`__reality__`）节点 MUST NOT 标注（避免单 universe 仓库噪音）。
 
 #### Scenario: 返回含 id
 
 - **WHEN** search / associate / find_path 返回节点
 - **THEN** 文本 MUST 含可被 LLM 提取的节点 id（如 `[id:...]`）
 
+#### Scenario: 非现实 universe 节点标注归属
+
+- **WHEN** 返回的节点列表含 `universe != __reality__` 的节点
+- **THEN** 该节点渲染行 MUST 在 `[id:...]` 后、name 前含 `[universe:xxx]` 标签
+- **AND** `universe == __reality__` 的节点渲染行 MUST NOT 含 `[universe:__reality__]`（避免噪音）
+
 ---
 
 ### Requirement: learn 原语（写入）
 
-`MemoryStore.learn(text)` SHALL 封装 MCS 写管线 `ingest`，返回写入状态摘要。
+`MemoryStore.learn(text, work_id=None)` SHALL 封装 MCS 写管线 `ingest`，返回写入状态摘要。`work_id` 非空时 SHALL 走 `mcs.ingest(IngestInput(content=text, work_id=work_id))`（经 universe 注册表规范化 target_universe、触发阶段 ③b `extract_work_events` 抽取作品纪年叙事事件；摄入行为事件 universe 仍固定 `__reality__`——载重命根）；`work_id` 省略 / None / 空串时 SHALL 走原 `mcs.ingest(text)`（str 归一化 = 现实 universe、时间 now、不触发 ③b，与现状逐字一致）。
 
 #### Scenario: learn 即 ingest
 
 - **WHEN** 调用 `learn(text)`
 - **THEN** MUST 在 worker 线程执行 `mcs.ingest(text)` 并返回状态摘要
+
+#### Scenario: learn 透传 work_id 触发 ③b
+
+- **WHEN** 调用 `learn(text, work_id="三国演义")`
+- **THEN** MUST 在 worker 线程执行 `mcs.ingest(IngestInput(content=text, work_id="三国演义"))`
+- **AND** `ctx.target_universe` MUST 经 universe 注册表规范化为 `"三国演义"`（命中复用 / 未命中新建 universe 元节点）
+- **AND** 阶段 ③b `extract_work_events` MUST 被触发（LLM 抽取带纪年的作品叙事事件 → `WorkEventDraft` → 作品 universe 事件节点）
+- **AND** 摄入行为事件（阶段 ⓪）的 universe MUST 仍为 `__reality__`（载重命根：摄入行为固定现实）
+
+#### Scenario: work_id 省略 / None / 空串等价默认
+
+- **WHEN** 调用 `learn(text)` / `learn(text, work_id=None)` / `learn(text, work_id="")`
+- **THEN** 行为 MUST 逐字一致（走 `mcs.ingest(text)`、`target_universe=__reality__`、不触发 ③b）
 
 ---
 
@@ -405,13 +436,28 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 
 ### Requirement: recall 原语（热点回忆）
 
-`MemoryStore.recall(limit)` SHALL 返回最近发生的事件：扫全图 `node_class=事件` 节点，按 `extensions.event_meta.timestamp` 时间倒排（无 timestamp 者排末尾、`node.id` 作次级键保确定性），**全文渲染**为含节点 id 的 LLM 可读文本（name==content 只写一份、每条附 timestamp）；图中无事件时返回空提示。排序口径为**纯近期时间线**——事件节点无专门「热度」字段，不掺热度加权。截断为**条数 `limit` 与 token 上界 T 双约束**：逐条判定，达 `limit` 条、或「纳入该条后的完整渲染文本」超 `token_budget.T` 即停（先到先停；对完整文本**整体估算**、含 header 与行间换行符，渲染口径 == 估算口径，禁止分段累加单条 estimate）；唯一例外是**最近 1 条无条件全文返回**（即使其单条就超 T）。recall 为只读原语、不经 LLM、不进核心活跃视图、不触发写 / 守门 / 裂变。
+`MemoryStore.recall(limit, universe=REALITY_UNIVERSE)` SHALL 返回**指定 universe 内**最近发生的事件：扫该 universe 的 `node_class=事件` 节点（`n.universe == universe`），按 `extensions.event_meta.timestamp` 时间倒排（无 timestamp 者排末尾、`node.id` 作次级键保确定性），**全文渲染**为含节点 id 的 LLM 可读文本（name==content 只写一份、每条附 timestamp；非现实 universe 时行含 `[universe:xxx]` 标签）；该 universe 无事件时返回空提示。排序口径为**纯近期时间线**——事件节点无专门「热度」字段，不掺热度加权。截断为**条数 `limit` 与 token 上界 T 双约束**：逐条判定，达 `limit` 条、或「纳入该条后的完整渲染文本」超 `token_budget.T` 即停（先到先停；对完整文本**整体估算**、含 header 与行间换行符，渲染口径 == 估算口径，禁止分段累加单条 estimate）；唯一例外是**最近 1 条无条件全文返回**（即使其单条就超 T）。recall 为只读原语、不经 LLM、不进核心活跃视图、不触发写 / 守门 / 裂变。
+
+> 单 universe 独立时间轴：默认 `__reality__`（现实近期倒排，ISO timestamp）；查作品世界时调用方传 `universe=作品名`（作品纪年 `timestamp_sort_value`）。跨 universe 时间不可比（现实 epoch≈1.78e9 与作品纪年 200 混排无意义）——recall MUST 严格限单 universe。
 
 #### Scenario: 时间倒排返回最近事件
 
 - **WHEN** 图中存在多个带 `event_meta.timestamp` 的事件节点，调用 `recall(limit)`
 - **THEN** MUST 按 `timestamp` 倒序（近期在前）返回，至多 `limit` 条
 - **AND** 渲染文本 MUST 含每条事件的节点 id（如 `[id:...]`），可被后续工具引用
+
+#### Scenario: 限 universe 过滤（每 universe 独立时间轴）
+
+- **WHEN** 图中同时存在现实 universe（`__reality__`，ISO timestamp）与作品 universe（数字年纪年 timestamp）的事件节点
+- **AND** 调用 `recall(limit)` 不传 `universe` 或传 `universe=__reality__`
+- **THEN** MUST 仅返回 `universe == __reality__` 的事件
+- **AND** MUST NOT 含作品 universe 事件（防 ISO epoch 与数字年纪年混排）
+
+#### Scenario: 显式 universe 取作品世界
+
+- **WHEN** 调用 `recall(limit, universe="三国演义")`
+- **THEN** MUST 仅返回 `universe == "三国演义"` 的事件
+- **AND** MUST NOT 含现实或其他作品 universe 事件
 
 #### Scenario: 无 timestamp 排末尾
 
@@ -442,14 +488,14 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 
 #### Scenario: 无事件返回空提示
 
-- **WHEN** 图中无任何 `node_class=事件` 节点
-- **THEN** MUST 返回空提示文本，MUST NOT 伪造事件
+- **WHEN** 该 universe 无任何 `node_class=事件` 节点
+- **THEN** MUST 返回空提示文本，MUST NOT 伪造事件、MUST NOT 跨 universe 拉事件凑数
 
 #### Scenario: 经 worker 线程只读
 
 - **WHEN** 调用 `recall`
 - **THEN** MUST 经 `ThreadPoolExecutor(max_workers=1)` 单 worker 线程执行
-- **AND** MUST 只读 `store.get_all_nodes()`，MUST NOT 触发写 / 守门 / 裂变
+- **AND** MUST 只读 `store.get_nodes_by_class(CLASS_EVENT)` 后按 `n.universe == universe` 过滤，MUST NOT 触发写 / 守门 / 裂变
 
 ---
 
@@ -637,7 +683,7 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 
 ### Requirement: arbitrate 原语（互斥裁决）
 
-`MemoryStore.arbitrate(node_ids, question)` SHALL 经单 worker 线程对给定**互斥事实**做只读裁决：①取 `node_ids` 对应事实节点 → ②对每个事实经 `store.get_related_events(fact_id, limit=K)` **定向反查**其背书事件（时间倒排、绕载重规则、取最近 K 条、K 可经 `ToolsetConfig.params["arbitrate"]["events_per_fact"]` 覆盖）→ ③**自建装配**「各事实全文 + 其背书事件行」material（事件复用**行级** `_render_event_line` 口径、带 timestamp；MUST NOT 套整函数 `_render_events`——其 recall 专属 header 对每事实重复将语义错位）→ ④**素材 T 有界截断**（守门）→ ⑤经 `adjudicate` purpose 调 MCS 的 LLM 插件裁决**采信方 + 理由**（material 经 `free_args["material"]` 显式传）→ ⑥过滤幻觉 id（只保留传入事实 id）→ 返回「采信 [id:...] + 理由」文本。`arbitrate` 为**只读**原语：不改图、不写裁决结果、不触发写 / 守门 / 裂变。
+`MemoryStore.arbitrate(node_ids, question)` SHALL 经单 worker 线程对给定**互斥事实**做只读裁决：①取 `node_ids` 对应事实节点 → ②对每个事实经 `store.get_related_events(fact_id, universe=U, limit=K)` **定向反查**其背书事件（`U` 取互斥事实同 universe——invariant，派生自首事实 `facts[0].universe`；任一事实跨 universe 发 warning 仍按首事实 universe 反查；时间倒排、绕载重规则、取最近 K 条、K 可经 `ToolsetConfig.params["arbitrate"]["events_per_fact"]` 覆盖）→ ③**自建装配**「各事实全文 + 其背书事件行」material（事件复用**行级** `_render_event_line` 口径、带 timestamp；MUST NOT 套整函数 `_render_events`——其 recall 专属 header 对每事实重复将语义错位）→ ④**素材 T 有界截断**（守门）→ ⑤经 `adjudicate` purpose 调 MCS 的 LLM 插件裁决**采信方 + 理由**（material 经 `free_args["material"]` 显式传）→ ⑥过滤幻觉 id（只保留传入事实 id）→ 返回「采信 [id:...] + 理由」文本。`arbitrate` 为**只读**原语：不改图、不写裁决结果、不触发写 / 守门 / 裂变。
 
 #### Scenario: 裁决互斥事实返回采纳方与理由
 
@@ -645,11 +691,17 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 - **THEN** MUST 反查各事实背书事件、经 `adjudicate` purpose 调 LLM，返回「采信哪个事实 + 理由」文本
 - **AND** 返回文本 MUST 含被采信事实的节点 id（如 `[id:...]`）
 
-#### Scenario: 反查背书事件
+#### Scenario: 反查背书事件限同 universe
 
 - **WHEN** 裁决某互斥事实
-- **THEN** MUST 经 `store.get_related_events(fact_id, limit=K)` 取该事实的背书事件（时间倒排、最近 K 条）
+- **THEN** MUST 经 `store.get_related_events(fact_id, universe=U, limit=K)` 取该事实的背书事件（`U = facts[0].universe`、时间倒排、最近 K 条）
+- **AND** 反查事件 MUST 限同 universe（MUST NOT 含跨 universe 事件进裁决 material——保载重命根 / 单 universe 时间轴封闭）
 - **AND** 事件素材 MUST 含 timestamp、复用行级 `_render_event_line` 渲染口径（MUST NOT 套整函数 `_render_events`，见 requirement 正文 ③）
+
+#### Scenario: 跨 universe 事实 warning 仍按首事实反查
+
+- **WHEN** 传入的事实 `node_ids` 中存在 `universe != facts[0].universe` 的成员（互斥前提已破）
+- **THEN** MUST 发 warning、仍按首事实 universe 反查事件（MUST NOT 抛异常、MUST NOT 拒整个裁决）
 
 #### Scenario: 无背书事件仍可裁决
 
@@ -795,9 +847,9 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 
 ### Requirement: MemoryStore 结构化 ingest 原语
 
-`MemoryStore` SHALL 提供 `ingest_structured(content: str, timestamp: str) -> str`：在单 worker 线程（`_submit`）内执行 `wctx = self._mcs.ingest(IngestInput(content=content, timestamp=timestamp))`，返回 `wctx.event_node.id`。该原语用于整合管线把精炼条目逐条入图，事件时间忠实落 `event_meta.timestamp`。调用方线程 MUST NOT 直接触碰 MCS。
+`MemoryStore` SHALL 提供 `ingest_structured(content: str, timestamp: str, work_id: str | None = None) -> str`：在单 worker 线程（`_submit`）内执行 `wctx = self._mcs.ingest(IngestInput(content=content, timestamp=timestamp, work_id=work_id))`，返回 `wctx.event_node.id`。该原语用于整合管线把精炼条目逐条入图，事件时间忠实落 `event_meta.timestamp`；`work_id` 非空时归该作品 universe、触发 ③b。调用方线程 MUST NOT 直接触碰 MCS。
 
-> 偏离历史：旧 `personal-memory-system` 设计靠子类化 `MemStore(MemoryStore)` 规避改 `mcs_agent`；现架构"走 agent"，直接在 `MemoryStore` 上新增此原语，无需子类。原有 `learn(text: str)`（只收 str、时间盖 now）保留不变。
+> 偏离历史：旧 `personal-memory-system` 设计靠子类化 `MemStore(MemoryStore)` 规避改 `mcs_agent`；现架构"走 agent"，直接在 `MemoryStore` 上新增此原语，无需子类。原有 `learn(text, work_id=None)`（只收 str、时间盖 now）保留。
 
 #### Scenario: 结构化 ingest 落事件时间
 
@@ -806,15 +858,16 @@ id 台账（visited 节点）SHALL 留在窗口外由框架维护，窗口内仅
 - **AND** 返回的事件节点 `event_meta.timestamp` MUST 为 `2026-06-27T14:30:00`（非调用时刻）
 - **AND** MUST 返回该事件节点 id
 
+#### Scenario: 结构化 ingest 透传 work_id
+
+- **WHEN** 调用 `ingest_structured(content, timestamp, work_id="三国演义")`
+- **THEN** MUST 在 worker 线程内 `mcs.ingest(IngestInput(content=..., timestamp=..., work_id="三国演义"))`
+- **AND** `ctx.target_universe` MUST 经 universe 注册表规范化为 `"三国演义"`、阶段 ③b MUST 被触发
+
 #### Scenario: 经单 worker 线程
 
-- **WHEN** 与其他 MemoryStore 原语（learn / recall 等）并发调用 `ingest_structured`
-- **THEN** MUST 经同一 `ThreadPoolExecutor(max_workers=1)` 串行执行
-
-#### Scenario: 不改 learn 既有契约
-
-- **WHEN** 调用既有 `learn(text)`
-- **THEN** 行为 MUST 不变（内部 `mcs.ingest(text)`、时间取 now）
+- **WHEN** 调用 `ingest_structured`
+- **THEN** MUST 经 `_submit` 排入单 worker 线程执行（调用方线程 MUST NOT 直接触碰 MCS）
 
 ### Requirement: 回答侧语言跟随（主动对齐）
 

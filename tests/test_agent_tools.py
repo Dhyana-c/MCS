@@ -90,21 +90,23 @@ class _Memory:
         self.find_path_calls: list[tuple[str, str, int]] = []
         self.generalize_calls: list[tuple[list, str | None]] = []
         self.arbitrate_calls: list[tuple[list, str, int]] = []
+        self.learn_calls: list[tuple[str, str | None]] = []  # A1：(text, work_id)
 
     def find_path(self, s: str, t: str, max_hops: int = 6) -> str:
         self.find_path_calls.append((s, t, max_hops))
         return f"path {s}->{t} hops={max_hops}"
 
-    def learn(self, t: str) -> str:
+    def learn(self, t: str, work_id: str | None = None) -> str:
+        self.learn_calls.append((t, work_id))
         return "ok"
 
     def search(self, q: str, mode: str = "keyword") -> str:
         return "ok"
 
-    def associate(self, s: str, mode: str = "mcs") -> str:
+    def associate(self, s: str, limit: int = 60) -> str:
         return "ok"
 
-    def recall(self, limit: int = 5) -> str:
+    def recall(self, limit: int = 5, universe: str | None = None) -> str:
         return "ok"
 
     def generalize(self, node_ids: list, focus: str | None = None) -> str:
@@ -236,3 +238,18 @@ def test_dispatch_generalize_failure_isolated():
 
     agent = MemoryAgent(mem, llm, max_turns=4)
     assert agent.chat("x") == "ok"
+
+
+# === migration-audit-fixes · A1：_learn handler work_id 透传 ===
+
+
+def test_learn_handler_passes_work_id():
+    """A1：_learn handler 把 args.work_id 透传给 memory.learn（触发 ③b 作品事件抽取）。"""
+    from mcs_agent.tools import _learn
+
+    mem = _Memory()
+    _learn(mem, {"text": "作品文本", "work_id": "三国演义"})
+    assert mem.learn_calls == [("作品文本", "三国演义")]
+    # 无 work_id → None（走现实摄入）
+    _learn(mem, {"text": "现实文本"})
+    assert mem.learn_calls[-1] == ("现实文本", None)

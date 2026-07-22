@@ -36,14 +36,14 @@ __all__ = [
 
 
 def _learn(memory: Any, args: dict) -> str:
-    return memory.learn(args.get("text", ""))
+    return memory.learn(args.get("text", ""), args.get("work_id"))
 
 
 def _search(memory: Any, args: dict) -> str:
     return memory.search(
         args.get("query", ""),
         args.get("mode", "keyword"),
-        args.get("universe", REALITY_UNIVERSE),
+        args.get("universe") or REALITY_UNIVERSE,  # None/空串（LLM 传 null/""）归一现实
     )
 
 
@@ -65,12 +65,12 @@ def _reason(memory: Any, args: dict) -> str:
 
 
 def _recall(memory: Any, args: dict) -> str:
-    return memory.recall(args.get("limit", 5))
+    return memory.recall(args.get("limit", 5), args.get("universe") or REALITY_UNIVERSE)
 
 
 def _timeline(memory: Any, args: dict) -> str:
     return memory.timeline(
-        args.get("universe", REALITY_UNIVERSE),
+        args.get("universe") or REALITY_UNIVERSE,
         args.get("limit", 0),
     )
 
@@ -143,7 +143,14 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
                         "text": {
                             "type": "string",
                             "description": "要记住的文本",
-                        }
+                        },
+                        "work_id": {
+                            "type": "string",
+                            "description": (
+                                "作品标注（可选）：非空时文本归该作品 universe 摄入、"
+                                "触发作品叙事事件抽取；为空走现实世界。仅摄入作品文本时传。"
+                            ),
+                        },
                     },
                     "required": ["text"],
                 },
@@ -260,7 +267,11 @@ BUILTIN_TOOLS: dict[str, ToolSpec] = {
                         "limit": {
                             "type": "integer",
                             "description": "返回事件数上限，默认 5",
-                        }
+                        },
+                        "universe": {
+                            "type": "string",
+                            "description": "回忆限定哪个 universe（世界），默认 __reality__（现实）",
+                        },
                     },
                     "required": [],
                 },

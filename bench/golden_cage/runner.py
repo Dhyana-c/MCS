@@ -24,6 +24,7 @@ from bench.golden_cage.data import filter_queries, load
 from bench.golden_cage.metrics import aggregate_metrics, retrieved_docs
 from bench.multihop_rag.builder import _make_mcs
 from bench.plugins.doc_rerank import doc_rerank
+from mcs.entities.graph import EDGE_MUTEX
 from mcs_agent.llm import make_openai_llm_call
 from mcs_agent.loop import MemoryAgent
 from mcs_agent.memory import _SEED_ROOT, MemoryStore, _render_nodes
@@ -91,9 +92,35 @@ class CapturingMemory(MemoryStore):
 
     def _do_associate(self, seed_id: str, limit: int) -> str:
         text = super()._do_associate(seed_id, limit)
+        # D1：复算一跳邻居入 records['nodes']——super() 仅返回渲染文本、丢节点身份，
+        # 评测需节点身份映射来源文档（golden_cage hit@k）。与基类同口径（互斥前置 + cap 截断）。
         self.records.append({"tool": "associate", "args": {"seed_id": seed_id},
-                             "nodes": []})
+                             "nodes": self._capture_neighbor_nodes(seed_id, limit)})
         return text
+
+    def _capture_neighbor_nodes(self, seed_id: str, limit: int) -> list:
+        """复算 associate 一跳邻居（与基类 ``MemoryStore._do_associate`` 同口径）。
+
+        互斥前置 + ``cap=max(1,limit)`` 截断。供评测 records 捕获节点身份（D1）。
+        """
+        store = self._mcs.store
+        node = store.get_node(seed_id)
+        if node is None:
+            return []
+        mutex_ids: list[str] = []
+        assoc_ids: list[str] = []
+        seen: set[str] = set()
+        for e in store.get_relations(node.id):
+            other = e.target_id if e.source_id == node.id else e.source_id
+            if other == node.id or other in seen:
+                continue
+            seen.add(other)
+            (mutex_ids if e.type == EDGE_MUTEX else assoc_ids).append(other)
+        cap = max(1, limit)
+        shown_mutex = mutex_ids[:cap]
+        shown_assoc = assoc_ids[: cap - len(shown_mutex)]
+        ids = shown_mutex + shown_assoc
+        return [n for n in (store.get_node(i) for i in ids) if n is not None]
 
     def touched_nodes(self) -> list[Any]:
         """本题探索触达的全部节点（按出现序去重）。"""

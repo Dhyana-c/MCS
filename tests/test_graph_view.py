@@ -72,7 +72,7 @@ class FakeStore:
         self.read_threads.add(threading.get_ident())
         return [e for e in self.edges if e.source_id == source_id and e.target_id == target_id]
 
-    def get_related_events(self, nid: str, limit: int | None = None) -> list[Node]:
+    def get_related_events(self, nid: str, universe: str | None = None, limit: int | None = None) -> list[Node]:
         """绕载重：nid 作 target、source 为事件的关联边 → 事件节点（时间倒排省略，测试不依赖）。"""
         self.read_threads.add(threading.get_ident())
         ev_ids: list[str] = []
@@ -82,6 +82,8 @@ class FakeStore:
                 if src is not None and src.node_class == CLASS_EVENT:
                     ev_ids.append(src.id)
         events = [self.nodes[i] for i in dict.fromkeys(ev_ids)]  # 去重保序
+        if universe is not None:
+            events = [n for n in events if n.universe == universe]
         return events[:limit] if limit else events
 
 

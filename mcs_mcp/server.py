@@ -163,11 +163,14 @@ class MCPServer:
         """
         return self._agent.chat(query)
 
-    def run_ingest(self, text: str) -> str:
+    def run_ingest(self, text: str, work_id: str | None = None) -> str:
         """ingest 工具处理：``agent.memory.learn`` 写图（不经 agent ReAct loop；MCS 写管线内
         LLM 抽取必然）。``learn`` 内部 ``_submit`` 串行化到 MemoryStore worker；同样需 offload。
+
+        ``work_id`` 非空按作品 universe 摄入（透传到 ``learn`` → ``IngestInput.work_id`` →
+        ③b 作品叙事事件抽取）；为空走现实 str 归一化（现状不变）。
         """
-        return self._agent.memory.learn(text)
+        return self._agent.memory.learn(text, work_id=work_id)
 
     # === 生命周期 ===
 
@@ -213,13 +216,14 @@ def build_fastmcp(server: MCPServer) -> Any:
             return f"[error] query 失败：{type(exc).__name__}: {exc}"
 
     @mcp_server.tool()
-    async def ingest(text: str) -> str:
+    async def ingest(text: str, work_id: str | None = None) -> str:
         """向 MCS 记忆图摄入一段文本（agent.memory.learn 写图原语），返回写入状态摘要。
 
-        自动抽取概念并入图（经 MCS 写管线、含 LLM 抽取阶段）；比 query 快（不经 agent ReAct loop）。
+        自动抽取概念并入图（经 MCS 写管线、含 LLM 抽取阶段）；比 query 快（不经 agent
+        ReAct loop）。``work_id`` 非空时按该作品 universe 摄入（触发作品叙事事件抽取）。
         """
         try:
-            return await asyncio.to_thread(server.run_ingest, text)
+            return await asyncio.to_thread(server.run_ingest, text, work_id)
         except Exception as exc:  # 单次异常隔离，server 不崩
             logger.warning("ingest tool failed", exc_info=True)
             return f"[error] ingest 失败：{type(exc).__name__}: {exc}"

@@ -38,6 +38,7 @@ if str(_ROOT) not in sys.path:
 from bench.multihop_rag.builder import _make_mcs  # noqa: E402
 from bench.multihop_rag.metrics import retrieved_docs  # noqa: E402
 from bench.multihop_rag.scripts._common import PROJECT_ROOT, db_path, setup_env  # noqa: E402
+from mcs.entities.graph import EDGE_MUTEX  # noqa: E402
 from mcs_agent.llm import make_openai_llm_call  # noqa: E402
 from mcs_agent.loop import DEFAULT_SYSTEM_PROMPT, MemoryAgent  # noqa: E402
 from mcs_agent.memory import _SEED_ROOT, MemoryStore  # noqa: E402
@@ -84,11 +85,37 @@ class CapturingMemory(MemoryStore):
 
     def _do_associate(self, seed_id: str, limit: int) -> str:
         # 读查询编排（mode="mcs" 框架 BFS）随 retire-framework-query-pipeline 退役；
-        # associate 仅留 neighbors 模式（base 实现），覆写仅记录工具调用、不触达可捕获节点。
+        # associate 仅留 neighbors 模式（base 实现）。D1：覆写捕获一跳邻居节点身份
+        # （super() 仅返回渲染文本）+ 渲染文本（result），供评测映射来源文档。
         text = super()._do_associate(seed_id, limit)
         self.records.append({"tool": "associate", "args": {"seed_id": seed_id},
-                             "nodes": [], "result": text})
+                             "nodes": self._capture_neighbor_nodes(seed_id, limit),
+                             "result": text})
         return text
+
+    def _capture_neighbor_nodes(self, seed_id: str, limit: int) -> list:
+        """复算 associate 一跳邻居（与基类 ``MemoryStore._do_associate`` 同口径）。
+
+        互斥前置 + ``cap=max(1,limit)`` 截断。供评测 records 捕获节点身份（D1）。
+        """
+        store = self._mcs.store
+        node = store.get_node(seed_id)
+        if node is None:
+            return []
+        mutex_ids: list[str] = []
+        assoc_ids: list[str] = []
+        seen: set[str] = set()
+        for e in store.get_relations(node.id):
+            other = e.target_id if e.source_id == node.id else e.source_id
+            if other == node.id or other in seen:
+                continue
+            seen.add(other)
+            (mutex_ids if e.type == EDGE_MUTEX else assoc_ids).append(other)
+        cap = max(1, limit)
+        shown_mutex = mutex_ids[:cap]
+        shown_assoc = assoc_ids[: cap - len(shown_mutex)]
+        ids = shown_mutex + shown_assoc
+        return [n for n in (store.get_node(i) for i in ids) if n is not None]
 
     @staticmethod
     def _render_seed(nodes: list[Any], header: str) -> str:

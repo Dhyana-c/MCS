@@ -96,3 +96,22 @@ def test_doc_rerank_empty_passthrough():
 def test_doc_rerank_no_doc_id_returns_empty():
     n = Node(id="n", name="x", content="", extensions={})
     assert doc_rerank([n], "anything") == []
+
+
+# ─── migration-audit-fixes · E2：doc_rerank 为纯函数（无插件类）─────────────
+
+
+def test_doc_rerank_is_pure_function_no_plugin_class():
+    """E2：doc_rerank 随 retire-framework 退役后为纯函数模块——MUST NOT 定义插件类。
+
+    DocRerankPlugin / PostprocessPluginInterface / PluginType.POSTPROCESS 三者随
+    retire-framework-query-pipeline 删除；本测试锁死「不再回流为核心插件」。
+    """
+    import inspect
+    from bench.plugins import doc_rerank as doc_rerank_mod
+
+    src = inspect.getsource(doc_rerank_mod)
+    assert "DocRerankPlugin" not in src
+    assert "PostprocessPluginInterface" not in src
+    assert "PluginType.POSTPROCESS" not in src
+    assert "PostprocessPlugin" not in src  # 变体也禁

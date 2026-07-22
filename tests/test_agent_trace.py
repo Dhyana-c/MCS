@@ -260,19 +260,19 @@ def test_llm_call_trace_timestamp_is_wall_clock():
 class _FakeMemory:
     """暴露 7 原语的 fake memory。"""
 
-    def learn(self, text: str) -> str:
+    def learn(self, text: str, work_id: str | None = None) -> str:
         return f"[memory] 已写入：{text}"
 
     def search(self, query: str, mode: str = "keyword", universe: str = "__reality__") -> str:
         return f"[memory] 种子：1. [id:c1] {query}"
 
-    def associate(self, seed_id: str, mode: str = "mcs") -> str:
+    def associate(self, seed_id: str, limit: int = 60) -> str:
         return f"[memory] 从 {seed_id} 扩展"
 
     def find_path(self, source_id: str, target_id: str, max_hops: int = 6) -> str:
         return f"[memory] 路径：{source_id} -> {target_id}"
 
-    def recall(self, limit: int = 5) -> str:
+    def recall(self, limit: int = 5, universe: str | None = None) -> str:
         return "[memory] (无热点事件)"
 
     def generalize(self, node_ids: list, focus: str | None = None) -> str:
@@ -357,16 +357,16 @@ def test_chat_trace_tool_exception():
         def search(self, q, mode="keyword", universe="__reality__"):
             raise RuntimeError("boom")
 
-        def learn(self, t):
+        def learn(self, t, work_id=None):
             return "ok"
 
-        def associate(self, s, mode="mcs"):
+        def associate(self, s, limit=60):
             return "ok"
 
         def find_path(self, s, t, max_hops=6):
             return "ok"
 
-        def recall(self, limit=5):
+        def recall(self, limit=5, universe=None):
             return "ok"
 
     replies = iter([

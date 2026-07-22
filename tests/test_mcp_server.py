@@ -43,9 +43,11 @@ class _FakeMemory:
         self.learn_exc = learn_exc
         self.shutdown_calls = 0
         self.learn_calls: list[str] = []
+        self.learn_work_ids: list[str | None] = []  # A1：记录 work_id 透传
 
-    def learn(self, text: str) -> str:
+    def learn(self, text: str, work_id: str | None = None) -> str:
         self.learn_calls.append(text)
+        self.learn_work_ids.append(work_id)
         if self.learn_exc is not None:
             raise self.learn_exc
         return self.learn_reply
@@ -142,6 +144,16 @@ def test_run_ingest_delegates_to_memory_learn():
     out = server.run_ingest("some text")
     assert out == "已写入：3 个概念"
     assert mem.learn_calls == ["some text"]
+
+
+def test_run_ingest_passes_work_id_to_learn():
+    """A1：run_ingest(text, work_id) 透传到 memory.learn（触发 ③b 作品事件抽取）。"""
+    mem = _FakeMemory()
+    agent = _FakeAgent(memory=mem)
+    server = MCPServer.from_agent(agent)
+    server.run_ingest("作品文本", work_id="三国演义")
+    assert mem.learn_calls == ["作品文本"]
+    assert mem.learn_work_ids == ["三国演义"]
 
 
 def test_run_query_does_not_wrap_agent_reply():

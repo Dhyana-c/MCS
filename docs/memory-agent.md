@@ -33,9 +33,9 @@
 |------|------|------|------|
 | `learn` | `text` | 把信息写入记忆图（复用 MCS 写管线，自动抽概念入图）。仅当用户明确要求记住时调用 | ✅ |
 | `search` | `query`, `mode`, `universe?` | 搜入口种子（默认 `__reality__` 内；查作品世界传 `universe`）。`keyword`=字面匹配名 / 别名（主力）；`direct`=顶层 hub；`vector`=向量检索 | keyword ✅ / direct ✅ / vector ✗ |
-| `associate` | `seed_id`, `mode` | 从种子 BFS 联想扩展。`mcs`=事实 BFS（主力）；`hot`/`random` | mcs ✅ / hot·random ✗ |
+| `associate` | `seed_id`, `limit?` | 从种子联想扩展一跳邻居（关联/互斥端点，含 id）；多跳靠对邻居 id 继续 `associate`。`limit` 截断 | ✅ |
 | `reason` | `source_id`, `target_id` | 在两个已知节点间找连通路径（无向 BFS，允许失败） | ✅ |
-| `recall` | `limit` | 回忆最近发生的事件（时间倒排、纯近期口径，受 `limit` 与 T 双约束） | ✅ |
+| `recall` | `limit`, `universe?` | 回忆最近发生的事件（时间倒排、纯近期口径，受 `limit` 与 T 双约束；限 `universe` 内，默认 `__reality__`，每 universe 独立时间轴不混排） | ✅ |
 | `timeline` | `universe`, `limit?` | 叙事时间线：某 universe 事件层按时间**升序**组装（查询期虚拟视图、只读不落图）。作品世界传作品名、现实传 `__reality__`；作品纪年数字年可排（混合纪年 Phase 2）。与 `recall`（近期倒排）互补 | ✅ |
 | `generalize` | `node_ids`, `focus?` | 概括若干节点的公共上位概念 / 共性（只读 LLM 判断，不改图） | ✅ |
 | `arbitrate` | `node_ids`, `question` | 对若干互斥事实反查背书事件、裁决采信方 + 理由（只读 LLM 判断，不改图） | ✅ |
@@ -58,8 +58,9 @@
 - **`generalize`（归纳）**：给若干节点 id → 渲染为喂 LLM 的 material → 经 `generalize` purpose 让 LLM
   概括它们的公共上位概念 / 共性 → 返回文本。帮 agent 理解一组相关概念的关系，而非靠自身猜测脱钩于图里真实
   存的节点。material 超 `token_budget.T` 时按序丢尾节点截断（≥1 兜底）。
-- **`arbitrate`（仲裁）**：给若干互斥事实 id + 问题 → 经 `store.get_related_events(fact_id, limit=K)`
-  **定向反查**每个事实的背书事件（时间倒排、绕载重规则、取最近 K 条，K 默认 3、可经
+- **`arbitrate`（仲裁）**：给若干互斥事实 id + 问题 → 经 `store.get_related_events(fact_id, universe=U, limit=K)`
+  （U=首事实 universe）**定向反查**每个事实的背书事件（限同 universe——载重命根、防他世界事件污染裁决；
+  时间倒排、绕载重规则、取最近 K 条，K 默认 3、可经
   `ToolsetConfig.params["arbitrate"]["events_per_fact"]` 覆盖）→ 自建装配「事实全文 + 其事件行」material
   （事件复用行级渲染、含 timestamp）→ 经 `adjudicate` purpose 让 LLM 裁决**采信哪个事实 + 理由** → 过滤
   幻觉 id（只留传入事实 id）→ 渲染「采信 [id:X]（...），理由：...」。事件过多时按**轮转保底**截断 material

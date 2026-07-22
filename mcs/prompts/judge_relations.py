@@ -18,20 +18,11 @@ import logging
 
 from mcs.core.errors import LLMParseError
 from mcs.entities.decisions import ConceptDraft, Decision
-from mcs.entities.graph import CLASS_CONCEPT, CLASS_FACT
+from mcs.entities.graph import CLASS_CONCEPT
+from mcs.prompts._common import NODE_CLASS_BY_LABEL
 from mcs.utils.text_utils import salvage_json_array, strip_json_fence
 
 logger = logging.getLogger(__name__)
-
-# node_class 枚举英中映射：prompt 协议层对 LLM 暴露英文 concept/fact（见 change
-# prompt-language-following），parse 统一映射回中文常量；接受中文值向后兼容。
-# **存储层 node.node_class 取值不变（仍中文常量）**。
-_NODE_CLASS_BY_LABEL: dict[str, str] = {
-    "concept": CLASS_CONCEPT,
-    "fact": CLASS_FACT,
-    CLASS_CONCEPT: CLASS_CONCEPT,
-    CLASS_FACT: CLASS_FACT,
-}
 
 SYSTEM_PROMPT = (
     "你是知识图谱关系判定助手。对每个新概念/事实，结合「已知相关节点」判断:"
@@ -140,7 +131,7 @@ def parse(raw: str) -> list[Decision]:
         # node_class：接受英文 concept/fact（prompt 协议层）与中文 概念/事实（向后兼容），
         # 统一映射到中文常量；未知值回退为概念。存储层取值仍为中文常量。
         raw_nc = str(item.get("node_class", CLASS_CONCEPT)).strip().lower()
-        node_class = _NODE_CLASS_BY_LABEL.get(raw_nc, CLASS_CONCEPT)
+        node_class = NODE_CLASS_BY_LABEL.get(raw_nc, CLASS_CONCEPT)
         # mutex_with：已有事实节点 id 列表
         raw_mutex = item.get("mutex_with", []) or []
         mutex_with = [str(x) for x in raw_mutex if isinstance(x, str) and x]

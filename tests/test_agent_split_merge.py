@@ -83,7 +83,7 @@ class _WritableFakeStore:
             es.append(e)
         return es[:limit] if limit else es
 
-    def get_related_events(self, node_id, limit=None):
+    def get_related_events(self, node_id, universe=None, limit=None):
         evs = []
         for e in self.edges.values():
             if e.type != EDGE_ASSOC or e.target_id != node_id:
@@ -91,6 +91,8 @@ class _WritableFakeStore:
             src = self.nodes.get(e.source_id)
             if src and src.node_class == CLASS_EVENT:
                 evs.append(src)
+        if universe is not None:
+            evs = [n for n in evs if n.universe == universe]
         return evs[:limit] if limit else evs
 
     def snapshot(self) -> dict:

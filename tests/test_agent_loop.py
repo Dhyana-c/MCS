@@ -23,7 +23,7 @@ class FakeMemory:
         self.generalize_calls: list[tuple[list, str | None]] = []
         self.arbitrate_calls: list[tuple[list, str]] = []
 
-    def learn(self, text: str) -> str:
+    def learn(self, text: str, work_id: str | None = None) -> str:
         self.learn_calls.append(text)
         return f"[memory] 已写入：{text}"
 
@@ -39,7 +39,7 @@ class FakeMemory:
         self.find_path_calls.append((source_id, target_id))
         return f"[memory] 路径：{source_id} -> {target_id}"
 
-    def recall(self, limit: int = 5) -> str:
+    def recall(self, limit: int = 5, universe: str | None = None) -> str:
         self.recall_calls.append(limit)
         return "[memory] (无热点事件)"
 
@@ -167,7 +167,7 @@ def test_tool_exception_isolated():
         def search(self, q, mode="keyword"):
             raise RuntimeError("boom")
 
-        def learn(self, t):
+        def learn(self, t, work_id=None):
             raise RuntimeError("boom")
 
         def associate(self, s, mode="neighbors", limit=60):
@@ -176,7 +176,7 @@ def test_tool_exception_isolated():
         def find_path(self, s, t, max_hops=6):
             raise RuntimeError("boom")
 
-        def recall(self, limit=5):
+        def recall(self, limit=5, universe=None):
             raise RuntimeError("boom")
 
     replies = iter(
@@ -298,3 +298,77 @@ def test_language_follow_appended_to_any_system_prompt():
     assert custom.startswith("自定义角色")
     assert "# 回答语言" in custom  # 自定义 prompt 同样追加
     assert custom.index("自定义角色") < custom.index("# 回答语言") < custom.index("# 当前记忆图主题")
+
+
+# === migration-audit-fixes · B1：chat 遇 shutdown 优雅收尾 ===
+
+
+def test_chat_shutdown_terminates_gracefully():
+    """工具抛 MemoryShuttingDown → chat 优雅收尾（termination=shutting_down、降级文本非 [error]）。
+
+    B1：in-flight 时 memory 关闭，下一轮工具调用撞 MemoryShuttingDown → _dispatch 捕获
+    置 _shutting_down → chat 短路收尾（非 [error] 空转到 max_turns）。
+    """
+    from mcs_agent.memory import MemoryShuttingDown
+
+    class ShuttingMemory:
+        def search(self, q, mode="keyword", universe="__reality__"):
+            raise MemoryShuttingDown("test shutdown")
+
+    traces = []
+    # 第一轮 LLM 调 search → 工具抛 MemoryShuttingDown → 置 flag → 收尾（不进第二轮 LLM）
+    replies = iter([
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "1",
+                "type": "function",
+                "function": {"name": "search", "arguments": '{"query": "q"}'},
+            }],
+        },
+    ])
+    agent = MemoryAgent(
+        ShuttingMemory(), lambda m, t: next(replies),
+        on_trace=traces.append, max_turns=5,
+    )
+    reply = agent.chat("q")
+    assert "关闭" in reply or "无法继续" in reply  # 降级文本
+    assert "[error]" not in reply  # 非兜底 [error]
+    ct = traces[0]
+    assert ct.termination == "shutting_down"
+    assert len(ct.tool_calls) == 1  # 第一轮 search 后即收尾，未空转到 max_turns
+
+
+def test_chat_shutdown_multi_tool_call_stops_remaining():
+    """B1：同轮多 tool_call，第一个抛 MemoryShuttingDown 后剩余 tool_call 不执行（内层 break）。"""
+    from mcs_agent.memory import MemoryShuttingDown
+
+    class ShuttingMemory:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def search(self, q, mode="keyword", universe="__reality__"):
+            self.calls.append("search")
+            raise MemoryShuttingDown("test")
+
+        def recall(self, limit=5, universe=None):
+            self.calls.append("recall")  # 不应被执行
+            return "ok"
+
+    mem = ShuttingMemory()
+    traces = []
+    replies = iter([{
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {"id": "1", "type": "function",
+             "function": {"name": "search", "arguments": '{"query": "q"}'}},
+            {"id": "2", "type": "function",
+             "function": {"name": "recall", "arguments": '{"limit": 5}'}},
+        ],
+    }])
+    agent = MemoryAgent(mem, lambda m, t: next(replies), on_trace=traces.append, max_turns=5)
+    agent.chat("q")
+    assert mem.calls == ["search"]  # recall 未执行（内层 break）
+    assert traces[0].termination == "shutting_down"
