@@ -39,6 +39,7 @@ from mcs.entities.decisions import (
 from mcs.entities.graph import (
     CLASS_CONCEPT,
     CLASS_EVENT,
+    CLASS_FACT,
     CLASS_SOURCE,
     CORE_NODE_CLASSES,
     EDGE_ASSOC,
@@ -1000,7 +1001,7 @@ def _format_concepts(concepts: list[ConceptDraft]) -> str:
     """
     lines = []
     for i, c in enumerate(concepts, 1):
-        prefix = "[事实] " if c.node_class == "事实" else ""
+        prefix = "[事实] " if c.node_class == CLASS_FACT else ""
         lines.append(f"{i}. {prefix}{c.name}: {c.content}")
         for hint in c.relation_hints:
             lines.append(f"   - {hint}")

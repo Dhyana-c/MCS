@@ -40,6 +40,9 @@ SYSTEM_PROMPT = (
     "- participants 填该发生的**参与者名字**（人物 / 组织，用文本中的称呼），没有则空数组。\n"
     "- content 用 1-2 句转述该发生（含关键结果），name 为简短事件名（如\"曹操杀吕伯奢\"）。\n"
     "- 宁缺毋滥：不确定是不是\"发生\"就不抽；一段文本通常只有 0-5 个值得记的叙述发生。"
+    "\n\n**语言跟随**：name / content / participants MUST 跟随作品原文语言（中文作品写中文、"
+    "英文作品写英文、文言作品保留文言表述），MUST NOT 翻译为其他语言、MUST NOT 用现代汉语"
+    "转译文言原文；narr_timestamp 保留原文形态不变。"
 )
 
 USER_TEMPLATE = (

@@ -19,6 +19,16 @@ from mcs.utils.text_utils import salvage_json_array, strip_json_fence
 
 logger = logging.getLogger(__name__)
 
+# node_class 枚举英中映射：prompt 协议层对 LLM 暴露英文 concept/fact（降低中文翻译诱导，
+# 见 change prompt-language-following），parse 统一映射回中文常量；同时接受中文值
+# （向后兼容旧 LLM 输出 / 旧库）。**存储层 node.node_class 取值不变（仍中文常量）**。
+_NODE_CLASS_BY_LABEL: dict[str, str] = {
+    "concept": CLASS_CONCEPT,
+    "fact": CLASS_FACT,
+    CLASS_CONCEPT: CLASS_CONCEPT,
+    CLASS_FACT: CLASS_FACT,
+}
+
 SYSTEM_PROMPT = (
     "你是知识图谱构建助手。从输入文本中识别独立的概念和事实。"
     "如果某概念已存在于「已知相关概念」中，请复用其名称。"
@@ -30,8 +40,8 @@ SYSTEM_PROMPT = (
     "- 对外部实体的引用（人名、组织名等——这些应作为独立概念提取）\n\n"
     "content 控制在 ~24 token（英文约 100 字符，中文约 50 字）以内。\n\n"
     "对每个识别项，判断它是「概念」还是「事实」：\n"
-    "- 概念（node_class=\"概念\"）：名词性实体（人名、组织、地点、技术术语、抽象概念等）\n"
-    "- 事实（node_class=\"事实\"）：含谓词的命题陈述（如「X 创立了 Y」「Z 位于 W」等关系陈述）\n"
+    "- 概念（node_class=\"concept\"）：名词性实体（人名、组织、地点、技术术语、抽象概念等）\n"
+    "- 事实（node_class=\"fact\"）：含谓词的命题陈述（如「X 创立了 Y」「Z 位于 W」等关系陈述）\n"
     "事实的 content 应包含完整的谓词表述（如「创立了苹果公司」），端点概念单独提取为概念。\n\n"
     "**时间归属**（关键，必须遵守；判据 = 时间形态，非\"是否事件性\"）：\n"
     "- 概念 content MUST NOT 含任何时间词——既不含「今天/这次/未完成/计划中/将进行」等"
@@ -47,7 +57,11 @@ SYSTEM_PROMPT = (
     "- 清单/汇总型内容（逐条列出的公司/比赛/交易等）MUST 逐条抽取——每条一个事实、"
     "涉及实体各自抽为概念，MUST NOT 卷成一个聚合概念。\n"
     "- MUST NOT 把偏好/模式（如「喜欢 X」）当概念/事实——偏好靠概念被多事件背书涌现；"
-    "无时间锚的模糊事件指代（「X 的情况」）也不抽。\n"
+    "无时间锚的模糊事件指代（「X 的情况」）也不抽。\n\n"
+    "**语言跟随**（关键）：name / content / relation_hints MUST 使用与输入文本相同的语言"
+    "（中文输入写中文、英文输入写英文），MUST NOT 翻译——即使该实体在通用知识里有其他语言"
+    "（如中文）的名称（如 Apple 不要写成「苹果公司」、Tesla 不要写成「特斯拉」），"
+    "也 MUST 保留输入原文语言的表述；混合语言文本逐实体保留其原文语言。"
 )
 
 USER_TEMPLATE = (
@@ -56,14 +70,15 @@ USER_TEMPLATE = (
     "输入文本:\n"
     "{text}\n\n"
     '请输出 JSON 数组，每项形如 {{"name": "...", "content": "1-2句精简定义+叶子属性", '
-    '"relation_hints": ["关系短语", ...], "node_class": "概念|事实"}}。'
+    '"relation_hints": ["关系短语", ...], "node_class": "concept|fact"}}。'
     "content 只放定义和叶子属性，不放关系叙述（关系放 relation_hints）；"
     "**概念 content 零时间；事实禁相对/单次时间、允许固定历史时间**（如 1976、2023 年 1 月）；"
     "**带固定历史时间的已完成发生抽成历史事实**（如「2023 年 1 月 Google 裁员 12000 人」），"
     "相对时间的发生抽成去时间化事实（「今天去按摩」→「用户去按摩」）；"
     "清单/汇总内容逐条抽取（每条一个事实），不要概括成聚合概念。"
-    "node_class 为「概念」或「事实」；名词性实体标「概念」，含谓词的命题陈述标「事实」。"
+    "node_class 为 concept（名词性实体）或 fact（含谓词的命题陈述）。"
     "对文本中提到的外部实体（人名、组织名等），即使只在一个属性中出现，也作为独立概念提取。"
+    "name/content 用输入原文语言、知名实体不翻译（Apple 不写「苹果公司」）。"
     "只返回 JSON，不要其他解释。"
 )
 
@@ -117,9 +132,10 @@ def parse(raw: str) -> list[ConceptDraft]:
         name = item.get("name") or item.get("concept") or item.get("term") or item.get("entity")
         if not name:
             continue
-        # node_class：仅接受"概念"和"事实"，其余回退为"概念"（向后兼容）
-        raw_nc = str(item.get("node_class", CLASS_CONCEPT)).strip()
-        node_class = raw_nc if raw_nc in (CLASS_CONCEPT, CLASS_FACT) else CLASS_CONCEPT
+        # node_class：接受英文 concept/fact（prompt 协议层）与中文 概念/事实（向后兼容），
+        # 统一映射到中文常量；未知值回退为概念。存储层取值仍为中文常量。
+        raw_nc = str(item.get("node_class", CLASS_CONCEPT)).strip().lower()
+        node_class = _NODE_CLASS_BY_LABEL.get(raw_nc, CLASS_CONCEPT)
         result.append(
             ConceptDraft(
                 name=str(name),

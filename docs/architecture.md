@@ -92,6 +92,8 @@ MCS 维持一条硬不变量：
 | **事件** | 时间轴上的一次发生 | **规则**入库，不经 LLM | 否（事件层） |
 | **source** | 原始资料 / 文件 / 段落，按类型切分保真 | **规则**入库，不经 LLM | 否（叶子） |
 
+> **node_class 协议层**：上表取值为**存储语义**（`Node.node_class` 存中文常量 `概念/事实/事件/source`，不变）。prompt 协议层对 LLM 暴露英文 `concept`/`fact`（`event`/`source` 规则产生不经 LLM），`extract_concepts.parse`/`judge_relations.parse` 映射回中文常量、向后兼容中文值——见 change `prompt-language-following`。
+
 边只有 2 类（登记制、谨慎增加）：
 
 - **关联**（结构基础边，`source → target`）：连接事实与端点、概念间关联、聚类形成的"组织中心 ↔ 成员"。

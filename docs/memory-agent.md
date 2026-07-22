@@ -80,6 +80,10 @@
 
 两工具的 `node_id(s)` 由前序工具返回的 `[id:...]` 提供；返回文本含产物 / keep 节点 id（**守门前快照**——`run_compaction` 的 `decide_hub` 可能重组 / 合并产物或 keep 邻域，agent 后续引用前建议重新 `search` 定位）。两者 `readonly=False`，排除出 `/recall` 只读召回白名单（保"召回 MUST NOT 写图"）。
 
+### 回答侧语言跟随
+
+`MemoryAgent` 默认在 `system_prompt` 后**无条件追加** `LANGUAGE_FOLLOW_PROMPT`（`mcs_agent/loop.py`）：要求用**用户消息的语言**回答（英文问全程英文答、中文问中文答）；记忆图节点内容与用户语言不一致时，引用其信息须**转成用户语言转述**、不原文照搬；不确定用户语言时先据用户消息本身的用词判断再作答（**主动对齐**，而非仅被动转述）。自定义 `system_prompt` 时该规则仍追加在其后。change `prompt-language-following` 将其正式化为 `memory-agent` spec 条款并增强。
+
 ## 会话上下文自治（`context_budget`，默认关闭）
 
 > change `agent-context-autonomy`：框架保证**单一硬预算**（会话层铁律一：估算口径 == 发送口径，

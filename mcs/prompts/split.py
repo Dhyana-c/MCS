@@ -48,6 +48,7 @@ SYSTEM_PROMPT = (
     "\n- 节点 content 自洽、只讲一个语义中心（即使 content 较长）。"
     "\n- 只是描述不准 / 过时——那是 content 重写，不是拆分。"
     "\n- 拿不准是否耦合——默认 noop（错拆比不拆糟：制造噪音节点 + 错分边）。"
+    "\n\n**语言跟随**：拆分产物的 name / content MUST 沿用原节点的原文语言，MUST NOT 在拆分时翻译。"
     "\n\n只返回 JSON，不要解释。"
 )
 

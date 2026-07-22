@@ -17,11 +17,14 @@ from mcs.utils.text_utils import strip_json_fence
 SYSTEM_PROMPT = (
     "你为给定概念生成别名集合：同义词、缩写、常见说法、易错写法。"
     "只输出真实可能被使用的别名，不要硬凑。"
+    "\n\n**语言跟随**：别名 MUST 是该概念在**原文语言**下的同义词/缩写/变体写法，"
+    "MUST NOT 给跨语言「对译」（英文概念只给英文别名、中文概念只给中文别名）——"
+    "对译是另一语种节点的事，混入会污染别名索引、致跨语种误召回。"
 )
 
 USER_TEMPLATE = (
     "概念:\n{material}\n\n"
-    "请返回别名字符串列表 JSON, 例如 [\"AAPL\", \"苹果公司\", \"苹果\"]。"
+    "请返回该概念在原语言下的别名字符串列表 JSON，例如 [\"US\", \"United States\", \"America\"]。"
     "只返回 JSON。"
 )
 

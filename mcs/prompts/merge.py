@@ -35,6 +35,8 @@ SYSTEM_PROMPT = (
     "不是合并）。"
     "\n- 两个 merely 相关的概念（如'小明'与'同事'）MUST NOT 合并——关联用关联边表达。"
     "\n- 拿不准是否同一个——默认 noop（错合丢失身份、断掉背书 / 互斥，比不合糟）。"
+    "\n\n**语言跟随**：merged_content MUST 沿用 keep / absorb 节点的原文语言（同义节点本就同语种），"
+    "MUST NOT 翻译；aliases_to_add MUST 是该节点原语言下的异名 / 变体写法，MUST NOT 给跨语言对译。"
     "\n\n只返回 JSON，不要解释。"
 )
 

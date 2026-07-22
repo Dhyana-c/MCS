@@ -73,7 +73,7 @@ MCS 是**通用**算法，不绑定具体语料。典型场景：
 id            身份
 name          名 / 标题（用于匹配与显示）
 content       摘要 / 定义 / 命题说法（参与有界 token 估算）
-node_class    概念 / 事实 / 事件 / source
+node_class    概念 / 事实 / 事件 / source（存储值为中文常量；**prompt 协议层**对 LLM 暴露英文 `concept`/`fact`，`extract_concepts.parse`/`judge_relations.parse` 映射回中文常量、向后兼容中文值——见 change `prompt-language-following`）
 universe      世界归属（默认 __reality__；与 node_class 并列的归属轴，对全部类含事件生效）
 extensions    开放属性（领域软标签、timestamp、置信度、帧 / 出处指针、**hub 标记**……）
 ```

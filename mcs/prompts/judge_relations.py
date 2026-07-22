@@ -23,6 +23,16 @@ from mcs.utils.text_utils import salvage_json_array, strip_json_fence
 
 logger = logging.getLogger(__name__)
 
+# node_class 枚举英中映射：prompt 协议层对 LLM 暴露英文 concept/fact（见 change
+# prompt-language-following），parse 统一映射回中文常量；接受中文值向后兼容。
+# **存储层 node.node_class 取值不变（仍中文常量）**。
+_NODE_CLASS_BY_LABEL: dict[str, str] = {
+    "concept": CLASS_CONCEPT,
+    "fact": CLASS_FACT,
+    CLASS_CONCEPT: CLASS_CONCEPT,
+    CLASS_FACT: CLASS_FACT,
+}
+
 SYSTEM_PROMPT = (
     "你是知识图谱关系判定助手。对每个新概念/事实，结合「已知相关节点」判断:"
     "(a) merge 并入某已有节点; (b) create 新建并连边到锚点; "
@@ -35,11 +45,14 @@ SYSTEM_PROMPT = (
     "\n\n若两个概念之间没有实质关系，就**不要**在 edges_to / edges_to_names 中列出"
     "（开放世界：缺边即代表未知，无需显式表达「无关系」）。"
     "\n\n对每个待判定项，判断其 node_class："
-    "「概念」=名词性实体（人/组织/地点/术语/抽象概念）；"
-    "「事实」=含谓词的命题陈述（关系陈述、属性陈述）。"
+    "concept=名词性实体（人/组织/地点/术语/抽象概念）；"
+    "fact=含谓词的命题陈述（关系陈述、属性陈述）。"
     "\n\n若某个事实与已有事实相互排斥（如两个矛盾说法），在 mutex_with 中填入已有事实节点 id。"
     "若同一批新概念中有互斥事实，在 mutex_with_names 中填入对方概念名。"
     "互斥仅适用于事实↔事实，概念之间不判互斥。"
+    "\n\n**语言跟随**：aliases_to_add MUST 是该概念在**原文语言**下的同义词/缩写/变体写法"
+    "（英文概念给英文别名、中文概念给中文别名），MUST NOT 给跨语言「对译」——对译是另一语种"
+    "节点的事，混入会污染别名索引、致跨语种误召回。reason 跟随输入语言即可。"
 )
 
 USER_TEMPLATE = (
@@ -50,7 +63,7 @@ USER_TEMPLATE = (
     "请输出 JSON 数组，每项形如:\n"
     '  {{"action": "merge|create|no_op",\n'
     '   "concept_name": "...",\n'
-    '   "node_class": "概念|事实",\n'
+    '   "node_class": "concept|fact",\n'
     '   "target_id": "<相关节点id>",\n'
     '   "aliases_to_add": ["<同义词/缩写/变体写法>"],\n'
     '   "edges_to": [{{"target_id": "<锚点id>"}}],\n'
@@ -59,8 +72,8 @@ USER_TEMPLATE = (
     '   "mutex_with_names": ["<同批新事实名>"],\n'
     '   "reason": "..."}}\n'
     "字段按 action 类型按需填写; edges_to 用已存在节点的 id，"
-    "edges_to_names 用本次新概念的名称; aliases_to_add 仅 merge 时填写;"
-    "mutex_with / mutex_with_names 仅事实间互斥时填写;"
+    "edges_to_names 用本次新概念的名称; aliases_to_add 仅 merge 时填写、且用原语言异名"
+    "（MUST NOT 跨语言对译）;mutex_with / mutex_with_names 仅事实间互斥时填写;"
     "只返回 JSON。"
 )
 
@@ -124,9 +137,10 @@ def parse(raw: str) -> list[Decision]:
         if action not in valid_actions:
             # 容忍无效 action（含已废弃的 attach_statement / create_attribute）
             action = "no_op"
-        # node_class：仅接受"概念"和"事实"，其余回退为"概念"
-        raw_nc = str(item.get("node_class", CLASS_CONCEPT)).strip()
-        node_class = raw_nc if raw_nc in (CLASS_CONCEPT, CLASS_FACT) else CLASS_CONCEPT
+        # node_class：接受英文 concept/fact（prompt 协议层）与中文 概念/事实（向后兼容），
+        # 统一映射到中文常量；未知值回退为概念。存储层取值仍为中文常量。
+        raw_nc = str(item.get("node_class", CLASS_CONCEPT)).strip().lower()
+        node_class = _NODE_CLASS_BY_LABEL.get(raw_nc, CLASS_CONCEPT)
         # mutex_with：已有事实节点 id 列表
         raw_mutex = item.get("mutex_with", []) or []
         mutex_with = [str(x) for x in raw_mutex if isinstance(x, str) and x]

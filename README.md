@@ -201,7 +201,7 @@ MCS 使用 MultiHop-RAG 做文档级多跳检索评测，指标为 Hit@k / MAP@k
 
 **最新结果**（609 篇 whole-doc 建图、200 query、DeepSeek 后端，`T=16K`）：**hit@10 ≈ 0.70 / recall@10 ≈ 0.39**（分类型 inference 0.74 / temporal 0.69 / comparison 0.67）。
 
-> ⚠️ 当前 hit@10 的最大制约是**跨语言**：建图摘要由 LLM 生成为中文，而 query 为英文，词法交集近零。反事实对照（body 换英文原文、零 LLM）可达 ~0.84——说明瓶颈在语言对齐与下游重排，而非图模型 / 召回链路本身（全节点 gold 召回 0.89+）。详见 [评测报告](bench/multihop_rag/REPORT.md)。
+> 跨语言制约已通过 change `prompt-language-following` 修复：写入侧各 prompt 加语言跟随指令（节点 content / 概括 / 别名 MUST 用输入原文语言、**知名实体不翻译**）+ `node_class` 协议层英文化（`concept`/`fact`，parse 映射中文常量、存储取值不变）。此前全中文 prompt 把英文语料知名实体系统性译成中文（实测一段含 Apple/Tesla/Google 的文本 34% 节点被译）、英文 query 词法交集近零（反事实对照 body 换英文原文、零 LLM 可达 ~0.84）。**英文 bench 需删除旧图、重新 ingest 才吃到修复**（中文 bench 行为不变）。剩余瓶颈在下游重排（全节点 gold 召回 0.89+）。详见 [评测报告](bench/multihop_rag/REPORT.md)。
 
 下方命令为 200 篇子集的**快速上手**（配置与上述权威数字不同，不直接对应该数字）：
 

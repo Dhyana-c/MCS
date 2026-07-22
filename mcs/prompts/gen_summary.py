@@ -10,6 +10,7 @@ from mcs.core.errors import LLMParseError
 
 SYSTEM_PROMPT = (
     "你为输入内容生成紧凑摘要，保留关键概念与定义，不要列表化、不要序号。"
+    "\n\n**语言跟随**：摘要 MUST 与输入内容同语言，MUST NOT 翻译。"
 )
 
 USER_TEMPLATE = (
